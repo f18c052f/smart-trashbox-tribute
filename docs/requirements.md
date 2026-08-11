@@ -2,7 +2,7 @@
 
 元動画: [勝手に入るゴミ箱作った Smart Trashbox](https://www.youtube.com/watch?v=NqDTE6dHpJw)（倉田捻氏 / 文化庁メディア芸術祭受賞 / 制作約1年）
 
-関連: [drivetrain-spec.md](./drivetrain-spec.md)（駆動系詳細） / [bom.md](./bom.md)（部品表）
+関連: [drivetrain-spec.md](./drivetrain-spec.md)（駆動系詳細） / [bom.md](./bom.md)（部品表） / [development-environment.md](./development-environment.md)（開発環境・実行環境）
 
 > **v0.1 からの方針転換（重要）**
 > 旧版は **「最高速度 ≥ 1.5 m/s」を絶対的なハード要件**としていたが、これを**取り下げる**。
@@ -46,13 +46,23 @@
    → 3D位置を時系列取得      落下地点(x,y)算出        落下時刻までに到達
 ```
 
+実機への割り当ては以下（詳細は [development-environment.md](./development-environment.md) を正とする）。
+
+```
+RealSense D435 → Raspberry Pi 4 Model B → (小さいデータ) → ESP32 → 3輪オムニ移動体
+        └──────── 固定側 ────────┘          └──── 移動体側 ────┘
+```
+
 | # | サブシステム | 配置 | 役割 |
 |---|---|---|---|
 | A | 検出 | 固定（壁/天井/三脚） | 飛来するゴミの3D位置を時系列で取得 |
-| B | 予測 | 固定側PC/MCU | 放物運動から床の落下座標を算出 |
+| B | 予測 | 固定側 Raspberry Pi 4 | 放物運動から床の落下座標を算出 |
 | C | 通信 | 両側 | 目標座標を移動体へ無線送信 |
 | D | 移動体（駆動） | ゴミ箱 | 目標座標へ全方向走行、現在位置把握 |
 | E | 電源 | 移動体 | バッテリ駆動・自律給電 |
+
+> **Raspberry Pi は固定側に置く。ゴミ箱本体へ搭載しない。**
+> ESP32 へ送るのは予測結果（目標座標・到達時刻）のみで、**画像・Depth フレームは送らない**。
 
 ---
 
@@ -154,14 +164,24 @@
 ### A. 検出
 - 要件: 空中の小物体を時系列3D追跡（FR-1）。
 - **確定: Intel RealSense D435**。グローバルシャッターで高速移動物体に強い。カメラは固定運用。
+- **接続先は Raspberry Pi 4 Model B**（固定側）。解像度・fps の初期評価候補は 640×480 / 30fps だが、
+  **必須性能でも達成済み性能でもない**（[development-environment.md §5](./development-environment.md#5-realsense-の初期設定方針)）。
 
 ### B. 予測
 - 要件: 放物線フィッティング（FR-2）。
-- 方針: z(t)=z0+vz·t−½g·t²、x,y は等速。3点以上で最小二乗。床平面 z=0 との交点を解く。PC(Python/OpenCV)で実装可。
+- 方針: z(t)=z0+vz·t−½g·t²、x,y は等速。3点以上で最小二乗。床平面 z=0 との交点を解く。
+- **実行環境: Raspberry Pi 4 Model B**（Python/OpenCV）。**開発は WSL 側**で行い、Pi へは Git 経由で持ち込む
+  （[development-environment.md §2](./development-environment.md#2-環境の役割分担)）。
+- 物体検出方式は**未確定**。Pi 4 の性能を考慮し、軽量方式（Depth差分・背景差分・フレーム間差分・ROI・輪郭抽出等）も
+  含めて実測後に決める。**AIモデルを最初から必須にしない。**
 
 ### C. 通信
 - 要件: 低遅延・軽量（FR-4, NFR-3）。
-- 方針: ESP32同士の ESP-NOW、または PC→シリアル/UDP→移動体MCU。Bluetoothは接続確立遅延に注意。
+- 送るのは予測結果のみ。**画像・Depth フレームは送らない。**
+- 方式は**未確定**。候補として UDP / Wi-Fi / Serial / 固定側 ESP32 を挟む Bridge を残す。
+  Bluetoothは接続確立遅延に注意。
+  ⚠️ **ESP-NOW を Raspberry Pi から直接使えることを前提にしない**
+  （[development-environment.md §9.2](./development-environment.md#92-通信方式候補を残す)）。
 
 ### D. 移動体（駆動）★核心
 - 要件: 全方向走行（FR-5）＋短時間移動性能（NFR-1/2）＋自己位置（FR-6）。
@@ -193,6 +213,10 @@
 - **目標データ**: `{ x_mm, y_mm, t_impact_ms }` を1メッセージで送信。
 - **単位**: 距離mm、時刻ms（送信時刻基準の相対）。
 
+> 上記は**現時点の最小形**であり、プロトコルを確定しすぎない方針。
+> 必要に応じて timestamp / sequence number / confidence / validity 等の追加を将来検討する
+> （[development-environment.md §9](./development-environment.md#9-pi--esp32-の通信内容)）。
+
 ---
 
 ## 7. 未決事項（次に決めること）
@@ -203,16 +227,28 @@
 4. **メインスイッチ**の取付位置・要否。
 5. **LiPo 低電圧保護の閾値** → M2 実測後に決定。
 6. フレーム外形寸法 → 現物採寸後に決定。
+7. **固定側計算機まわり**（Pi 4 の OS、RealSense の解像度・fps、物体検出方式、Pi→ESP32 の通信方式）
+   → いずれも Pi 4 上の実測後に決定。
 
-> 部品側の選定事項は [bom.md §F](./bom.md#f-選定確定が必要な事項) に集約している。
+> 部品側の選定事項は [bom.md §F](./bom.md#f-選定確定が必要な事項) に、
+> 開発・実行環境側の未確定事項は [development-environment.md §15](./development-environment.md#15-現時点で確定していること--していないこと) に集約している。
 
 ---
 
 ## 8. 段階的開発マイルストーン
 
 ### M1 予測の可視化
-センサーでゴミを追跡し、落下地点をPC画面にプロット。移動体なしで予測精度を検証。
+センサーでゴミを追跡し、落下地点をプロット。移動体なしで予測精度を検証。
 あわせて**実際の投擲の飛行時間と狙い誤差を実測**し、§3 の時間予算の前提を検証する。
+
+M1 は一括では作らず、**Raspberry Pi 4 上で以下の順に段階検証**する
+（[development-environment.md §12](./development-environment.md#12-段階的な検証方針)）。
+
+1. D435 を Pi 4 で安定取得 → 2. 実データ記録 → 3. 検出 → 4. 3D位置取得 → 5. 追跡 → 6. 軌道予測
+
+> 早い段階で**実データを記録**しておくと、以降の検出・追跡・予測の改善を
+> WSL 上の Replay で繰り返し検証できる（[development-environment.md §6](./development-environment.md#6-record--replay-を将来設計に含める)）。
+> なお**可視化（GUI）は開発用であり、本番処理の必須要件にしない。**
 
 ### M2 移動体の短時間応答評価 ★NFR-1 の検証
 
@@ -241,6 +277,7 @@
 
 ### M3 結合
 予測→通信→走行を接続し、静的な短距離キャッチ。まずは投擲位置・方向を固定した MVP 条件で成立させる（NFR-1 の許容事項）。
+Pi 4 → ESP32 の通信確立（[development-environment.md §12](./development-environment.md#12-段階的な検証方針) の段階7〜8）がここに対応する。
 
 ### M4 高速化・チューニング
 時間予算内に収める。必要横移動量の見直し（レイアウト調整）も改善手段に含む。復帰動作(FR-8)を追加。

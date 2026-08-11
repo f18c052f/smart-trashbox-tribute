@@ -1,6 +1,6 @@
 # 駆動系 詳細仕様 v0.2（3輪オムニ・シャシー自作）
 
-要件: [requirements.md](./requirements.md) / 部品表: [bom.md](./bom.md)
+要件: [requirements.md](./requirements.md) / 部品表: [bom.md](./bom.md) / 開発環境: [development-environment.md](./development-environment.md)
 
 > **v0.1 からの方針転換**: 「最高速度 1.5 m/s を満たすこと」を合否条件にしていたが、本プロジェクトの目的は
 > **「落下地点を予測し、残された時間内にキャッチ可能範囲へ到達すること」**であって指定速度の達成ではない。
@@ -334,8 +334,11 @@ PWM_MAX = min(1.0, 12.0 / measured_battery_voltage)
 - **逆運動学（3輪オムニ）**: 目標並進速度 (vx, vy) と回転 ω から各輪速度を算出。
   w1, w2, w3 = 各輪の接線方向単位ベクトルと (vx, vy) の内積 ＋ ω·R。3輪120°配置の標準式。
 - **制御ループ**: エンコーダPID（各輪速度制御）→ 上位で目標座標への位置制御。
-- **ESP32リソース**: PCNTユニット3つ（エンコーダ）＋ LEDC（3モータ分の PWM / 方向）。ESP-NOW受信と両立可。
+- **ESP32リソース**: PCNTユニット3つ（エンコーダ）＋ LEDC（3モータ分の PWM / 方向）＋ 目標座標の受信。
   負荷が厳しければ制御を FreeRTOS タスク分離、または駆動用に別MCU（RP2040等）を検討。
+  ⚠️ **受信方式は未確定**（ESP-NOW / UDP / Serial 等）。固定側は Raspberry Pi 4 のため、
+  **ESP-NOW を Pi から直接使える前提にしない**（[development-environment.md §9.2](./development-environment.md#92-通信方式候補を残す)）。
+  受信するのは目標座標・到達時刻等の**小さなデータのみ**で、画像・Depth フレームは受信しない。
 - **安全系の実装優先度**: ①モータロック保護（§5）→ ②LiPo低電圧保護（§9.2）→ ③PWM上限（§9.3）。
   M2 の走行試験より先に①②を入れておく。
 
