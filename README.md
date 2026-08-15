@@ -49,9 +49,13 @@ Pi で記録した実データは WSL へ持ち帰り、繰り返し解析する
 | ドキュメント | 内容 |
 |---|---|
 | [docs/requirements.md](./docs/requirements.md) | 共通要件定義（機能要件・性能要件・マイルストーン） |
+| [docs/original-features.md](./docs/original-features.md) | **本プロジェクト独自機能の方針**（シミュレータ / テレメトリ / 投擲アーカイブ） |
 | [docs/development-environment.md](./docs/development-environment.md) | 開発環境・実行環境の方針、責務分担、実機 TODO |
 | [docs/drivetrain-spec.md](./docs/drivetrain-spec.md) | 駆動系詳細仕様（3輪オムニ・モータ・電源・保護） |
 | [docs/bom.md](./docs/bom.md) | 部品表 |
+
+仕様策定には [cc-sdd](https://github.com/gotalab/cc-sdd)（Kiro 式 Spec-Driven Development）を導入している。
+プロジェクト知識は `.kiro/steering/`、個別機能の仕様は `.kiro/specs/` に置く。
 
 ---
 
@@ -59,9 +63,12 @@ Pi で記録した実データは WSL へ持ち帰り、繰り返し解析する
 
 数値・方式の多くは**実測してから決める**方針であり、確定値として扱わない。
 
+- **World frame の原点・軸方向とキャリブレーション手順**（未定義のまま M3 に進めない）
+- **対象とするゴミの種類・寸法**（位置精度の許容値がこれに依存する）
 - Raspberry Pi 4 の OS、RealSense の解像度・fps 設定
 - 物体検出方式（AIモデルを最初から必須にしない）
 - 固定側 → 移動体の通信方式
 - 移動体の短時間移動性能（M2 で実測）
+- 独自機能をどこまで作るか（[docs/original-features.md](./docs/original-features.md)）
 
 詳細は各ドキュメントの未確定事項セクションを参照。

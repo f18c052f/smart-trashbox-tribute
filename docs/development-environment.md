@@ -1,12 +1,19 @@
-# 開発環境・実行環境 方針 v0.1
+# 開発環境・実行環境 方針 v0.2
 
-要件定義: [requirements.md](./requirements.md) / 駆動系詳細: [drivetrain-spec.md](./drivetrain-spec.md) / 部品表: [bom.md](./bom.md)
+要件定義: [requirements.md](./requirements.md) / 駆動系詳細: [drivetrain-spec.md](./drivetrain-spec.md) / 部品表: [bom.md](./bom.md) / 独自機能: [original-features.md](./original-features.md)
 
 > **本ドキュメントの位置付け**
 > 「**今後どの環境で、どの責務の処理を実行するか**」を整理したもの。
 > 記載内容は**方針であり、実装ではない**。本ドキュメント作成時点でソフトウェアは一行も存在しない。
 > 数値（解像度・fps・レイテンシ等）は**すべて評価候補であり、達成済み性能でも必須性能でもない**。
 > 実測して初めて確定する（→ [§13](#13-raspberry-pi-4-を継続するかの判断)）。
+
+> **v0.1 からの変更（v0.2）**
+> - §7 の入力層に **simulated data** を追加（[original-features.md](./original-features.md) 柱1）。
+> - §7.1 のリポジトリ構成を現状（`.kiro/` `.claude/` の追加）に合わせて更新。
+> - **§13.3 を新設**: §13.1 の実測項目を「どう収集するか」が未定義だった点を明示し、
+>   計測の追加が計測対象を歪めない条件を記載。
+> - §15 の「Record / Replay のデータ形式」を Throw Record スキーマと一体で決める方針へ変更。
 
 ---
 
@@ -148,8 +155,13 @@ Pi 4 は計算資源に余裕が大きくないため、今後のソフトウェ
 > Raspberry Pi 4 上で **capture FPS / processing FPS / end-to-end latency / dropped frame** を
 > 実測してから決定する。
 
-なお [requirements.md NFR-4](./requirements.md#nfr-4-制御周期) の「≥ 60 fps 相当」は
-**要件側の目標値**であり、Pi 4 + D435 で達成可能かどうかは未検証である。両者を混同しない。
+なお [requirements.md NFR-4](./requirements.md#nfr-4-制御周期暫定目標) は v0.3 で
+「≥ 60 fps 相当」という固定値をやめ、**「必要サンプル数 ÷ 許容時間」から必要 fps を導出する**形に変更された。
+
+- したがって「60 fps ありき」で設定を選ばない。**30 fps で必要サンプル数が取れるなら 30 fps でよい。**
+- ここで比較すべきなのは fps 単体ではなく、**「許容時間内に何サンプル取れて、予測誤差がどこまで収束するか」**である。
+- 高 fps は取得サンプルを増やす一方、Pi 4 の処理落ち（dropped frame）を招けば逆効果になる。
+  **実効サンプル数**で評価すること。
 
 ---
 
@@ -208,8 +220,14 @@ trajectory prediction
 
 - **WSL** では **Recorded Data** を入力にできる
 - **Pi** では **RealSense Live Data** を入力にできる
+- （将来）**Simulated Data** を入力にできる（[original-features.md 柱1](./original-features.md#3-柱1-軌道シミュレータ-最優先候補)）
 
 という設計にする。これが [§6](#6-record--replay-を将来設計に含める) の Record / Replay を成立させる前提となる。
+
+> 入力元が3種類（live / recorded / simulated）になっても下流を変えずに済むよう、
+> **1投擲を表す共通スキーマ**を上位に置く方針を [original-features.md §2](./original-features.md#2-全体像throw-record-を中心に置く) で検討している。
+> [§15](#15-現時点で確定していること--していないこと) で「未確定」としている **Record / Replay のデータ形式**は、
+> このスキーマの定義と同じ問題である（別々に決めない）。
 
 > ⚠️ 今回は **class / interface / Python ファイル / ディレクトリを作成しない。**
 > 上記は責務分離の**設計思想**であり、具体的な型・API・モジュール名は未確定。
@@ -219,13 +237,18 @@ trajectory prediction
 参考として責務の並びだけ示す。**今回ディレクトリは作成しない**。実装着手時に改めて決める。
 
 ```
-docs/          設計ドキュメント（現在存在するのはここだけ）
+docs/          設計ドキュメント
+.kiro/         仕様駆動開発（cc-sdd）の steering / specs
+.claude/       Claude Code 用スキル定義
 （以下は将来案・未作成）
-  入力層        RealSense live / recorded data の読み出し
+  入力層        RealSense live / recorded / simulated data の読み出し
   処理層        detection / tracking / 3D position / prediction
   通信層        ESP32 への送信
   移動体側      ESP32 ファームウェア
+  観測基盤      Throw Record の記録・可視化・評価（別言語想定 → original-features.md §8）
 ```
+
+> 現時点で存在するのは `docs/` `.kiro/` `.claude/` のみ。**ソフトウェアは一行も存在しない。**
 
 ---
 
@@ -365,6 +388,18 @@ AI モデルを使用する場合も、**Pi 4 上で実測してから決定す�
 > レイテンシを段階ごとに分解して測れる構造にしておくこと（→ [§4](#4-raspberry-pi-4-向けの設計方針)）。
 > どの段階が律速かが分からないと、ハードウェア変更の判断ができない。
 
+### 13.3 これらをどう収集するか（未定）
+
+上表の項目は「測る」と決まっているだけで、**収集・保存・可視化の手段は本ドキュメントでは未定義**である。
+[original-features.md 柱2](./original-features.md#4-柱2-テレメトリとライブダッシュボードiot-的側面) で
+テレメトリ基盤として検討する。
+
+> ⚠️ **計測の追加そのものが計測対象を変えないこと。**
+> テレメトリ処理が Pi の負荷を増やせば、測りたい end-to-end latency が悪化し、
+> [§13.2](#132-性能不足だった場合の検討順序) の判断を誤らせる。
+> 送出は fire-and-forget とし、**ON / OFF でレイテンシが有意に変わらないことを実測で確認**する
+> （[original-features.md §4 制約4](./original-features.md#守るべき制約)）。
+
 ### 13.2 性能不足だった場合の検討順序
 
 **すぐにハードウェアを変更しない。** 以下を先に検討する。
@@ -434,7 +469,8 @@ Pi で得た**実データ**は WSL へ持ち帰り、Replay で繰り返し解�
 | 物体検出方式 | Pi 4 上で実測して決定 |
 | Pi → ESP32 の通信方式 | 候補（UDP / Wi-Fi / Serial / ESP32 Bridge）から後日決定 |
 | 通信メッセージの最終フォーマット | 実装着手時 |
-| Record / Replay のデータ形式 | 実装着手時 |
+| Record / Replay のデータ形式 | **Throw Record スキーマとして一体で決める**（[original-features.md §2](./original-features.md#2-全体像throw-record-を中心に置く)） |
+| §13.1 の実測項目をどう収集・保存・可視化するか | [original-features.md 柱2](./original-features.md#4-柱2-テレメトリとライブダッシュボードiot-的側面) で検討 |
 | Pi 4 で必要性能を達成できるか | 実測（§13.1）で判断 |
 | リポジトリのディレクトリ構成 | 実装着手時 |
 
