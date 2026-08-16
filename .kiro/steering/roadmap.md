@@ -10,7 +10,7 @@
 | ドキュメント | `docs/` 7ファイル、steering 4ファイル（本ファイル含む）が整備済み |
 | Spec | roadmap の7件すべてに `brief.md` のみ存在。**requirements / design / tasks は未生成** |
 | 実機 | **Raspberry Pi 4 / RealSense D435 ともに未セットアップ**（OS 未導入） |
-| ブランチ | `main` がトランク。GitHub のデフォルトブランチ切替は**未完** |
+| ブランチ | **`main` の単一ブランチ**。GitHub のデフォルトも `main`。整備完了済み |
 
 ### 次のアクション
 
@@ -19,6 +19,23 @@
 2. 1 の粒度に納得できたら **`/kiro-spec-batch`** で残りを生成
    （`simulator-visualization` は除外してよい。急がない）
 3. 並行して**実機セットアップ**（`development-environment.md §16` の手順。#3〜#6 を fps 計測より先に）
+
+> ⚠️ **1 を飛ばして batch しない。** `prediction-core` と `sensing-foundation` は
+> どちらも Wave 0（依存なし）だが、**Throw Record スキーマは前者が定義し後者が従う**関係にある。
+> 同時生成すると「別々に決めない」という約束が破れる。
+
+### ブランチ運用
+
+- **トランクは `main`。** 新しい作業は main から `spec/<feature>` 形式で切る
+- Spec 単位で並列実装する場合は `git worktree` を使う
+
+  ```
+  git worktree add ../stb-<feature> -b spec/<feature>
+  ```
+
+- ただし**実機を要する Spec はハード待ちで並列化できない**。
+  現時点でハード不要なのは `prediction-core` と `trajectory-simulator` のみ
+- **Spec 生成（`/kiro-spec-batch`）に worktree は不要**。1ツリー内でサブエージェントが並列化する
 
 ### 引き継ぎ時の読み込み順
 
