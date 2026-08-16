@@ -1,5 +1,36 @@
 # Roadmap
 
+## 現在地（最終更新: 2026-08-16）
+
+> **セッションをまたぐ引き継ぎはこの節を正とする。** 作業が進んだら必ずここを更新する。
+
+| 項目 | 状態 |
+|---|---|
+| フェーズ | **Spec 作成前。実装コードは一行も無い** |
+| ドキュメント | `docs/` 7ファイル、steering 4ファイル（本ファイル含む）が整備済み |
+| Spec | roadmap の7件すべてに `brief.md` のみ存在。**requirements / design / tasks は未生成** |
+| 実機 | **Raspberry Pi 4 / RealSense D435 ともに未セットアップ**（OS 未導入） |
+| ブランチ | `main` がトランク。GitHub のデフォルトブランチ切替は**未完** |
+
+### 次のアクション
+
+1. **`/kiro-spec-init prediction-core`** — ハード不要で唯一すぐ着手できる。
+   ここで Throw Record 最小スキーマ（OQ-31）が決まり、`sensing-foundation` がそれに従う
+2. 1 の粒度に納得できたら **`/kiro-spec-batch`** で残りを生成
+   （`simulator-visualization` は除外してよい。急がない）
+3. 並行して**実機セットアップ**（`development-environment.md §16` の手順。#3〜#6 を fps 計測より先に）
+
+### 引き継ぎ時の読み込み順
+
+1. 本ファイルのこの節（現在地）
+2. `.kiro/steering/product.md` / `tech.md` / `structure.md`（自動で読み込まれる）
+3. 着手する Spec の `.kiro/specs/<name>/brief.md`
+4. 必要に応じて `docs/open-questions.md`（未決事項の唯一の正）
+
+**`docs/` 全文を毎回読まない。** 必要になった箇所だけ参照する。
+
+---
+
 ## Overview
 
 **M1「予測の可視化」と、柱1「軌道シミュレータ」を2トラック並行で進める。**
