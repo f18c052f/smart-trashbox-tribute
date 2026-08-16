@@ -46,13 +46,25 @@ Pi で記録した実データは WSL へ持ち帰り、繰り返し解析する
 
 ## ドキュメント
 
+### 仕様書（現在の状態）
+
 | ドキュメント | 内容 |
 |---|---|
 | [docs/requirements.md](./docs/requirements.md) | 共通要件定義（機能要件・性能要件・マイルストーン） |
-| [docs/original-features.md](./docs/original-features.md) | **本プロジェクト独自機能の方針**（シミュレータ / テレメトリ / 投擲アーカイブ） |
-| [docs/development-environment.md](./docs/development-environment.md) | 開発環境・実行環境の方針、責務分担、実機 TODO |
-| [docs/drivetrain-spec.md](./docs/drivetrain-spec.md) | 駆動系詳細仕様（3輪オムニ・モータ・電源・保護） |
-| [docs/bom.md](./docs/bom.md) | 部品表 |
+| [docs/drivetrain-spec.md](./docs/drivetrain-spec.md) | 駆動系詳細仕様（3輪オムニ・モータ・電源・保護・手動テレオペ） |
+| [docs/bom.md](./docs/bom.md) | 部品表（**型番・数量の正**） |
+| [docs/development-environment.md](./docs/development-environment.md) | 開発環境・実行環境の方針、責務分担、実機セットアップ手順 |
+| [docs/original-features.md](./docs/original-features.md) | **本プロジェクト独自機能の方針**（シミュレータ / ロギング / 手動テレオペ） |
+
+### 横断ファイル
+
+| ドキュメント | 内容 |
+|---|---|
+| [docs/open-questions.md](./docs/open-questions.md) | **未決事項の唯一の正**（OQ-01〜OQ-40） |
+| [docs/decisions.md](./docs/decisions.md) | **決定と不採用案の記録**（方針転換の経緯・旧案アーカイブ） |
+
+各仕様書は「**現在どうなっているか**」だけを書く。
+未決事項は `open-questions.md`、変更の経緯と不採用案は `decisions.md` に集約している。
 
 仕様策定には [cc-sdd](https://github.com/gotalab/cc-sdd)（Kiro 式 Spec-Driven Development）を導入している。
 プロジェクト知識は `.kiro/steering/`、個別機能の仕様は `.kiro/specs/` に置く。
@@ -62,13 +74,16 @@ Pi で記録した実データは WSL へ持ち帰り、繰り返し解析する
 ## 現時点で確定していない主な事項
 
 数値・方式の多くは**実測してから決める**方針であり、確定値として扱わない。
+全40件を [docs/open-questions.md](./docs/open-questions.md) に集約している。以下は特に依存の多いもの。
 
-- **World frame の原点・軸方向とキャリブレーション手順**（未定義のまま M3 に進めない）
-- **対象とするゴミの種類・寸法**（位置精度の許容値がこれに依存する）
-- Raspberry Pi 4 の OS、RealSense の解像度・fps 設定
-- 物体検出方式（AIモデルを最初から必須にしない）
-- 固定側 → 移動体の通信方式
-- 移動体の短時間移動性能（M2 で実測）
-- 独自機能をどこまで作るか（[docs/original-features.md](./docs/original-features.md)）
+| ID | 事項 |
+|---|---|
+| [OQ-01](./docs/open-questions.md#a-システム設計成功条件) | **投擲レイアウト**（成功条件を数値化するために必要） |
+| [OQ-02](./docs/open-questions.md#a-システム設計成功条件) | **対象とするゴミの種類・寸法**（位置精度の許容値がこれに依存する） |
+| [OQ-03](./docs/open-questions.md#a-システム設計成功条件) | **World frame の原点・軸方向とキャリブレーション手順**（未定義のまま M3 に進めない） |
+| [OQ-13](./docs/open-questions.md#c-電源安全) | 物理的な非常停止手段 |
+| [OQ-27](./docs/open-questions.md#e-固定側検出予測計算機) | Raspberry Pi 4 で必要性能を達成できるか |
+| [OQ-29](./docs/open-questions.md#f-通信) | 固定側 → 移動体の通信方式 |
 
-詳細は各ドキュメントの未確定事項セクションを参照。
+**最も早く着手すべきは OQ-01 と OQ-02。** どちらも軌道シミュレータの入力そのものであり、
+**実機を待たずに仮値を置ける。**
