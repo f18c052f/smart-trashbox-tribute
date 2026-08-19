@@ -1,28 +1,38 @@
 # Roadmap
 
-## 現在地（最終更新: 2026-08-16）
+## 現在地（最終更新: 2026-08-20）
 
 > **セッションをまたぐ引き継ぎはこの節を正とする。** 作業が進んだら必ずここを更新する。
 
 | 項目 | 状態 |
 |---|---|
-| フェーズ | **Spec 作成前。実装コードは一行も無い** |
+| フェーズ | **`prediction-core` の Spec が3フェーズとも承認済み。実装コードはまだ一行も無い** |
 | ドキュメント | `docs/` 7ファイル、steering 4ファイル（本ファイル含む）が整備済み |
-| Spec | roadmap の7件すべてに `brief.md` のみ存在。**requirements / design / tasks は未生成** |
+| Spec | **`prediction-core` のみ requirements / design / tasks が揃い承認済み**（`ready_for_implementation: true`）。残り6件は `brief.md` のみ |
 | 実機 | **Raspberry Pi 4 / RealSense D435 ともに未セットアップ**（OS 未導入） |
-| ブランチ | **`main` の単一ブランチ**。GitHub のデフォルトも `main`。整備完了済み |
+| ブランチ | `main` から **`spec/prediction-core`** を作業中 |
 
 ### 次のアクション
 
-1. **`/kiro-spec-init prediction-core`** — ハード不要で唯一すぐ着手できる。
-   ここで Throw Record 最小スキーマ（OQ-31）が決まり、`sensing-foundation` がそれに従う
-2. 1 の粒度に納得できたら **`/kiro-spec-batch`** で残りを生成
-   （`simulator-visualization` は除外してよい。急がない）
+1. **`/kiro-impl prediction-core`** — 19 サブタスク。ハード不要・依存ゼロで完走できる
+2. 実装完了後に **`/kiro-spec-batch`** で残りを生成。
+   **OQ-31（Throw Record 最小スキーマ）は `prediction-core` の design で決着済み**なので、
+   `sensing-foundation` を同時生成してよい（「別々に決めない」の制約はすでに満たされている）
 3. 並行して**実機セットアップ**（`development-environment.md §16` の手順。#3〜#6 を fps 計測より先に）
 
-> ⚠️ **1 を飛ばして batch しない。** `prediction-core` と `sensing-foundation` は
-> どちらも Wave 0（依存なし）だが、**Throw Record スキーマは前者が定義し後者が従う**関係にある。
-> 同時生成すると「別々に決めない」という約束が破れる。
+### `prediction-core` の設計上の要点（引き継ぎ用）
+
+- **実行時のサードパーティ依存ゼロ。** 最小二乗は閉形式で解けるため NumPy を採用していない。
+  理由は速度ではなく、BLAS 実装差による非決定性が Replay 再現（要件 9.4）を弱めるため
+- **Throw Record は `schema_version` 1.0。** 下流はこれに従い、独自スキーマを定義しない
+- **依存方向**: units/errors → types → config → fitting・impact → predictor → **record** → tracker → `__init__`。
+  `record` を `tracker` より下層に置くのは、スキーマ単体を import できるようにするため
+- 未決のまま残しているもの: **OQ-40**（全体のディレクトリ構成。本 Spec は `src/prediction_core/` のみ確定）、
+  **OQ-41**（Python の環境構築・パッケージ管理。第一候補は uv だが実機まで確定させない）
+
+> ⚠️ **`docs/requirements.md §3` の時間予算表はまだ更新していない。**
+> 逐次予測（初回予測 → 駆動開始 → 以降更新）を前提に読み替える必要があるが、
+> **M1 の実測値と合わせて `m1-prediction-validation` で更新する**（`prediction-core/requirements.md` D-1）。
 
 ### ブランチ運用
 
