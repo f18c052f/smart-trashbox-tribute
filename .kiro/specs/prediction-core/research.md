@@ -260,6 +260,25 @@
 - **Trade-offs**: 「一致」の定義が API に現れるため、利用側が定義を知る必要がある。
 - **Follow-up**: なし。
 
+### Decision: `record` を `tracker` より下層に置く
+
+- **Context**: 初版の設計では `record` が `tracker` を import する層順（tracker=L5, record=L6）にしていたが、
+  `ThrowPredictionTracker.to_record()` が `ThrowRecord` を返す以上、**L5 から L6 への逆方向 import が必要になり循環する**。
+  タスク分解の段階でこの矛盾が表面化した。
+- **Alternatives Considered**:
+  1. `to_record()` を Tracker から外し、`record` 側に `ThrowRecord.from_tracker(tracker)` を置く（層順は維持）
+  2. 層順を入れ替え、`record` を L5・`tracker` を L6 とする。`replay()` は Tracker を使わず `predict()` を前置列に適用する
+- **Selected Approach**: 2 を採用。
+- **Rationale**:
+  - `ThrowRecord` は下流 Spec が参照する**単一定義元**（要件 9.7）である。1 を採ると
+    `sensing-foundation` がスキーマを import しただけで逐次蓄積器まで引きずり込まれる。
+  - `replay()` の意味は「記録順の前置列それぞれに `predict()` を適用する」ことであり、
+    Tracker は本来不要だった。Tracker は蓄積の器にすぎず、計算を持たない（[[#Decision-推定器は純関数]] と同じ理由）。
+  - 結果として `record` は `predictor` までにしか依存せず、スキーマ層が最も薄くなる。
+- **Trade-offs**: `replay()` と `Tracker.add_sample()` が「前置列に predict を適用する」という同じ意味を
+  別経路で持つ。両者の一致は要件 9.4 のテスト（`predictions_equivalent`）で継続的に担保する。
+- **Follow-up**: 実装時、`record` が `tracker` を import していないことを依存ゼロの回帰テストとあわせて検査する。
+
 ### Decision: ディレクトリ構成は `src/prediction_core/` に限定して確定する
 
 - **Context**: OQ-40（リポジトリのディレクトリ構成）は未決。

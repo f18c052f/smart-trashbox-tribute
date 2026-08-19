@@ -144,12 +144,12 @@ graph LR
     Units --> Impact
     Fitting --> Predictor
     Impact --> Predictor
-    Predictor --> Tracker
     Predictor --> Record
-    Tracker --> Record
     Errors --> Record
-    Tracker --> PublicApi
+    Predictor --> Tracker
+    Record --> Tracker
     Record --> PublicApi
+    Tracker --> PublicApi
 ```
 
 > 矢印は「矢先のモジュールが矢元のモジュールを import してよい」ことを表す。上図に無い辺は禁止である。
@@ -162,12 +162,15 @@ graph LR
 | 3 | `fitting` | `units`, `types`, `config` |
 | 3 | `impact` | `units`, `types` |
 | 4 | `predictor` | 0〜3 |
-| 5 | `tracker` | 0〜4 |
-| 6 | `record` | 0〜5 |
+| 5 | `record` | 0〜4 |
+| 6 | `tracker` | 0〜5 |
 | 7 | `__init__` | 0〜6（再エクスポートのみ。ロジックを持たない） |
 
 > `fitting` と `impact` は**同一階層で互いに独立**であり、相互に import しない。両者を結び付けるのは `predictor` だけである。この分離により、交点算出のテストが推定器を経由せずに書ける。
 > `impact` が `config` を import しないのも意図的である。重力加速度は引数として受け取り、設定オブジェクトへの依存を持たない純関数に保つ。
+> **`record` を `tracker` より下層に置くのも意図的である。** `ThrowRecord` は下流 Spec が参照する単一定義元（要件 9.7）であり、
+> スキーマを import しただけで逐次蓄積器まで引きずり込まれる状態を避ける。したがって `replay()` は Tracker を使わず、
+> 記録順の前置列に `predict()` を適用して系列を再構成する。
 
 ### Technology Stack
 
@@ -199,8 +202,8 @@ src/
     ├── fitting.py                      # 閉形式最小二乗による軌道パラメータ推定と残差算出（要件 2）
     ├── impact.py                       # 平面 z=0 との未来側交点の算出（要件 3.2）
     ├── predictor.py                    # predict()。入力検証 -> fit -> impact -> 計測 -> PredictionOutcome 組み立て（要件 1, 6, 8）
-    ├── tracker.py                      # ThrowPredictionTracker。逐次蓄積と予測系列（要件 4, 5）
-    └── record.py                       # ThrowRecord・直列化・復元・replay・predictions_equivalent（要件 9）
+    ├── record.py                       # ThrowRecord・直列化・復元・replay・predictions_equivalent（要件 9）
+    └── tracker.py                      # ThrowPredictionTracker。逐次蓄積と予測系列（要件 4, 5）
 tests/
 └── prediction_core/
     ├── conftest.py                     # 共通フィクスチャ（既定 PredictionConfig 等）
@@ -213,13 +216,16 @@ tests/
     ├── test_tracker.py                 # 初回予測のタイミング、予測系列、逐次更新
     ├── test_record.py                  # to_dict/from_dict 往復、JSON 往復、未知キー保存、非有限値の拒否
     ├── test_replay.py                  # 記録した系列の再現（要件 9.4）
-    └── test_error_behavior.py          # サンプル数と予測誤差の関係（要件 7.3 / 7.4）
+    ├── test_analytic_e2e.py            # 既知放物線の end-to-end 一致（要件 7.2）
+    ├── test_error_behavior.py          # サンプル数と予測誤差の関係（要件 7.3 / 7.4）
+    └── test_boundaries.py              # 依存ゼロと依存方向の逆流を静的に検査（要件 1.5 / 7.1 / 8.2 / 9.5）
 ```
 
 ### Modified Files
 
 なし。すべて新規作成である（既存コードは存在しない）。
 
+> 並行実装の安全性のため、**E2E・評価系のテストは1タスク1ファイルに分離する**（`test_analytic_e2e.py` / `test_error_behavior.py` / `test_boundaries.py`）。同一ファイルを複数タスクが同時に触らないようにするため。
 > `errors.py` は `types.py` と分けている。例外は「予測の結果」ではなく「呼び出し方の誤り」を表す別カテゴリであり、`types.py` の直和型と混在させると要件 6.7 の意図（無効は値、設定不正は例外）が読みづらくなるため。
 > `tests/prediction_core/analytic.py` は**テストツリーにのみ置く**。ノイズ生成・投擲物理は `trajectory-simulator` の責務であり、パッケージ本体に持ち込まない（Out of Boundary）。
 
@@ -358,8 +364,8 @@ sequenceDiagram
 | TrajectoryFitter | L3 推定 | 閉形式最小二乗と残差算出 | 2.1, 2.2, 2.3, 2.4, 6.2, 10.2 | CoreTypes (P0), PredictionConfig (P0) | Service |
 | ImpactSolver | L3 交点 | 平面 z=0 の未来側最早交点 | 3.2, 3.4, 6.3 | CoreTypes (P0), Units (P0) | Service |
 | Predictor | L4 統合 | 入力検証・推定・交点・計測の統合 | 1.3, 1.4, 3.3, 3.5, 6.1-6.7, 8.1, 8.3 | TrajectoryFitter (P0), ImpactSolver (P0) | Service |
-| ThrowPredictionTracker | L5 状態 | 逐次蓄積と予測系列の保持 | 4.1, 4.2, 5.1, 5.2, 7.3, 7.4 | Predictor (P0) | Service, State |
-| ThrowRecordCodec | L6 記録 | Throw Record の定義・直列化・Replay | 9.1-9.7 | ThrowPredictionTracker (P0), Predictor (P0) | Service, Batch |
+| ThrowRecordCodec | L5 記録 | Throw Record の定義・直列化・Replay | 9.1-9.7 | Predictor (P0), Errors (P0) | Service, Batch |
+| ThrowPredictionTracker | L6 状態 | 逐次蓄積と予測系列の保持 | 4.1, 4.2, 5.1, 5.2, 7.3, 7.4 | Predictor (P0), ThrowRecordCodec (P0) | Service, State |
 | PublicApi | L7 公開 | 公開シンボルの単一入口 | 9.7 | L0〜L6 (P0) | Service |
 
 ### L0-L2 基盤層
@@ -683,7 +689,7 @@ def solve_floor_impact(
 **Dependencies**
 
 - Inbound: ThrowPredictionTracker — 逐次更新時の呼び出し (P0)
-- Inbound: ThrowRecordCodec — Replay 時の呼び出し (P0)
+- Inbound: ThrowRecordCodec — Replay 時の前置列に対する呼び出し (P0)
 - Outbound: TrajectoryFitter — 軌道推定 (P0)
 - Outbound: ImpactSolver — 交点算出 (P0)
 - External: `time.perf_counter_ns` — 経過時間の計測 (P1)
@@ -738,8 +744,8 @@ def predict(
 **Dependencies**
 
 - Inbound: 利用側（`m1-prediction-validation` / `trajectory-simulator`） (P0)
-- Inbound: ThrowRecordCodec — Replay 時の再構成 (P1)
 - Outbound: Predictor — 予測の実行 (P0)
+- Outbound: ThrowRecordCodec — `to_record()` が返す `ThrowRecord` の構築 (P0)
 
 **Contracts**: Service [x] / API [ ] / Event [ ] / Batch [ ] / State [x]
 
@@ -814,8 +820,8 @@ class ThrowPredictionTracker:
 - Inbound: `sensing-foundation` — 記録形式（OQ-32）が本スキーマに従う (P0)
 - Inbound: `m1-prediction-validation` — 評価入力 (P0)
 - Inbound: `trajectory-simulator` — 合成データの記録 (P1)
-- Outbound: ThrowPredictionTracker — Replay 時の系列再構成 (P0)
 - Outbound: Predictor — Replay 時の予測実行 (P0)
+- Outbound: Errors — スキーマ不整合・直列化不能の送出 (P0)
 - External: 標準ライブラリ `json` — 文字列との相互変換 (P1)
 
 **Contracts**: Service [x] / API [ ] / Event [ ] / Batch [x] / State [ ]
@@ -853,7 +859,7 @@ def predictions_equivalent(
 ##### Batch / Job Contract
 
 - Trigger: 利用側が明示的に `replay(record)` を呼ぶ。スケジュールや常駐は無い
-- Input / validation: `record.samples` を `record.config` で再入力する。`ThrowPredictionTracker` を新規に構成し、記録順に `add_sample` する
+- Input / validation: `record.samples` を記録順の**前置列**（1点目、1〜2点目、…、全点）に分け、それぞれへ `record.config` で `predict()` を適用する。**Tracker には依存しない**
 - Output / destination: `tuple[PredictionOutcome, ...]` を返すのみ。書き込み先を持たない
 - Idempotency & recovery: `replay` は副作用を持たず、何度呼んでも同じ結果を返す
 
@@ -993,9 +999,9 @@ def predictions_equivalent(
 
 ### E2E / 評価テスト
 
-1. **既知放物線の end-to-end 一致**（`test_error_behavior.py`）— 落下地点・落下時刻が解析的に既知の投擲を複数パターン（水平投射・斜方投射・高い/低い初期高度）与え、`predict` の出力が丸め誤差の範囲で解析値と一致すること（要件 7.2）
+1. **既知放物線の end-to-end 一致**（`test_analytic_e2e.py`）— 落下地点・落下時刻が解析的に既知の投擲を複数パターン（水平投射・斜方投射・高い/低い初期高度）与え、`predict` の出力が丸め誤差の範囲で解析値と一致すること（要件 7.2）
 2. **サンプル数と予測誤差の関係**（`test_error_behavior.py`）— 既知の放物線に決定的な擬似乱数（`random.Random(seed)`）でノイズを重畳し、サンプル数を 3 → n と増やした予測系列を取得する。各予測の `sample_count` / `residual` / 落下地点誤差が同一系列から取り出せること。**誤差が単調減少することは合否条件にしない**（`tech.md` 開発標準1）。検証するのは評価に必要な出力が揃っていることである（要件 7.3 / 7.4）
-3. **依存ゼロの回帰テスト**（`test_error_behavior.py`）— `src/prediction_core/**` の import 文を走査し、標準ライブラリ許可リスト外が無いことを静的に検証する。要件 1.5 / 7.1 / 8.2 を構造として守るための歯止め
+3. **境界と依存ゼロの回帰テスト**（`test_boundaries.py`）— `src/prediction_core/**` の import 文を走査し、標準ライブラリ許可リスト外が無いこと、および `record` が `tracker` を import していない（依存方向の逆流が無い）ことを静的に検証する。要件 1.4 / 1.5 / 7.1 / 8.2 / 9.5 を構造として守るための歯止め
 
 ### Performance
 
