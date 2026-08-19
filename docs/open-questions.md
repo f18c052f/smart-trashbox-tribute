@@ -74,12 +74,13 @@
 
 | ID | 事項 | 決め方・確定条件 | 期限 |
 |---|---|---|---|
-| **OQ-23** | **Pi 4 の OS**（Raspberry Pi OS 64-bit / Ubuntu 24.04 LTS arm64） | 実機セットアップ時、**RealSense（librealsense / pyrealsense2）の導入容易性**で判断 | セットアップ時 |
+| **OQ-23** | **Pi 4 の OS**（Raspberry Pi OS 64-bit / Ubuntu 24.04 LTS arm64） | 実機セットアップ時、**RealSense（librealsense / pyrealsense2）の導入容易性**で判断。⚠️ **調査済み: どちらの OS でも librealsense のソースビルドが必要**（pyrealsense2 の公式 pip wheel は x86/x64 のみで aarch64 版が無い）。また `-DFORCE_RSUSB_BACKEND=ON` でカーネルパッチが不要になるため、**Ubuntu 有利の最大の論点だった「Pi OS はカーネルパッチが当たらない」が消える。**残る差は二次的なので、**Pi ハード層の未知数が少ない Raspberry Pi OS 64-bit を先に試し、librealsense のビルドが通らなければ Ubuntu 24.04 LTS へ退避**する。→ 環境構築手段は OQ-41 | セットアップ時 |
 | **OQ-24** | **Pi 4 の RAM 容量**の確認 | 実機確認 | セットアップ時 |
 | **OQ-25** | **RealSense の解像度・fps 設定** | Pi 4 上で実測。⚠️ **fps 単体で比較しない。**「許容時間内に何サンプル取れて、予測誤差がどこまで収束するか」＝**実効サンプル数**で評価する（高 fps は dropped frame を招けば逆効果） | Pi 4 実測後 |
 | **OQ-26** | **物体検出方式** | Pi 4 上で実測して決定。**AIモデルを最初から必須にしない**（Depth差分・背景差分・フレーム間差分・ROI・輪郭抽出等の軽量方式も候補） | Pi 4 実測後 |
 | **OQ-27** ★ | **Pi 4 で必要性能を達成できるか**（＝ Pi 4 を継続するか） | [§13.1](./development-environment.md#131-実測する項目) の段階別レイテンシ実測で判断。**ハード変更の前に [§13.2](./development-environment.md#132-性能不足だった場合の検討順序) の設定・ソフト改善を先に試す** | Pi 4 実測後 |
 | **OQ-28** | **RealSense 実機セットアップの成立性**（D435 の認識・USB3 接続・給電安定性・SDK 導入手順） | 実機セットアップ時。⚠️ **fps 計測より先に確認する**（USB3 帯域と給電の影響を受けやすいため、切り分けが楽になる） | セットアップ時 |
+| **OQ-41** | **Python の環境構築・パッケージ管理方法**（uv / venv+pip / apt / その他） | 実装着手時。⚠️ **Bookworm 以降は PEP 668 により venv が必須**（`pip install` がシステム全体に対して拒否される）。⚠️ **pyrealsense2 はパッケージマネージャで解決できない**（librealsense のソースビルドが吐く `.so` として現れる）ため、**依存表に書けない**。`--system-site-packages` で venv を作るか `.so` を venv へ配置するかを含めて決める。現状の第一候補は **uv**（aarch64 対応・単体バイナリ・`uv.lock` で WSL と Pi の環境を固定できる）だが、**Pi 上でのビルド事情（OpenCV 等を apt で入れるか pip で入れるか）**が判断材料になるため実機まで確定させない。⚠️ **`prediction-core` は依存ゼロで設計されており、この決着を待たない** | 実装着手時 |
 
 ## F. 通信
 
