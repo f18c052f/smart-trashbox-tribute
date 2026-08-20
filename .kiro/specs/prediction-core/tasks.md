@@ -76,7 +76,7 @@
   - _Depends: 1.6_
   - _Boundary: TrajectoryFitter_
 
-- [ ] 2.2 (P) 床面との未来側最早交点の算出を実装する
+- [x] 2.2 (P) 床面との未来側最早交点の算出を実装する
   - 床面は z = 0 固定とし、床平面パラメータを引数に取らない（床平面の推定を責務に含めない）
   - 判別式を評価し、桁落ちに強い形式の根の公式で2根を求める
   - 最新観測時刻より**真に大きい**根のうち最小のものを落下点として選ぶ
@@ -229,3 +229,6 @@
   `AnalyticFloorImpact(hit_x_mm, hit_y_mm, hit_time_ms)`。`analytic_floor_impact(trajectory, after_time_ms) -> AnalyticFloorImpact | None`（最も早い未来根、無ければ None）。
 - **1.6**: レビュー1巡目で「重力項が t>0 で未検証」「根が2つある場合の最早選択が未検証」の2件が REJECTED。**後続タスクでもオラクル的なテストヘルパを書く際は、単一のハッピーパスだけでなく分岐（複数根・境界値）を実際に作るフィクスチャで検証すること。**
 - **2.1**: `TrajectoryParameters` の `x0_mm`/`y0_mm`/`z0_mm`/`estimated_v*_mm_s` は **`t_ref_ms`（サンプル最小時刻）時点の値**であり、`t=0` 時点の値ではない。`tests/prediction_core/analytic.py` の `KnownTrajectory` は `t=0` 基準なので、テストで比較する際は `KnownTrajectory.position_at_ms(t_ref_ms)` で評価してから比較すること。**混同すると本番コードではなくテスト側が壊れる**（2.1 実装時に一度混同しかけた）。
+- **2.2**: `units.py` に mm/s → 内部 mm/ms の逆変換が存在しないため、`impact.py` は**秒単位で直接計算**する（`trajectory.estimated_v*_mm_s` と `gravity_mm_s2` を外部単位のまま使い、ms↔s の境界のみ `units.MS_PER_S` で変換）。`fitting.py` の内部 mm/ms 方式とは異なるが、両者は同一階層で独立しており import し合わないため問題ない。
+- **2.2**: `solve_floor_impact` は bare な `InvalidReason` を返すのみ。design.md が言う「detail 文字列での区別」は**タスク 3.2（Predictor）の責務**（`InvalidPrediction.detail` の構築時）。
+- **2.2**: タスク文の2シナリオ（過去/未来根・判別式負）はどちらも未来根が1つしかなく、根の選択ロジック（min/max）や境界（`>` vs `>=`）を検証できない。**「複数の未来根を持つフィクスチャ」を明示的に作ること**（タスク 1.6 の教訓と同型）。
