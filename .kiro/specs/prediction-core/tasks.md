@@ -40,7 +40,7 @@
   - _Depends: 1.2_
   - _Boundary: CoreTypes_
 
-- [ ] 1.5 設定オブジェクトと構築時検証を実装する
+- [x] 1.5 設定オブジェクトと構築時検証を実装する
   - 重力加速度・最小サンプル数・計測有効フラグ・時刻縮退の相対閾値を、導出根拠つきの既定値で公開する
   - 最小サンプル数が3未満、重力加速度が0以下または非有限、相対閾値が範囲外の場合は構築時に拒否する
   - 内部計算用に重力加速度を mm/ms² へ換算した参照手段を提供する
@@ -221,3 +221,5 @@
 - **1.4**: `types.py` は宣言専用で `units` を import しない。design.md の CoreTypes 依存表が不正確だったため実態に合わせて修正済み。**換算は TrajectoryFitter / ImpactSolver（タスク 2.1 / 2.2）が行う。**
 - **1.4**: `Prediction.config` の型参照は `TYPE_CHECKING` ガード内。**実行時の types → config import を作らないこと**（上向き依存かつ循環）。型検査器は 1.5 完了まで未解決 import を報告するが実行時に影響しない。
 - **1.4**: CPython 3.11 では frozen+slots dataclass への**未宣言**属性の setattr は `FrozenInstanceError` でなく `TypeError` になる。不変性のテストは宣言済みフィールドに対して行うこと。
+- **1.5**: `gravity_mm_ms2` は `units.mm_per_s2_to_mm_per_ms2` へ委譲する（自前で `/1e6` しない）。委譲テストは戻り値の数値まで見ること（呼び出しの有無だけでは不十分）。
+- **1.5**: 依存方向の訂正 — design.md の依存表は **L2 の `config` が L1 の `types` を import してよい**としている（禁止は逆方向。`types` が `config` を実行時 import すること）。以前の申し送りで逆に伝えていたため訂正する。

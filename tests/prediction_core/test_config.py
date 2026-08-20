@@ -15,15 +15,19 @@ design.md「L0-L2 基盤層 / Errors」および「Error Handling / Error Strate
 from __future__ import annotations
 
 import inspect
+import math
+from dataclasses import FrozenInstanceError
 
 import pytest
 
+from prediction_core.config import PredictionConfig
 from prediction_core.errors import (
     PredictionConfigError,
     PredictionCoreError,
     RecordSchemaError,
     RecordSerializationError,
 )
+from prediction_core.units import mm_per_s2_to_mm_per_ms2
 
 # ---------------------------------------------------------------------------
 # 例外階層（タスク 1.3 / 要件 9.3・10.3）
@@ -133,3 +137,101 @@ class TestErrorHierarchy:
         ]
 
         assert not [line for line in import_lines if "prediction_core" in line]
+
+
+# ---------------------------------------------------------------------------
+# PredictionConfig の構築時検証（タスク 1.5 / 要件 8.3・10.1・10.2・10.3・10.5）
+# ---------------------------------------------------------------------------
+
+
+class TestPredictionConfigDefaults:
+    """既定値が導出根拠どおりに固定されていること（要件 10.2 / 10.5）。
+
+    design.md の PredictionConfig パラメータ表が既定値の根拠を定めている。
+    値そのものをここで固定し、根拠のない変更が気づかれずに紛れ込むことを防ぐ。
+    """
+
+    def test_default_values_match_derivation_rationale(self) -> None:
+        config = PredictionConfig()
+
+        assert config.gravity_mm_s2 == 9806.65
+        assert config.min_samples == 3
+        assert config.measure_elapsed is True
+        assert config.time_degeneracy_rel_tol == 1.4901161193847656e-08
+
+    def test_gravity_mm_ms2_delegates_to_units_conversion(self) -> None:
+        """mm/ms^2 への換算は `units.mm_per_s2_to_mm_per_ms2` 一箇所にのみ存在する。
+
+        ここで手製の換算式（例: `/ 1e6` の直書き）を実装すると、換算係数が
+        `units.py` と `config.py` の2箇所に分裂し、要件10.5の
+        「導出根拠のない固定値を埋め込まない」という方針が崩れる。
+        """
+        config = PredictionConfig(gravity_mm_s2=12345.0)
+
+        assert config.gravity_mm_ms2 == mm_per_s2_to_mm_per_ms2(12345.0)
+
+
+class TestPredictionConfigValidation:
+    """不正な設定値が構築時に `PredictionConfigError` で拒否されること（要件10.3）。"""
+
+    @pytest.mark.parametrize("min_samples", [0, 1, 2])
+    def test_min_samples_below_three_is_rejected(self, min_samples: int) -> None:
+        """2軸の未知数2個に対し n=2 は残差自由度0の厳密解になる（要件10.2）。
+
+        メッセージにフィールド名と拒否された値の両方が含まれることも
+        あわせて確認する。値が含まれないと、複数設定を扱う利用側が
+        ログからどの値が拒否されたのか特定できない。
+        """
+        with pytest.raises(
+            PredictionConfigError, match=rf"min_samples.*{min_samples}"
+        ):
+            PredictionConfig(min_samples=min_samples)
+
+    def test_min_samples_at_lower_bound_is_accepted(self) -> None:
+        config = PredictionConfig(min_samples=3)
+
+        assert config.min_samples == 3
+
+    @pytest.mark.parametrize("gravity_mm_s2", [0.0, -9806.65])
+    def test_non_positive_gravity_is_rejected(self, gravity_mm_s2: float) -> None:
+        with pytest.raises(PredictionConfigError, match="gravity_mm_s2"):
+            PredictionConfig(gravity_mm_s2=gravity_mm_s2)
+
+    @pytest.mark.parametrize("gravity_mm_s2", [math.nan, math.inf, -math.inf])
+    def test_non_finite_gravity_is_rejected(self, gravity_mm_s2: float) -> None:
+        with pytest.raises(PredictionConfigError, match="gravity_mm_s2"):
+            PredictionConfig(gravity_mm_s2=gravity_mm_s2)
+
+    @pytest.mark.parametrize("rel_tol", [0.0, 1.0, -0.1, 1.1])
+    def test_time_degeneracy_rel_tol_outside_open_interval_is_rejected(
+        self, rel_tol: float
+    ) -> None:
+        with pytest.raises(PredictionConfigError, match="time_degeneracy_rel_tol"):
+            PredictionConfig(time_degeneracy_rel_tol=rel_tol)
+
+    @pytest.mark.parametrize("rel_tol", [math.nan, math.inf])
+    def test_non_finite_time_degeneracy_rel_tol_is_rejected(
+        self, rel_tol: float
+    ) -> None:
+        with pytest.raises(PredictionConfigError, match="time_degeneracy_rel_tol"):
+            PredictionConfig(time_degeneracy_rel_tol=rel_tol)
+
+
+class TestPredictionConfigImmutabilityAndEquality:
+    """予測結果へそのまま同梱できるための不変性・値等価性。
+
+    design.md「PredictionConfig」Responsibilities & Constraints は、
+    `frozen=True` と値等価性を予測結果への同梱の前提として要求している。
+    """
+
+    def test_config_is_frozen(self) -> None:
+        config = PredictionConfig()
+
+        with pytest.raises(FrozenInstanceError):
+            config.min_samples = 5  # type: ignore[misc]
+
+    def test_configs_with_equal_fields_are_value_equal(self) -> None:
+        assert PredictionConfig() == PredictionConfig()
+
+    def test_configs_with_different_fields_are_not_equal(self) -> None:
+        assert PredictionConfig(min_samples=3) != PredictionConfig(min_samples=4)
