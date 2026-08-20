@@ -103,7 +103,7 @@
   - _Depends: 2.1, 2.2_
   - _Boundary: Predictor_
 
-- [ ] 3.2 無効判定5種と判定順序を実装する
+- [x] 3.2 無効判定5種と判定順序を実装する
   - 入力契約違反・非有限値・サンプル数不足・時刻縮退・未来側交点なしの5理由を実装する
   - 判定順序を契約として固定し、複数条件が同時に成立する入力でも返る理由が決定的になるようにする
   - どの失敗でも例外を送出せず、無効予測を値として返す
@@ -233,3 +233,7 @@
 - **2.2**: `solve_floor_impact` は bare な `InvalidReason` を返すのみ。design.md が言う「detail 文字列での区別」は**タスク 3.2（Predictor）の責務**（`InvalidPrediction.detail` の構築時）。
 - **2.2**: タスク文の2シナリオ（過去/未来根・判別式負）はどちらも未来根が1つしかなく、根の選択ロジック（min/max）や境界（`>` vs `>=`）を検証できない。**「複数の未来根を持つフィクスチャ」を明示的に作ること**（タスク 1.6 の教訓と同型）。
 - **3.1**: `predict()` は現時点で **ハッピーパス＋2種の無効理由（DEGENERATE_TIME・NO_FUTURE_FLOOR_CROSSING）の素通しのみ**。`MALFORMED_INPUT`・`NON_FINITE_VALUE`（入力/出力とも）・`INSUFFICIENT_SAMPLES` は**未実装**（3.2 の担当）。`elapsed_ms` は無条件で `None`、`config.measure_elapsed` は未参照（3.3 の担当）。制御フローは早期リターンの線形列。**3.2 は前段に検証ステップを追加し、後段に出力有限性チェックを追加する形で拡張すること**（構造の作り直しは不要）。
+- **3.2**: `predict()` に6段階の検証順序を実装済み（1.MALFORMED_INPUT 2.NON_FINITE_VALUE入力 3.INSUFFICIENT_SAMPLES 4.DEGENERATE_TIME 5.NO_FUTURE_FLOOR_CROSSING 6.NON_FINITE_VALUE出力）。1〜3 は既存パイプラインの前段で短絡、6 は `Prediction` 組み立て後・return 前に実行。
+- **3.2**: `MALFORMED_INPUT` は `based_on_time_ms=None` 固定（型不正な要素への `.t_ms` アクセスを避けるため）。他の早期リターンは `max((s.t_ms for s in samples), default=None)` で空リストのクラッシュを防ぐ。
+- **3.2**: 出力有限性チェック（ステップ6）は `vz_mm_s=1e160` のような極端な有限入力で `(-v)*(-v)` が`OverflowError` を送出せず静かに `inf` になる（`**` とは挙動が異なる）ことを利用して実際にオーバーフローを起こし検証した。モンキーパッチに頼らず本番パイプラインを通した実例。
+- **3.2**: レビューで2点の非ブロッキングな検証ギャップが見つかった —(a) ステップ6は `trajectory` のネストしたフィールドも含むが、`gravity_mm_s2` は `PredictionConfig` の構築時検証で常に有限のため、この部分だけが壊れるケースは現行パイプラインでは自然に構成できない。(b) ステップ2の非有限値検査は t_ms 以外のフィールド単体を検証する専用テストが無く、ステップ6のセーフティネット経由でも同じ reason になるため見かけ上は通ってしまう。**将来この2つを独立に切り分けるテストを追加する余地がある。**

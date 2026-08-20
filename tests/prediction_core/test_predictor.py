@@ -1,20 +1,28 @@
-"""Predictor の統合検証（タスク 3.1 のスコープ、要件 1.1 / 1.3 / 1.4 / 3.3 / 3.5 / 10.6）。
+"""Predictor の統合検証（タスク 3.1 / 3.2 のスコープ、要件 1.1 / 1.3 / 1.4 / 3.3 / 3.5 / 6.1-6.8 / 10.6）。
 
-**このファイルはタスク 3.1 の範囲に限定する。** design.md の Predictor は
+**このファイルはタスク 3.1 / 3.2 の範囲に限定する。** design.md の Predictor は
 6 段階の検証（Sample 型チェック・有限性チェック・min_samples チェック・
-縮退・未来側交点・出力有限性チェック）と `elapsed_ms` の実測を要求するが、
-タスク 3.1 はそのうち以下だけを実装する。
+縮退・未来側交点・出力有限性チェック）と `elapsed_ms` の実測を要求する。
+
+タスク 3.1 が実装したもの:
 
 - 正常系（整形済み・有限・`len(samples) >= config.min_samples` を満たす入力）が
   `fit_trajectory` と `solve_floor_impact` を経て `Prediction` に組み立てられること
 - `fit_trajectory` / `solve_floor_impact` がそれぞれネイティブに返す
   `InvalidReason.DEGENERATE_TIME` / `InvalidReason.NO_FUTURE_FLOOR_CROSSING` を
   そのまま `InvalidPrediction` へ伝播すること
-- `elapsed_ms` は常に `None`（タスク 3.3 が実測に置き換える）
 
-`MALFORMED_INPUT` / `NON_FINITE_VALUE`（入力側・出力側の両方）/
-`INSUFFICIENT_SAMPLES` の検証、検証順序の契約、実測の `elapsed_ms` は
-タスク 3.2 / 3.3 でこのファイルに追加される。ここでは意図的にテストしない。
+タスク 3.2 が追加したもの:
+
+- 6 段階の検証順序のうち、残る 4 段階
+  (`MALFORMED_INPUT` -> `NON_FINITE_VALUE`(入力) -> `INSUFFICIENT_SAMPLES` -> ...
+  ... -> `NON_FINITE_VALUE`(出力))
+- 複数条件が同時に成立する入力でも、返る理由が検証順序どおり決定的になること
+- どの失敗でも例外を送出せず、無効予測を値として返すこと
+- 無効理由に人が読める文脈（サンプル数・時刻範囲など）を添えること
+
+`elapsed_ms` の実測はタスク 3.3 でこのファイルに追加される。ここでは意図的に
+テストしない（本ファイル中は常に `None` を期待する）。
 """
 
 from __future__ import annotations
@@ -22,6 +30,7 @@ from __future__ import annotations
 import inspect
 import math
 import random
+from unittest.mock import patch
 
 from analytic import KnownTrajectory, analytic_floor_impact, generate_samples
 
@@ -231,6 +240,205 @@ def test_predict_propagates_no_future_floor_crossing_from_solve_floor_impact() -
 
     assert isinstance(outcome, InvalidPrediction)
     assert outcome.reason is InvalidReason.NO_FUTURE_FLOOR_CROSSING
+    assert outcome.detail
+    assert outcome.sample_count == len(samples)
+    assert outcome.based_on_time_ms == max(times_ms)
+    assert outcome.elapsed_ms is None
+    assert outcome.config is config
+
+
+# ---------------------------------------------------------------------------
+# タスク 3.2: 無効判定5種と判定順序（要件 6.1-6.8）
+# ---------------------------------------------------------------------------
+
+
+def test_predict_returns_malformed_input_for_non_sample_element() -> None:
+    """要素に Sample でないものが混ざっている場合、単独条件として MALFORMED_INPUT になる（要件 6.5）。
+
+    他の条件（サンプル数・有限性）は満たしているため、この条件だけが
+    原因であることを固定する。件数は既定の min_samples（3）ちょうどに
+    そろえ、INSUFFICIENT_SAMPLES が同時に成立しないようにする。
+    """
+    samples = [
+        Sample(t_ms=0.0, x_mm=1.0, y_mm=2.0, z_mm=3.0),
+        Sample(t_ms=10.0, x_mm=4.0, y_mm=5.0, z_mm=6.0),
+        "not-a-sample",
+    ]
+    config = PredictionConfig()
+
+    outcome = predict(samples, config)  # type: ignore[arg-type]
+
+    assert isinstance(outcome, InvalidPrediction)
+    assert outcome.reason is InvalidReason.MALFORMED_INPUT
+    assert str(len(samples)) in outcome.detail
+    assert outcome.sample_count == len(samples)
+    assert outcome.based_on_time_ms is None
+    assert outcome.elapsed_ms is None
+    assert outcome.config is config
+
+
+def test_predict_returns_non_finite_value_for_non_finite_input_field() -> None:
+    """入力サンプルのいずれかのフィールドが非有限の場合、単独条件として NON_FINITE_VALUE になる（要件 6.4）。
+
+    全要素が `Sample` 型であり、件数も min_samples ちょうどであるため、
+    非有限値のみが原因であることを固定する。
+    """
+    samples = [
+        Sample(t_ms=0.0, x_mm=1.0, y_mm=2.0, z_mm=3.0),
+        Sample(t_ms=10.0, x_mm=float("nan"), y_mm=5.0, z_mm=6.0),
+        Sample(t_ms=20.0, x_mm=7.0, y_mm=8.0, z_mm=9.0),
+    ]
+    config = PredictionConfig()
+
+    outcome = predict(samples, config)
+
+    assert isinstance(outcome, InvalidPrediction)
+    assert outcome.reason is InvalidReason.NON_FINITE_VALUE
+    assert str(len(samples)) in outcome.detail
+    assert outcome.sample_count == len(samples)
+    assert outcome.based_on_time_ms == max(s.t_ms for s in samples)
+    assert outcome.elapsed_ms is None
+    assert outcome.config is config
+
+
+def test_predict_returns_insufficient_samples_for_too_few_samples() -> None:
+    """有効な観測サンプルが min_samples 未満の場合、単独条件として INSUFFICIENT_SAMPLES になる（要件 6.1）。
+
+    全要素が `Sample` 型かつ全フィールド有限であるため、サンプル数不足
+    のみが原因であることを固定する。
+    """
+    samples = [
+        Sample(t_ms=0.0, x_mm=1.0, y_mm=2.0, z_mm=3.0),
+        Sample(t_ms=10.0, x_mm=4.0, y_mm=5.0, z_mm=6.0),
+    ]
+    config = PredictionConfig()
+    assert len(samples) < config.min_samples  # このテストの前提を明示的に固定する
+
+    outcome = predict(samples, config)
+
+    assert isinstance(outcome, InvalidPrediction)
+    assert outcome.reason is InvalidReason.INSUFFICIENT_SAMPLES
+    assert str(len(samples)) in outcome.detail
+    assert str(config.min_samples) in outcome.detail
+    assert outcome.sample_count == len(samples)
+    assert outcome.based_on_time_ms == max(s.t_ms for s in samples)
+    assert outcome.elapsed_ms is None
+    assert outcome.config is config
+
+
+def test_predict_malformed_input_wins_over_insufficient_samples_when_both_hold() -> None:
+    """MALFORMED_INPUT と INSUFFICIENT_SAMPLES が同時に成立する場合、検証順序どおり MALFORMED_INPUT が勝つ（要件 6.5 > 6.1）。
+
+    件数は min_samples（3）未満であり、かつ Sample でない要素を含む。
+    契約上の判定順序（1: 型 -> 3: 件数）から MALFORMED_INPUT が返るべきで
+    あり、INSUFFICIENT_SAMPLES ではないことを固定する。
+    """
+    samples = [
+        Sample(t_ms=0.0, x_mm=1.0, y_mm=2.0, z_mm=3.0),
+        "not-a-sample",
+    ]
+    config = PredictionConfig()
+    assert len(samples) < config.min_samples  # このテストの前提を明示的に固定する
+
+    outcome = predict(samples, config)  # type: ignore[arg-type]
+
+    assert isinstance(outcome, InvalidPrediction)
+    assert outcome.reason is InvalidReason.MALFORMED_INPUT
+
+
+def test_predict_non_finite_value_wins_over_insufficient_samples_when_both_hold() -> None:
+    """NON_FINITE_VALUE と INSUFFICIENT_SAMPLES が同時に成立する場合、検証順序どおり NON_FINITE_VALUE が勝つ（要件 6.4 > 6.1）。
+
+    件数は min_samples（3）未満であり、かつ非有限フィールドを含む。
+    契約上の判定順序（2: 有限性 -> 3: 件数）から NON_FINITE_VALUE が返る
+    べきであり、INSUFFICIENT_SAMPLES ではないことを固定する。
+    """
+    samples = [
+        Sample(t_ms=0.0, x_mm=1.0, y_mm=2.0, z_mm=3.0),
+        Sample(t_ms=10.0, x_mm=float("inf"), y_mm=5.0, z_mm=6.0),
+    ]
+    config = PredictionConfig()
+    assert len(samples) < config.min_samples  # このテストの前提を明示的に固定する
+
+    outcome = predict(samples, config)
+
+    assert isinstance(outcome, InvalidPrediction)
+    assert outcome.reason is InvalidReason.NON_FINITE_VALUE
+
+
+def test_predict_insufficient_samples_short_circuits_before_fit_trajectory() -> None:
+    """サンプル数不足の場合、`fit_trajectory` は一度も呼ばれない（判定順序が真に短絡することの証明）。
+
+    reason が正しいだけでは「たまたま正しい出力になった」可能性を排除
+    できないため、`fit_trajectory` をスパイして未呼び出しを直接確認する。
+    """
+    samples = [
+        Sample(t_ms=0.0, x_mm=1.0, y_mm=2.0, z_mm=3.0),
+        Sample(t_ms=10.0, x_mm=4.0, y_mm=5.0, z_mm=6.0),
+    ]
+    config = PredictionConfig()
+    assert len(samples) < config.min_samples  # このテストの前提を明示的に固定する
+
+    with patch("prediction_core.predictor.fit_trajectory") as spy_fit_trajectory:
+        outcome = predict(samples, config)
+
+    assert isinstance(outcome, InvalidPrediction)
+    assert outcome.reason is InvalidReason.INSUFFICIENT_SAMPLES
+    spy_fit_trajectory.assert_not_called()
+
+
+def test_predict_empty_samples_returns_insufficient_samples() -> None:
+    """空列は MALFORMED_INPUT や NON_FINITE_VALUE ではなく INSUFFICIENT_SAMPLES になる（要件 6.1）。
+
+    空列は「全要素が Sample である」「全フィールドが有限である」を
+    空虚な真として満たすため、判定順序上そのまま素通りして
+    件数不足のみで無効になることを固定する。また `based_on_time_ms` の
+    算出が空列で例外にならないことも確認する。
+    """
+    samples: list[Sample] = []
+    config = PredictionConfig()
+
+    outcome = predict(samples, config)
+
+    assert isinstance(outcome, InvalidPrediction)
+    assert outcome.reason is InvalidReason.INSUFFICIENT_SAMPLES
+    assert outcome.sample_count == 0
+    assert outcome.based_on_time_ms is None
+    assert outcome.elapsed_ms is None
+    assert outcome.config is config
+
+
+def test_predict_returns_non_finite_value_for_non_finite_output() -> None:
+    """有限な入力でも算出結果が非有限になり得る現実的なケースで NON_FINITE_VALUE になる（要件 6.4、出力側）。
+
+    z 方向の初速を float64 の実用上限近く（1e160 mm/s）まで大きくすると、
+    入力サンプル自体は有限のまま、`fit_trajectory` の残差計算は有限に
+    収まる一方、`solve_floor_impact` 内の判別式 `b*b`（b = -vz）が
+    `1e160**2 ~ 1e320` で float64 の最大値（約1.8e308）を超えて `inf` に
+    桁あふれし、`FloorImpact.hit_time_ms` が `inf` に、`hit_x_mm` /
+    `hit_y_mm` が `0.0 * inf` で `nan` になる（下位2モジュールをモック
+    せずに実際に踏むことを事前に手計算で確認済み）。
+    """
+    trajectory = KnownTrajectory(
+        x0_mm=100.0,
+        vx_mm_s=0.0,
+        y0_mm=0.0,
+        vy_mm_s=0.0,
+        z0_mm=800.0,
+        vz_mm_s=1e160,
+        gravity_mm_s2=9806.65,
+    )
+    times_ms = [0.0, 10.0, 20.0]
+    samples = generate_samples(trajectory, times_ms)
+    assert all(
+        math.isfinite(v) for s in samples for v in (s.t_ms, s.x_mm, s.y_mm, s.z_mm)
+    )  # このテストの前提: 入力自体は有限のまま
+    config = PredictionConfig(gravity_mm_s2=trajectory.gravity_mm_s2)
+
+    outcome = predict(samples, config)
+
+    assert isinstance(outcome, InvalidPrediction)
+    assert outcome.reason is InvalidReason.NON_FINITE_VALUE
     assert outcome.detail
     assert outcome.sample_count == len(samples)
     assert outcome.based_on_time_ms == max(times_ms)
