@@ -15,7 +15,7 @@
   - 観測可能な完了状態: ハードウェアを接続しない環境で `python -m pytest` が成功終了し、パッケージが `import prediction_core` できる
   - _Requirements: 1.5, 7.1_
 
-- [ ] 1.2 (P) 単位換算モジュールを実装する
+- [x] 1.2 (P) 単位換算モジュールを実装する
   - `MS_PER_S` と、mm/ms から mm/s、mm/s² から mm/ms² への換算関数を定義する
   - 換算係数はこのモジュールにのみ置き、他モジュールが `1000` や `1e6` を直接書かない方針を成立させる
   - 観測可能な完了状態: 換算の往復（mm/ms → mm/s → mm/ms²）が定義どおりであることを `tests/prediction_core/test_units.py` で検証し、テストが通る
@@ -214,3 +214,4 @@
 - **1.1**: ビルドバックエンドは `hatchling`（design.md 未指定のため選定）。ビルド時依存のみで実行時依存ゼロは維持。
 - **1.1**: `conftest.py` の `default_config` フィクスチャは `pytest.importorskip` で遅延解決している。**タスク 1.5 で `PredictionConfig` を実装したら中身を差し替えること。**
 - **1.1**: 足場テスト `tests/prediction_core/test_packaging.py` は依存メタデータのみを検査する。**タスク 5.4 の `test_boundaries.py`（import 文の静的走査）は別途必要で、本テストでは充足されない。**
+- **1.2**: 「他モジュールが `1000` / `1e6` を直接書かない」（要件 10.5）は、他モジュール未存在のため 1.2 では検証できず**タスク 5.4 へ申し送り**。`src/prediction_core/**` を走査して裸の換算係数を禁じるガードを 5.4 に含めること。
