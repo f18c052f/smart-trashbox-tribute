@@ -64,7 +64,7 @@
 
 - [ ] 2. コア: 軌道推定と床面交点
 
-- [ ] 2.1 (P) 閉形式最小二乗による軌道推定と残差算出を実装する
+- [x] 2.1 (P) 閉形式最小二乗による軌道推定と残差算出を実装する
   - 時刻をサンプル列の最小値で原点シフトしてから累積し、絶対時刻のまま二乗して桁落ちする事態を避ける
   - 重力加速度が既知であることを利用して z 軸を線形化し、3軸それぞれ2パラメータの単回帰として解く
   - 正規方程式の行列式に**相対閾値**を用いた縮退判定を行い、縮退時は無効理由を返す（例外を送出しない）
@@ -228,3 +228,4 @@
   `generate_samples(trajectory, times_ms) -> list[Sample]`。`add_noise(samples, *, seed, stddev_mm) -> list[Sample]`（`t_ms` は変更しない。ローカル `random.Random(seed)` でグローバル状態を汚染しない）。
   `AnalyticFloorImpact(hit_x_mm, hit_y_mm, hit_time_ms)`。`analytic_floor_impact(trajectory, after_time_ms) -> AnalyticFloorImpact | None`（最も早い未来根、無ければ None）。
 - **1.6**: レビュー1巡目で「重力項が t>0 で未検証」「根が2つある場合の最早選択が未検証」の2件が REJECTED。**後続タスクでもオラクル的なテストヘルパを書く際は、単一のハッピーパスだけでなく分岐（複数根・境界値）を実際に作るフィクスチャで検証すること。**
+- **2.1**: `TrajectoryParameters` の `x0_mm`/`y0_mm`/`z0_mm`/`estimated_v*_mm_s` は **`t_ref_ms`（サンプル最小時刻）時点の値**であり、`t=0` 時点の値ではない。`tests/prediction_core/analytic.py` の `KnownTrajectory` は `t=0` 基準なので、テストで比較する際は `KnownTrajectory.position_at_ms(t_ref_ms)` で評価してから比較すること。**混同すると本番コードではなくテスト側が壊れる**（2.1 実装時に一度混同しかけた）。
