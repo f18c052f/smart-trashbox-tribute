@@ -126,7 +126,7 @@
 
 - [ ] 4. Throw Record と逐次予測
 
-- [ ] 4.1 Throw Record の構造と dict 往復を実装する
+- [x] 4.1 Throw Record の構造と dict 往復を実装する
   - 1投擲を1レコードとして表す構造を定義し、記録ID・ソース種別・設定・観測サンプル系列・予測結果系列を保持する
   - 予測処理時間は各予測結果が持つ値として扱い、レコード専用フィールドを設けない
   - 予測結果と無効予測を判別するための種別キーを付与し、復元時に直和型を復元できるようにする
@@ -241,3 +241,6 @@
 - **3.3**: `config.measure_elapsed=False` 時は `time.perf_counter_ns()` を**一度も呼ばない**（結果を捨てるのではなく取得自体をスキップする、要件8.3）。呼び出し回数のスパイでのみ機械的に証明できる。
 - **3.3**: 処理時間の妥当性テストは、実測値が数十マイクロ秒オーダーのため**単純な上限値チェックでは単位バグ（/1e6 を /1e3 等に変える）を検出できない**。外部の壁時計計測で `predict()` 呼び出しを挟み込み、内部計測値がその区間に収まることを確認する形のテストが必要。
 - **3.3**: `predict()` の実装が完了。これで Predictor（タスク3.1/3.2/3.3）が完成した。
+- **4.1**: `src/prediction_core/record.py`（L5）は `types`/`config`/`errors` のみを import する。`predictor.py`（Replay に必要）は**タスク4.3で追加**するまで import しない。**`record.py`/`tests/prediction_core/test_record.py` は 4.1/4.2/4.3 の共有ファイル。** 4.1 で実装したのは `ThrowRecord` 本体・`to_dict`/`from_dict` のみ（`to_json`/`from_json`/`replay`/`predictions_equivalent` は未実装・スタブなし）。dict 変換は `dataclasses.asdict()` を使わず手動で書いた（`kind` 判別キーの付与、`StrEnum.value` への明示変換、ネストした `PredictionConfig`/`TrajectoryParameters` の個別変換が必要なため）。
+- **4.1**: レビューで「実装は正しいが、その正しさを固定するテストが無い」という2件の指摘（Important、共にREJECTED理由）があった。(a) `InvalidPrediction` の dict 形に禁止フィールド（`predicted_hit_x_mm` 等）を注入しても既存テストが検知しなかった → キー集合の**完全一致**（部分一致ではなく）を検証するテストが必要。(b) `from_dict` の `extra=dict(data.get("extra", {}))` を参照コピーに変えても検知しなかった → `from_dict` 呼び出し**後**に入力 dict 側の `extra` を mutate し、復元済みオブジェクトが影響を受けないことを検証するテストが必要。**後続タスク（4.2 の未知トップレベルキー退避、Tracker/Record の他の不変フィールド）でも「型としては正しいが往復テストでは見えない」契約は個別に固定すること。**
+- **4.1**: NaN/Infinity を含む `ThrowRecord` を `from_dict(to_dict(r)) == r` で検証すると `NaN != NaN` のため必ず失敗する。非有限値のテストは個別フィールドを `math.isnan`/`math.isinf` で確認し、往復等価性テストは有限値のみのレコードで行うこと。
