@@ -406,7 +406,9 @@ def mm_per_s2_to_mm_per_ms2(a_mm_s2: float) -> float: ... # a / MS_PER_S ** 2
 
 **Dependencies**
 
-- Outbound: Units — 速度の単位換算 (P0)
+- なし（宣言専用モジュール）。実行時 import は標準ライブラリのみ。
+  速度の単位換算は値を生成する側（TrajectoryFitter / ImpactSolver）が Units を用いて行うため、
+  本モジュールは `units` を import しない
 
 **Contracts**: Service [ ] / API [ ] / Event [ ] / Batch [ ] / State [x]
 

@@ -29,7 +29,7 @@
   - _Requirements: 9.3, 10.3_
   - _Boundary: Errors_
 
-- [ ] 1.4 値オブジェクトと予測結果の直和型を定義する
+- [x] 1.4 値オブジェクトと予測結果の直和型を定義する
   - 観測サンプル、ソース種別、無効理由、軌道パラメータ、予測結果、無効予測を不変（frozen かつ slots）で定義する
   - 無効予測には**落下地点・落下時刻のフィールドを持たせない**ことで、無効を正常値として読む経路を型で塞ぐ
   - 予測結果に、何サンプル目か・基準となる観測時刻・使用した設定・処理時間を持たせる
@@ -218,3 +218,6 @@
 - **1.3**: `tests/prediction_core/test_config.py` は 1.3（例外階層）と 1.5（設定検証）の共有ファイル。1.3 分は `TestErrorHierarchy` に収めてあるので、**1.5 は末尾に節を追加する形で拡張すること**（既存部の再構成は不可）。
 - **1.3**: `test_module_defines_exactly_the_declared_exceptions` が例外型を4種に固定している。**後続タスクは既存の例外型を使うだけで新設しないこと。**新設が必要なら design.md の Errors を先に更新する。
 - **1.3**: `errors.py` の docstring に「予測無効は値で返し例外にしない」契約を記載済み。**タスク 3.2（無効判定5種）は例外を送出してはならない**（要件 6.7）。
+- **1.4**: `types.py` は宣言専用で `units` を import しない。design.md の CoreTypes 依存表が不正確だったため実態に合わせて修正済み。**換算は TrajectoryFitter / ImpactSolver（タスク 2.1 / 2.2）が行う。**
+- **1.4**: `Prediction.config` の型参照は `TYPE_CHECKING` ガード内。**実行時の types → config import を作らないこと**（上向き依存かつ循環）。型検査器は 1.5 完了まで未解決 import を報告するが実行時に影響しない。
+- **1.4**: CPython 3.11 では frozen+slots dataclass への**未宣言**属性の setattr は `FrozenInstanceError` でなく `TypeError` になる。不変性のテストは宣言済みフィールドに対して行うこと。
