@@ -50,7 +50,7 @@
   - _Depends: 1.2, 1.3_
   - _Boundary: PredictionConfig_
 
-- [ ] 1.6 解析的サンプル生成ヘルパをテストツリーに用意する
+- [x] 1.6 解析的サンプル生成ヘルパをテストツリーに用意する
   - 既知の軌道パラメータと重力加速度から、誤差を含まないサンプル列を生成するヘルパを `tests/prediction_core/analytic.py` に置く
   - 決定的な擬似乱数による誤差重畳と、解析的な落下地点・落下時刻の算出も同ヘルパに置く
   - **パッケージ本体には置かない**（投擲物理・ノイズ生成は `trajectory-simulator` の責務であり、本 Spec の責務外）
@@ -223,3 +223,8 @@
 - **1.4**: CPython 3.11 では frozen+slots dataclass への**未宣言**属性の setattr は `FrozenInstanceError` でなく `TypeError` になる。不変性のテストは宣言済みフィールドに対して行うこと。
 - **1.5**: `gravity_mm_ms2` は `units.mm_per_s2_to_mm_per_ms2` へ委譲する（自前で `/1e6` しない）。委譲テストは戻り値の数値まで見ること（呼び出しの有無だけでは不十分）。
 - **1.5**: 依存方向の訂正 — design.md の依存表は **L2 の `config` が L1 の `types` を import してよい**としている（禁止は逆方向。`types` が `config` を実行時 import すること）。以前の申し送りで逆に伝えていたため訂正する。
+- **1.6**: `tests/prediction_core/analytic.py` の確定 API（タスク 2.1/2.2/5.2/5.3 が使う）:
+  `KnownTrajectory(x0_mm, vx_mm_s, y0_mm, vy_mm_s, z0_mm, vz_mm_s, gravity_mm_s2)` — `.position_at_ms(t_ms) -> (x_mm, y_mm, z_mm)`。
+  `generate_samples(trajectory, times_ms) -> list[Sample]`。`add_noise(samples, *, seed, stddev_mm) -> list[Sample]`（`t_ms` は変更しない。ローカル `random.Random(seed)` でグローバル状態を汚染しない）。
+  `AnalyticFloorImpact(hit_x_mm, hit_y_mm, hit_time_ms)`。`analytic_floor_impact(trajectory, after_time_ms) -> AnalyticFloorImpact | None`（最も早い未来根、無ければ None）。
+- **1.6**: レビュー1巡目で「重力項が t>0 で未検証」「根が2つある場合の最早選択が未検証」の2件が REJECTED。**後続タスクでもオラクル的なテストヘルパを書く際は、単一のハッピーパスだけでなく分岐（複数根・境界値）を実際に作るフィクスチャで検証すること。**
