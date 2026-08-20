@@ -136,7 +136,7 @@
   - _Depends: 3.3_
   - _Boundary: ThrowRecordCodec_
 
-- [ ] 4.2 JSON 直列化とスキーマ拡張規則を実装する
+- [x] 4.2 JSON 直列化とスキーマ拡張規則を実装する
   - dict と JSON 文字列の相互変換を提供する。ファイル・ストレージへの読み書きは行わない
   - 非有限値を許可しない設定で直列化し、規格外の JSON を出力せず例外で拒否する
   - スキーマ版を持たせ、未知のトップレベルキーを退避領域へ保存して再出力する
@@ -244,3 +244,5 @@
 - **4.1**: `src/prediction_core/record.py`（L5）は `types`/`config`/`errors` のみを import する。`predictor.py`（Replay に必要）は**タスク4.3で追加**するまで import しない。**`record.py`/`tests/prediction_core/test_record.py` は 4.1/4.2/4.3 の共有ファイル。** 4.1 で実装したのは `ThrowRecord` 本体・`to_dict`/`from_dict` のみ（`to_json`/`from_json`/`replay`/`predictions_equivalent` は未実装・スタブなし）。dict 変換は `dataclasses.asdict()` を使わず手動で書いた（`kind` 判別キーの付与、`StrEnum.value` への明示変換、ネストした `PredictionConfig`/`TrajectoryParameters` の個別変換が必要なため）。
 - **4.1**: レビューで「実装は正しいが、その正しさを固定するテストが無い」という2件の指摘（Important、共にREJECTED理由）があった。(a) `InvalidPrediction` の dict 形に禁止フィールド（`predicted_hit_x_mm` 等）を注入しても既存テストが検知しなかった → キー集合の**完全一致**（部分一致ではなく）を検証するテストが必要。(b) `from_dict` の `extra=dict(data.get("extra", {}))` を参照コピーに変えても検知しなかった → `from_dict` 呼び出し**後**に入力 dict 側の `extra` を mutate し、復元済みオブジェクトが影響を受けないことを検証するテストが必要。**後続タスク（4.2 の未知トップレベルキー退避、Tracker/Record の他の不変フィールド）でも「型としては正しいが往復テストでは見えない」契約は個別に固定すること。**
 - **4.1**: NaN/Infinity を含む `ThrowRecord` を `from_dict(to_dict(r)) == r` で検証すると `NaN != NaN` のため必ず失敗する。非有限値のテストは個別フィールドを `math.isnan`/`math.isinf` で確認し、往復等価性テストは有限値のみのレコードで行うこと。
+- **4.2**: `to_json`/`from_json`・必須キー/型検証（`RecordSchemaError`、メッセージにキー名を含む）・未知トップレベルキーの `extra` への退避を実装（152→172件）。`from_json` は独自の検証経路を持たず `from_dict` に完全委譲するため、検証ロジックの単一定義元が保たれている。非有限値は `to_dict()` では引き続き成功し、`to_json()` のみ `RecordSerializationError`（`json.dumps(allow_nan=False)` の `ValueError` を変換）で拒否する。
+- **4.2**: レビューで承認されたが、非ブロッキングの申し送り2件。(a) 未知トップレベルキーと明示的な `extra` キーが同名衝突した場合、現状は未知キー側が勝つ実装だが、この挙動を固定するテストが無い（design.md も優先順位を規定していない）。(b) `ensure_ascii=False` の非ASCII文字（日本語の `record_id` 等）での往復を確認するテストが無い。**task 4.3 またはそれ以降でこれらのテストを追加する余地がある（ブロッキングではない）。**

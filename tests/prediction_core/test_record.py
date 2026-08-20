@@ -1,8 +1,8 @@
-"""ThrowRecord の dict 往復の検証（タスク 4.1、要件 9.1 / 9.2 / 9.3）。
+"""ThrowRecord の dict / JSON 往復の検証（タスク 4.1 / 4.2、要件 9.1 / 9.2 / 9.3 / 9.6）。
 
-design.md「ThrowRecordCodec」が定める `to_dict` / `from_dict` のみを対象に
-する。`to_json` / `from_json` / `replay` / `predictions_equivalent` は
-タスク 4.2 / 4.3 の担当であり、本ファイルでは検証しない。
+design.md「ThrowRecordCodec」が定める `to_dict` / `from_dict` /
+`to_json` / `from_json` を対象にする。`replay` / `predictions_equivalent` は
+タスク 4.3 の担当であり、本ファイルでは検証しない。
 
 **非有限値の等価性検証について**（重要）: Python の `==` は `NaN != NaN`
 であるため、dataclass の自動生成 `__eq__` を用いた全体比較
@@ -19,12 +19,13 @@ design.md「ThrowRecordCodec」が定める `to_dict` / `from_dict` のみを対
 
 from __future__ import annotations
 
+import json
 import math
 
 import pytest
 
 from prediction_core.config import PredictionConfig
-from prediction_core.errors import RecordSchemaError
+from prediction_core.errors import RecordSchemaError, RecordSerializationError
 from prediction_core.record import SCHEMA_VERSION, ThrowRecord
 from prediction_core.types import (
     InvalidPrediction,
@@ -484,3 +485,311 @@ class TestFromDictDoesNotAliasExtra:
         input_extra["injected"] = "should-not-leak-into-record"
 
         assert record.extra == {"note": "original"}
+
+
+class TestJsonRoundTripFiniteValues:
+    """タスク 4.2 の主要な観測可能完了状態: 有限値のみのレコードで JSON 往復が等価。"""
+
+    def test_from_json_of_to_json_equals_original_record(
+        self, default_config: PredictionConfig
+    ) -> None:
+        record = ThrowRecord(
+            record_id="throw-json-roundtrip",
+            source=SourceKind.LIVE,
+            config=default_config,
+            samples=_samples(),
+            predictions=(
+                _invalid_prediction(default_config, sample_count=1),
+                _prediction(default_config, sample_count=2),
+            ),
+            extra={"note": "json-roundtrip", "batch": 3},
+        )
+
+        restored = ThrowRecord.from_json(record.to_json())
+
+        assert restored == record
+
+    def test_to_json_returns_str(self, default_config: PredictionConfig) -> None:
+        record = ThrowRecord(
+            record_id="throw-json-type",
+            source=SourceKind.SIMULATED,
+            config=default_config,
+            samples=(),
+            predictions=(),
+        )
+
+        assert isinstance(record.to_json(), str)
+
+
+class TestToJsonIndent:
+    def test_to_json_with_indent_produces_multiline_output(
+        self, default_config: PredictionConfig
+    ) -> None:
+        record = ThrowRecord(
+            record_id="throw-json-indent",
+            source=SourceKind.LIVE,
+            config=default_config,
+            samples=_samples(),
+            predictions=(_prediction(default_config),),
+        )
+
+        compact = record.to_json()
+        indented = record.to_json(indent=2)
+
+        assert "\n" not in compact
+        assert "\n" in indented
+        # インデント付きでも同じ内容を表現している(往復すれば元と等価)。
+        assert ThrowRecord.from_json(indented) == record
+
+
+class TestToJsonRejectsNonFiniteValues:
+    """非有限値を含むレコードは `to_json` で `RecordSerializationError`。
+
+    `to_dict()` はメモリ上の忠実性を保つため引き続き成功すること
+    (タスク 4.1 の既存契約と矛盾しないこと)も併せて確認する。
+    """
+
+    def test_to_json_raises_for_nan_residual(
+        self, default_config: PredictionConfig
+    ) -> None:
+        prediction = Prediction(
+            predicted_hit_x_mm=1.0,
+            predicted_hit_y_mm=2.0,
+            predicted_hit_time_ms=3.0,
+            remaining_time_ms=4.0,
+            estimated_vx_mm_s=5.0,
+            estimated_vy_mm_s=6.0,
+            estimated_vz_mm_s=7.0,
+            residual=float("nan"),
+            trajectory=_trajectory(),
+            sample_count=3,
+            based_on_time_ms=0.0,
+            elapsed_ms=1.0,
+            config=default_config,
+        )
+        record = ThrowRecord(
+            record_id="throw-json-nonfinite",
+            source=SourceKind.LIVE,
+            config=default_config,
+            samples=_samples(),
+            predictions=(prediction,),
+        )
+
+        # to_dict() 自体は成功する(既存契約)。
+        data = record.to_dict()
+        assert math.isnan(data["predictions"][0]["residual"])
+
+        with pytest.raises(RecordSerializationError):
+            record.to_json()
+
+    def test_to_json_raises_for_infinite_elapsed_ms(
+        self, default_config: PredictionConfig
+    ) -> None:
+        invalid = InvalidPrediction(
+            reason=InvalidReason.NON_FINITE_VALUE,
+            detail="非有限値テスト",
+            sample_count=1,
+            based_on_time_ms=0.0,
+            elapsed_ms=float("inf"),
+            config=default_config,
+        )
+        record = ThrowRecord(
+            record_id="throw-json-nonfinite-invalid",
+            source=SourceKind.LIVE,
+            config=default_config,
+            samples=(),
+            predictions=(invalid,),
+        )
+
+        with pytest.raises(RecordSerializationError):
+            record.to_json()
+
+    def test_to_json_raises_for_nan_sample_position(
+        self, default_config: PredictionConfig
+    ) -> None:
+        record = ThrowRecord(
+            record_id="throw-json-nonfinite-sample",
+            source=SourceKind.LIVE,
+            config=default_config,
+            samples=(Sample(t_ms=0.0, x_mm=float("nan"), y_mm=0.0, z_mm=0.0),),
+            predictions=(),
+        )
+
+        with pytest.raises(RecordSerializationError):
+            record.to_json()
+
+
+class TestToJsonOutputHasNoNonFiniteLiterals:
+    def test_to_json_output_does_not_contain_nan_or_infinity_literals(
+        self, default_config: PredictionConfig
+    ) -> None:
+        record = ThrowRecord(
+            record_id="throw-json-literal-check",
+            source=SourceKind.LIVE,
+            config=default_config,
+            samples=_samples(),
+            predictions=(_prediction(default_config), _invalid_prediction(default_config)),
+        )
+
+        text = record.to_json()
+
+        assert "NaN" not in text
+        assert "Infinity" not in text
+        # 生成された文字列は標準ライブラリで問題なくパースできる。
+        json.loads(text)
+
+
+class TestFromDictMissingRequiredKeys:
+    """必須キーの欠落は `RecordSchemaError` になり、欠落キー名がメッセージに含まれる。"""
+
+    def _valid_data(self, default_config: PredictionConfig) -> dict[str, object]:
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "record_id": "throw-missing-key",
+            "source": "live",
+            "config": {
+                "gravity_mm_s2": default_config.gravity_mm_s2,
+                "min_samples": default_config.min_samples,
+                "measure_elapsed": default_config.measure_elapsed,
+                "time_degeneracy_rel_tol": default_config.time_degeneracy_rel_tol,
+            },
+            "samples": [],
+            "predictions": [],
+            "extra": {},
+        }
+
+    @pytest.mark.parametrize(
+        "missing_key",
+        ["record_id", "source", "config", "samples", "predictions"],
+    )
+    def test_missing_required_key_raises_record_schema_error_with_key_name(
+        self, default_config: PredictionConfig, missing_key: str
+    ) -> None:
+        data = self._valid_data(default_config)
+        del data[missing_key]
+
+        with pytest.raises(RecordSchemaError, match=missing_key):
+            ThrowRecord.from_dict(data)
+
+    def test_missing_required_key_raises_via_from_json_too(
+        self, default_config: PredictionConfig
+    ) -> None:
+        data = self._valid_data(default_config)
+        del data["config"]
+        text = json.dumps(data)
+
+        with pytest.raises(RecordSchemaError, match="config"):
+            ThrowRecord.from_json(text)
+
+
+class TestFromDictTypeMismatches:
+    """明らかな型不一致は `RecordSchemaError` になり、問題のキー名がメッセージに含まれる。"""
+
+    def _valid_data(self, default_config: PredictionConfig) -> dict[str, object]:
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "record_id": "throw-type-mismatch",
+            "source": "live",
+            "config": {
+                "gravity_mm_s2": default_config.gravity_mm_s2,
+                "min_samples": default_config.min_samples,
+                "measure_elapsed": default_config.measure_elapsed,
+                "time_degeneracy_rel_tol": default_config.time_degeneracy_rel_tol,
+            },
+            "samples": [],
+            "predictions": [],
+            "extra": {},
+        }
+
+    def test_samples_as_string_raises_record_schema_error_with_key_name(
+        self, default_config: PredictionConfig
+    ) -> None:
+        data = self._valid_data(default_config)
+        data["samples"] = "not-a-list"
+
+        with pytest.raises(RecordSchemaError, match="samples"):
+            ThrowRecord.from_dict(data)
+
+    def test_predictions_as_number_raises_record_schema_error_with_key_name(
+        self, default_config: PredictionConfig
+    ) -> None:
+        data = self._valid_data(default_config)
+        data["predictions"] = 42
+
+        with pytest.raises(RecordSchemaError, match="predictions"):
+            ThrowRecord.from_dict(data)
+
+    def test_source_as_invalid_string_raises_record_schema_error_with_key_name(
+        self, default_config: PredictionConfig
+    ) -> None:
+        data = self._valid_data(default_config)
+        data["source"] = "not-a-real-source"
+
+        with pytest.raises(RecordSchemaError, match="source"):
+            ThrowRecord.from_dict(data)
+
+    def test_config_as_string_raises_record_schema_error_with_key_name(
+        self, default_config: PredictionConfig
+    ) -> None:
+        data = self._valid_data(default_config)
+        data["config"] = "not-a-dict"
+
+        with pytest.raises(RecordSchemaError, match="config"):
+            ThrowRecord.from_dict(data)
+
+
+class TestUnknownTopLevelKeysPreservedInExtra:
+    """未知のトップレベルキーは情報を失わず `extra` へ退避され、往復後も取得できる。"""
+
+    def _valid_data(self, default_config: PredictionConfig) -> dict[str, object]:
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "record_id": "throw-unknown-key",
+            "source": "live",
+            "config": {
+                "gravity_mm_s2": default_config.gravity_mm_s2,
+                "min_samples": default_config.min_samples,
+                "measure_elapsed": default_config.measure_elapsed,
+                "time_degeneracy_rel_tol": default_config.time_degeneracy_rel_tol,
+            },
+            "samples": [],
+            "predictions": [],
+            "extra": {},
+        }
+
+    def test_unknown_top_level_key_is_moved_into_extra(
+        self, default_config: PredictionConfig
+    ) -> None:
+        data = self._valid_data(default_config)
+        data["custom_field"] = 123
+
+        record = ThrowRecord.from_dict(data)
+
+        assert record.extra == {"custom_field": 123}
+
+    def test_unknown_top_level_key_survives_json_round_trip(
+        self, default_config: PredictionConfig
+    ) -> None:
+        data = self._valid_data(default_config)
+        data["custom_field"] = 123
+        text = json.dumps(data)
+
+        record = ThrowRecord.from_json(text)
+
+        assert record.extra == {"custom_field": 123}
+        # to_dict() で再出力しても情報が失われない(extra 経由で往復する)。
+        assert record.to_dict()["extra"] == {"custom_field": 123}
+        # to_json() で再度往復しても保持される。
+        round_tripped = ThrowRecord.from_json(record.to_json())
+        assert round_tripped.extra == {"custom_field": 123}
+
+    def test_unknown_top_level_key_merges_with_explicit_extra(
+        self, default_config: PredictionConfig
+    ) -> None:
+        data = self._valid_data(default_config)
+        data["extra"] = {"note": "explicit"}
+        data["custom_field"] = 123
+
+        record = ThrowRecord.from_dict(data)
+
+        assert record.extra == {"note": "explicit", "custom_field": 123}

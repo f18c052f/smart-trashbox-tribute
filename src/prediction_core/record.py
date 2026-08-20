@@ -1,4 +1,4 @@
-"""Throw Record の最小スキーマと dict 往復（要件 9.1 / 9.2 / 9.3）。
+"""Throw Record の最小スキーマと dict / JSON 往復（要件 9.1 / 9.2 / 9.3 / 9.6）。
 
 本モジュールは L5 層であり、実行時に `prediction_core.types` /
 `prediction_core.config` / `prediction_core.errors` のみを import する
@@ -6,10 +6,10 @@
 `tracker.py`（L6）を import しない。1投擲の記録に `predict()` そのものは
 不要であり（Replay はタスク 4.3 の担当）、`predictor` への依存は生じない。
 
-**このタスク（4.1）が実装する範囲**: `ThrowRecord` データクラス本体と
-`to_dict` / `from_dict` のみ。`to_json` / `from_json` / `replay` /
-`predictions_equivalent` はタスク 4.2 / 4.3 の担当であり、ここでは実装しない
-（スタブも置かない）。
+**このタスク（4.2）が実装する範囲**: `to_json` / `from_json`、`from_dict` の
+必須キー欠落・型不一致検証（`RecordSchemaError`）、未知トップレベルキーの
+`extra` への退避。`replay` / `predictions_equivalent` はタスク 4.3 の担当で
+あり、ここでは実装しない（スタブも置かない）。
 
 **手動での dict 変換**（`dataclasses.asdict()` を使わない理由）:
 
@@ -29,11 +29,12 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from prediction_core.config import PredictionConfig
-from prediction_core.errors import RecordSchemaError
+from prediction_core.errors import RecordSchemaError, RecordSerializationError
 from prediction_core.types import (
     InvalidPrediction,
     InvalidReason,
@@ -55,6 +56,31 @@ SCHEMA_VERSION: str = "1.0"
 
 _PREDICTION_KIND = "prediction"
 _INVALID_KIND = "invalid"
+
+_REQUIRED_TOP_LEVEL_KEYS: tuple[str, ...] = (
+    "record_id",
+    "source",
+    "config",
+    "samples",
+    "predictions",
+)
+"""`from_dict` が必須とするトップレベルキー（要件 9.2 / 9.3）。"""
+
+_KNOWN_TOP_LEVEL_KEYS: frozenset[str] = frozenset(
+    {*_REQUIRED_TOP_LEVEL_KEYS, "schema_version", "extra"}
+)
+"""`ThrowRecord` が意味を持って解釈するトップレベルキー（要件 9.6）。
+
+これ以外のトップレベルキーは `from_dict` が `extra` へ退避する。"""
+
+
+def _is_array_like(value: object) -> bool:
+    """`samples` / `predictions` に許容する「配列」形かどうかを判定する。
+
+    JSON 配列は `json.loads` で `list` になる。`str` / `bytes` はイテラブル
+    だが要素反復の意味が異なるため明示的に除外する。
+    """
+    return isinstance(value, (list, tuple)) and not isinstance(value, (str, bytes))
 
 
 def _sample_to_dict(sample: Sample) -> dict[str, object]:
@@ -221,9 +247,9 @@ class ThrowRecord:
         predictions: 予測結果系列（生成順）。`Prediction` と
             `InvalidPrediction` の直和が混在してよい。
         schema_version: 本スキーマの版。既定値は `SCHEMA_VERSION`。
-        extra: 下流が追加した項目の退避先（要件 9.6）。本タスクでは
-            単純に往復させるのみで、未知トップレベルキーの退避ロジック
-            自体はタスク 4.2 の担当。
+        extra: 下流が追加した項目の退避先（要件 9.6）。`from_dict` は
+            明示的な `extra` キーの中身に加え、未知のトップレベルキーも
+            ここへ統合する（往復で情報を失わない）。
 
     `record_id` の空文字列チェックなど、値の妥当性検証は本タスクの範囲外
     （design.md: `ThrowRecord` 自体は値オブジェクトとして検証を持たず、
@@ -263,15 +289,108 @@ class ThrowRecord:
         `samples` / `predictions` は入力が `list` でも内部表現である
         `tuple` へ変換する（不変性のため）。`predictions` の各要素は
         `kind` キーで直和型を判別して復元する。
+
+        必須キー（`record_id` / `source` / `config` / `samples` /
+        `predictions`）の欠落、および明らかな型不一致（`source` が
+        `SourceKind` の有効な値でない、`config` が dict でない、
+        `samples` / `predictions` が配列でない）は `RecordSchemaError` を
+        送出する。メッセージには問題のキー名を含める（design.md「Error
+        Handling」）。未知のトップレベルキーは `extra` へ退避し、
+        明示的な `extra` キーの中身とマージする（要件 9.6）。
         """
+        missing = [key for key in _REQUIRED_TOP_LEVEL_KEYS if key not in data]
+        if missing:
+            raise RecordSchemaError(
+                "ThrowRecord の復元に必要なキーが欠落しています: "
+                f"{', '.join(sorted(missing))}"
+            )
+
+        source_raw = data["source"]
+        try:
+            source = SourceKind(source_raw)
+        except ValueError as e:
+            raise RecordSchemaError(
+                f"キー 'source' の値が不正です（SourceKind として解釈できません）: "
+                f"{source_raw!r}"
+            ) from e
+
+        config_raw = data["config"]
+        if not isinstance(config_raw, Mapping):
+            raise RecordSchemaError(
+                f"キー 'config' はオブジェクト(dict)である必要があります: "
+                f"{config_raw!r}"
+            )
+
+        samples_raw = data["samples"]
+        if not _is_array_like(samples_raw):
+            raise RecordSchemaError(
+                f"キー 'samples' は配列である必要があります: {samples_raw!r}"
+            )
+
+        predictions_raw = data["predictions"]
+        if not _is_array_like(predictions_raw):
+            raise RecordSchemaError(
+                f"キー 'predictions' は配列である必要があります: {predictions_raw!r}"
+            )
+
+        explicit_extra = data.get("extra", {})
+        if not isinstance(explicit_extra, Mapping):
+            raise RecordSchemaError(
+                f"キー 'extra' はオブジェクト(dict)である必要があります: "
+                f"{explicit_extra!r}"
+            )
+
+        # 未知のトップレベルキーは失わず extra へ統合する（要件 9.6）。
+        # 明示的な extra の中身をベースに、未知キーの値で上書き・追加する
+        # （どちらも「情報を失わない」ことが目的であり、キー名の衝突は
+        # 実運用では起きない想定。衝突時は未知キー側を優先する）。
+        merged_extra: dict[str, object] = dict(explicit_extra)
+        for key, value in data.items():
+            if key not in _KNOWN_TOP_LEVEL_KEYS:
+                merged_extra[key] = value
+
         return cls(
             record_id=data["record_id"],
-            source=SourceKind(data["source"]),
-            config=_config_from_dict(data["config"]),
-            samples=tuple(_sample_from_dict(item) for item in data["samples"]),
+            source=source,
+            config=_config_from_dict(config_raw),
+            samples=tuple(_sample_from_dict(item) for item in samples_raw),
             predictions=tuple(
-                _prediction_outcome_from_dict(item) for item in data["predictions"]
+                _prediction_outcome_from_dict(item) for item in predictions_raw
             ),
             schema_version=data.get("schema_version", SCHEMA_VERSION),
-            extra=dict(data.get("extra", {})),
+            extra=merged_extra,
         )
+
+    def to_json(self, *, indent: int | None = None) -> str:
+        """`ThrowRecord` を JSON 文字列へ直列化する（要件 9.3）。
+
+        `json.dumps(..., allow_nan=False, ensure_ascii=False)` を用いる。
+        既定の `NaN` / `Infinity` 出力は RFC 8259 準拠ではなく、
+        TypeScript 可視化側の `JSON.parse` が受け付けないため
+        （design.md「ThrowRecordCodec / Implementation Notes」）。
+
+        非有限値（NaN / Infinity）を含むレコードは `RecordSerializationError`
+        を送出する。`to_dict()` 自体はメモリ上の忠実性を保つため常に成功する
+        （非有限値でも例外にしない）が、JSON 化はその時点で拒否する。
+        """
+        data = self.to_dict()
+        try:
+            return json.dumps(
+                data, allow_nan=False, ensure_ascii=False, indent=indent
+            )
+        except ValueError as e:
+            raise RecordSerializationError(
+                "ThrowRecord を JSON へ直列化できません: 非有限値(NaN/Infinity)を"
+                "含むフィールドが存在します。RFC 8259 準拠の JSON では表現でき"
+                "ません。"
+            ) from e
+
+    @classmethod
+    def from_json(cls, text: str) -> "ThrowRecord":
+        """JSON 文字列から `ThrowRecord` を復元する（要件 9.3）。
+
+        `json.loads` でパースした dict を `from_dict` に委譲する。パース
+        結果に対する検証（必須キー欠落・型不一致・未知キー退避）は
+        `from_dict` と共通である。
+        """
+        return cls.from_dict(json.loads(text))
