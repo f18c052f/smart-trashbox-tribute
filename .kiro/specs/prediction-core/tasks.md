@@ -153,7 +153,7 @@
   - _Requirements: 9.4_
   - _Boundary: ThrowRecordCodec_
 
-- [ ] 4.4 逐次予測トラッカーを実装する
+- [x] 4.4 逐次予測トラッカーを実装する
   - サンプルを1点ずつ受け取り、そのつど蓄積済みの全点で予測をやり直す
   - 最小サンプル数未満でも常に結果を返し、常に予測系列へ追加する（系列が投擲のタイムラインになる）
   - 観測サンプル系列と予測系列を変更不可の形で公開し、最新結果と最初の有効予測を取得できるようにする
@@ -249,3 +249,6 @@
 - **4.3**: `record.py` が `predictor.py`（L4）を初めて import した（design.md 依存表どおり L5 は 0〜4層を import 可）。`tracker.py`（L6、まだ存在しない）には依存しない。`replay` は `record.samples[: i + 1]`（i は0始まり）の前置列に `predict(prefix, record.config)` を適用するだけで、`ThrowPredictionTracker` を一切使わない。`predict()` が入力を `t_ms` 昇順に安定ソートするため、前置列を事前にソートし直す必要はない。
 - **4.3**: `predictions_equivalent` は「長さ一致 → 各要素の型一致（`type(l) is not type(r)`）→ `dataclasses.replace(obj, elapsed_ms=None)` で揃えてから `==`」の3段階。**ミューテーションテストで判明した点**: 型チェック(`type(l) is not type(r)`)を削除しても既存の全テストは通り続けた。理由は `@dataclass` の自動生成 `__eq__` が `other.__class__ is self.__class__` を内部で既にチェックしており、`Prediction != InvalidPrediction` は型チェックを明示しなくても常に真になるため。したがって型チェック行は**契約を明文化する目的のためだけに残した安全な冗長コード**であり、テストでは独立に検出できない（`Prediction`/`InvalidPrediction` のフィールド構成が偶然一致することがない限り原理的に検出不能）。後続タスクで同種の直和型を比較するコードを書く際、この「dataclass の型チェックはテストで検出できない」という性質を踏まえること。
 - **4.3**: `tests/prediction_core/test_replay.py` の `_build_record` は `ThrowPredictionTracker` を使わず、`predict()` を前置列へ手動適用して `ThrowRecord` を組み立てている。5点のサンプル（`min_samples=3` の既定設定）を使うことで、先頭2件が `InsufficientSamples`、残り3件が有効な `Prediction` という混在系列を自然に作れる。**4.4（Tracker 実装）でも同じ5点パターンが使い回せる可能性がある。**
+- **4.4**: `src/prediction_core/tracker.py`（L6）は `config`/`predictor`/`record`/`types` のみを import する。`add_sample` は毎回 `tuple(self._samples)`（蓄積済み全点）で `predict()` を呼び直す（スライディングウィンドウ・部分和は持たない、design.mdの明示的な禁止どおり）。`samples`/`predictions` プロパティは呼び出しごとに新しい `tuple(...)` を返すため、外部からの変更が内部状態に伝播しない。`add_sample` の戻り値は `self._predictions` へ追加したオブジェクトそのもの（`is` 同一性が成立）。
+- **4.4**: `record_id` が空文字列の場合は素の `ValueError` を送出する（`errors.py` の4例外は新設しない方針を踏襲。4例外はいずれも `ValueError` を継承しているため呼び出し側の `except ValueError` 網と矛盾しない）。`first_valid` はキャッシュせず毎回 `predictions` を先頭から線形走査する（design.mdが専用フラグ・経路を作らないよう明示しているため）。
+- **4.4**: `ThrowPredictionTracker` の公開インターフェースは `add_sample`/`samples`/`predictions`/`latest`/`first_valid`/`to_record` の6つのみ（要件5.4、駆動制御・送信メソッドなし）。**5.1（公開API確定）でこの6つを `prediction_core` の `__all__` に含めること。** `src/prediction_core/__init__.py` は現時点でまだ `__all__ = []` のまま未着手。
