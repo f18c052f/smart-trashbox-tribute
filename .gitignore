@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# 仮想環境
+.venv/
+venv/
+
+# テスト・ツールのキャッシュ
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# エディタ / OS
+.DS_Store

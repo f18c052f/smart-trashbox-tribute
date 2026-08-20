@@ -1,0 +1,18 @@
+# 既定はテキストとして正規化（リポジトリ内は常に LF）
+* text=auto
+
+# コードとロックファイルは作業ツリーでも LF に固定する。
+# 本リポジトリは Windows 上にあるが Python/uv は WSL 側で動くため、
+# CRLF に変換されると WSL 側のツールが書き戻すたびに差分が揺れる。
+*.py    text eol=lf
+*.toml  text eol=lf
+*.cfg   text eol=lf
+*.sh    text eol=lf
+uv.lock text eol=lf
+.python-version text eol=lf
+.gitattributes  text eol=lf
+.gitignore      text eol=lf
+
+# ドキュメントは既存の CRLF 運用を維持する（structure.md の規約）
+*.md    text eol=crlf
+*.json  text eol=crlf

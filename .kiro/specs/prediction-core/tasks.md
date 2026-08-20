@@ -7,7 +7,7 @@
 
 - [ ] 1. 基盤: パッケージ骨組みと共有型
 
-- [ ] 1.1 パッケージ構成とテスト実行基盤を用意する
+- [x] 1.1 パッケージ構成とテスト実行基盤を用意する
   - `pyproject.toml` を PEP 621 形式で作成し、`requires-python = ">=3.11"`、**実行時依存なし**、開発依存を `pytest` のみとする
   - `src/` レイアウトで `src/prediction_core/__init__.py` と `tests/prediction_core/` を作成する
   - `tests/prediction_core/conftest.py` に既定設定を返す共通フィクスチャの器を置く
@@ -203,3 +203,14 @@
   - _Requirements: 1.4, 1.5, 7.1, 8.2, 9.5_
   - _Depends: 5.1_
   - _Boundary: tests/prediction_core/test_boundaries.py_
+
+## Implementation Notes
+
+> タスク実行中に判明した、後続タスクにも効く事項を1行ずつ記録する。
+
+- **1.1**: 実行環境はリポジトリが Windows、Python/uv が WSL。すべての Python コマンドは `wsl -e bash -lc 'export PATH="$HOME/.local/bin:$PATH"; cd /mnt/c/Users/user/repos/smart-trashbox-tribute && <cmd>'` の形で実行する。
+- **1.1**: WSL 側から `git status` を見ると全ファイルが変更扱いに見える（autocrlf の artifact）。**git の状態判定とコミットは必ず Windows 側の git で行う。**
+- **1.1**: `core.autocrlf=true` と WSL ツールの LF 出力が衝突するため `.gitattributes` で `*.py` / `*.toml` / `uv.lock` を `eol=lf` に固定した。`*.md` は既存規約どおり CRLF。
+- **1.1**: ビルドバックエンドは `hatchling`（design.md 未指定のため選定）。ビルド時依存のみで実行時依存ゼロは維持。
+- **1.1**: `conftest.py` の `default_config` フィクスチャは `pytest.importorskip` で遅延解決している。**タスク 1.5 で `PredictionConfig` を実装したら中身を差し替えること。**
+- **1.1**: 足場テスト `tests/prediction_core/test_packaging.py` は依存メタデータのみを検査する。**タスク 5.4 の `test_boundaries.py`（import 文の静的走査）は別途必要で、本テストでは充足されない。**
