@@ -22,7 +22,7 @@
   - _Requirements: 1.2, 2.5, 10.4_
   - _Boundary: Units_
 
-- [ ] 1.3 (P) 例外階層を定義する
+- [x] 1.3 (P) 例外階層を定義する
   - 基底例外と、設定不正・レコードスキーマ不整合・直列化不能の3系統を定義する
   - 「予測の無効は値で返し、呼び出し方の誤りだけを例外にする」という区分を、この階層で表現する
   - 観測可能な完了状態: 各例外が基底例外として捕捉でき、`ValueError` としても捕捉できることを `tests/prediction_core/test_config.py` で固定する
@@ -215,3 +215,6 @@
 - **1.1**: `conftest.py` の `default_config` フィクスチャは `pytest.importorskip` で遅延解決している。**タスク 1.5 で `PredictionConfig` を実装したら中身を差し替えること。**
 - **1.1**: 足場テスト `tests/prediction_core/test_packaging.py` は依存メタデータのみを検査する。**タスク 5.4 の `test_boundaries.py`（import 文の静的走査）は別途必要で、本テストでは充足されない。**
 - **1.2**: 「他モジュールが `1000` / `1e6` を直接書かない」（要件 10.5）は、他モジュール未存在のため 1.2 では検証できず**タスク 5.4 へ申し送り**。`src/prediction_core/**` を走査して裸の換算係数を禁じるガードを 5.4 に含めること。
+- **1.3**: `tests/prediction_core/test_config.py` は 1.3（例外階層）と 1.5（設定検証）の共有ファイル。1.3 分は `TestErrorHierarchy` に収めてあるので、**1.5 は末尾に節を追加する形で拡張すること**（既存部の再構成は不可）。
+- **1.3**: `test_module_defines_exactly_the_declared_exceptions` が例外型を4種に固定している。**後続タスクは既存の例外型を使うだけで新設しないこと。**新設が必要なら design.md の Errors を先に更新する。
+- **1.3**: `errors.py` の docstring に「予測無効は値で返し例外にしない」契約を記載済み。**タスク 3.2（無効判定5種）は例外を送出してはならない**（要件 6.7）。
