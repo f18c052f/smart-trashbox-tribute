@@ -106,6 +106,15 @@ NFR-1 / NFR-2 のみに適用されていた規律を **NFR-3 / NFR-4 / NFR-5 �
 > ⚠️ 注記群。これらは「数値だけが残って根拠が消える」最悪の状態を防ぐための本体であり、
 > **本プロジェクトのドキュメントで最も価値がある部分**と判断した。
 
+### D-8 Throw Record 最小スキーマを prediction-core で確定した（OQ-31 決着）
+
+| | |
+|---|---|
+| **決定** | Throw Record（1投擲＝1レコード）の最小スキーマを `prediction-core` の実装（[design.md](../.kiro/specs/prediction-core/design.md) ThrowRecordCodec）で確定した。フィールドは `schema_version`（現行 `1.0`）・`record_id`・`source`（`live`/`recorded`/`simulated`）・`config`（予測に使用したパラメータ）・`samples`（観測サンプル系列）・`predictions`（予測結果系列。要素に `kind` キーを持たせ `Prediction`/`InvalidPrediction` の直和型を判別する）・`extra`（下流の加算的拡張の退避先）の7つ |
+| **理由** | シミュレータ（柱1）・M1実測評価・`sensing-foundation` の記録形式（OQ-32）がいずれも「1投擲」という同じ単位を扱うにもかかわらず、スキーマを別々に定義すると記録・再生・評価が入力元（live/recorded/simulated）によって食い違う。`prediction_core` を単一定義元とし、下流はこれに従う方針にした（→ [requirements.md Requirement 9](../.kiro/specs/prediction-core/requirements.md)） |
+| **柱3見送り（D-5）との関係** | 当初 OQ-31 は「柱3（投擲アーカイブ）を見送ったため最初から完全な形にしない」という条件付きだった。実装時点でも柱3向けの集計・検索機能は持たせておらず、`to_dict`/`from_dict`/`to_json`/`from_json`/`replay`/`predictions_equivalent` という素の構造・直列化・再生のみに留めている（方針を変更していない） |
+| **現在の扱い** | `prediction_core.ThrowRecord` として実装・テスト済み（`prediction-core` spec 全19タスク完了、263件のテストで検証）。下流 Spec（`sensing-foundation` の Record/Replay 形式＝[OQ-32](./open-questions.md#g-観測基盤独自機能)、テレオペログ＝[OQ-37](./open-questions.md#g-観測基盤独自機能)、ログ保存形式＝[OQ-35](./open-questions.md#g-観測基盤独自機能)）はこのスキーマに従う。**保存先・拡張子・NDJSON化はスキーマの範囲外**であり、これらは引き続き `sensing-foundation` 側の未決事項として残る |
+
 ---
 
 ## 2. 採用しなかった案: 駆動系

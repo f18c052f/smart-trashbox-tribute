@@ -227,8 +227,9 @@ trajectory prediction
 
 > 入力元が3種類（live / recorded / simulated）になっても下流を変えずに済むよう、
 > **1投擲を表す共通スキーマ**を上位に置く方針を [original-features.md §2](./original-features.md#2-全体像throw-record-を中心に置く) で検討している。
-> **Record / Replay のデータ形式**（[OQ-32](./open-questions.md#g-観測基盤独自機能)）は
-> このスキーマの定義（[OQ-31](./open-questions.md#g-観測基盤独自機能)）と同じ問題である。**別々に決めない。**
+> このスキーマ自体は `prediction-core` が確定済み（→ [decisions.md D-8](./decisions.md#d-8-throw-record-最小スキーマを-prediction-core-で確定した-oq-31-決着)）。
+> **Record / Replay のデータ形式**（[OQ-32](./open-questions.md#g-観測基盤独自機能)、保存先・拡張子・NDJSON化）は
+> このスキーマに従う形で `sensing-foundation` が決める。
 
 > ⚠️ 今回は **class / interface / Python ファイル / ディレクトリを作成しない。**
 > 上記は責務分離の**設計思想**であり、具体的な型・API・モジュール名は未確定。
@@ -480,7 +481,7 @@ Pi で得た**実データ**は WSL へ持ち帰り、Replay で繰り返し解�
 | [OQ-28](./open-questions.md#e-固定側検出予測計算機) | RealSense 実機セットアップの成立性（→ §16） |
 | [OQ-29](./open-questions.md#f-通信) ★ | 固定側 → 移動体の通信方式（→ §9.2） |
 | [OQ-30](./open-questions.md#f-通信) | 通信メッセージの最終フォーマット（→ §9.1） |
-| [OQ-31](./open-questions.md#g-観測基盤独自機能) ★ / [OQ-32](./open-questions.md#g-観測基盤独自機能) | Throw Record スキーマ / Record・Replay のデータ形式（**一体で決める**） |
+| [OQ-32](./open-questions.md#g-観測基盤独自機能) | Record・Replay のデータ形式（Throw Record スキーマ自体は `prediction-core` が確定済み → [decisions.md D-8](./decisions.md#d-8-throw-record-最小スキーマを-prediction-core-で確定した-oq-31-決着)） |
 | [OQ-35](./open-questions.md#g-観測基盤独自機能) | ログの保存形式 |
 | [OQ-40](./open-questions.md#g-観測基盤独自機能) | リポジトリのディレクトリ構成（→ §7.1） |
 

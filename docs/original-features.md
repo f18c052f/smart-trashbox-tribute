@@ -76,12 +76,12 @@
 入力元が live / recorded / simulated のどれであっても、下流の表示・評価は同じコードで動く。
 
 **副次的な効果**: 未確定である **Record / Replay のデータ形式**（[OQ-32](./open-questions.md#g-観測基盤独自機能)）が、
-この Throw Record の定義（[OQ-31](./open-questions.md#g-観測基盤独自機能)）によって決まる。
+この Throw Record の定義（`prediction-core` が確定済み。→ [decisions.md D-8](./decisions.md#d-8-throw-record-最小スキーマを-prediction-core-で確定した-oq-31-決着)）によって決まる。
 
 > ⚠️ **注意**: 柱3 を見送り・柱2b を保留したため、**上図の下半分は当面「リプレイ表示」も
-> 「ベンチマーク」も存在しない。** したがって **Throw Record を最初から完全な形で設計しない。**
-> 柱1（シミュレータ）が必要とする最小形から始め、**「1投擲＝1レコード」という粒度だけを守る。**
-> 粒度さえ守れば、柱3 は後から足せる。
+> 「ベンチマーク」も存在しない。** そのため **Throw Record は最初から完全な形で設計しなかった。**
+> 柱1（シミュレータ）が必要とする最小形（`to_dict`/`from_dict`/`to_json`/`from_json`/`replay` のみ）から始め、
+> **「1投擲＝1レコード」という粒度だけを守った。** 粒度さえ守れば、柱3 は後から足せる。
 
 ### Throw Record に含める想定内容（未確定）
 
@@ -447,8 +447,7 @@ Replay を「重要な開発方針」としているが、**Replay できるだ�
 
 | ID | 事項 |
 |---|---|
-| [OQ-31](./open-questions.md#g-観測基盤独自機能) ★ | Throw Record の最小スキーマ（**シミュレータが必要とする分だけ**定義する） |
-| [OQ-32](./open-questions.md#g-観測基盤独自機能) | Record / Replay のデータ形式（**OQ-31 と一体で決める**） |
+| [OQ-32](./open-questions.md#g-観測基盤独自機能) | Record / Replay のデータ形式（Throw Record 最小スキーマ自体は `prediction-core` が確定済み。→ [decisions.md D-8](./decisions.md#d-8-throw-record-最小スキーマを-prediction-core-で確定した-oq-31-決着)） |
 | [OQ-33](./open-questions.md#g-観測基盤独自機能) | シミュレータの物理モデルの詳細度（空気抵抗・スリップ） |
 | [OQ-34](./open-questions.md#g-観測基盤独自機能) | ブラウザ可視化の実装手段（**2D で足りる可能性が高い**） |
 | [OQ-35](./open-questions.md#g-観測基盤独自機能) | ログの保存形式（NDJSON / CSV / その他） |
