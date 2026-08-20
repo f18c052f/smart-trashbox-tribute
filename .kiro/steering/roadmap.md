@@ -1,24 +1,28 @@
 # Roadmap
 
-## 現在地（最終更新: 2026-08-20）
+## 現在地（最終更新: 2026-08-21）
 
 > **セッションをまたぐ引き継ぎはこの節を正とする。** 作業が進んだら必ずここを更新する。
 
 | 項目 | 状態 |
 |---|---|
-| フェーズ | **`prediction-core` の Spec が3フェーズとも承認済み。実装コードはまだ一行も無い** |
-| ドキュメント | `docs/` 7ファイル、steering 4ファイル（本ファイル含む）が整備済み |
-| Spec | **`prediction-core` のみ requirements / design / tasks が揃い承認済み**（`ready_for_implementation: true`）。残り6件は `brief.md` のみ |
+| フェーズ | **`prediction-core` の実装が完了した。** 全19タスク、263テスト全通過、`/kiro-validate-impl` で GO、`kiro-verify-completion` で VERIFIED 済み |
+| ドキュメント | `docs/` 7ファイル、steering 4ファイル（本ファイル含む）が整備済み。**OQ-31（Throw Record 最小スキーマ）は決着し [decisions.md D-8](../../docs/decisions.md#d-8-throw-record-最小スキーマを-prediction-core-で確定した-oq-31-決着) へ移行済み** |
+| Spec | `prediction-core` は実装完了・**`main` へマージ済み**。残り6件は `brief.md` のみ |
 | 実機 | **Raspberry Pi 4 / RealSense D435 ともに未セットアップ**（OS 未導入） |
-| ブランチ | `main` から **`spec/prediction-core`** を作業中 |
+| ブランチ | `spec/prediction-core` は `main` へ fast-forward マージ済み。次の作業は `main` から新しいブランチを切る |
 
 ### 次のアクション
 
-1. **`/kiro-impl prediction-core`** — 19 サブタスク。ハード不要・依存ゼロで完走できる
-2. 実装完了後に **`/kiro-spec-batch`** で残りを生成。
-   **OQ-31（Throw Record 最小スキーマ）は `prediction-core` の design で決着済み**なので、
-   `sensing-foundation` を同時生成してよい（「別々に決めない」の制約はすでに満たされている）
-3. 並行して**実機セットアップ**（`development-environment.md §16` の手順。#3〜#6 を fps 計測より先に）
+1. **`/kiro-spec-batch`** — `prediction-core` が OQ-31 を決着済みのため、
+   `sensing-foundation`（OQ-32「Record / Replay のデータ形式」を同時に決められる。「別々に決めない」の制約は既に満たされている）を含む残り6Specの生成に進める
+2. 並行して**実機セットアップ**（`development-environment.md §16` の手順。#3〜#6 を fps 計測より先に）
+
+### `prediction-core` 実装完了の要点（引き継ぎ用）
+
+- 公開API（`prediction_core.__init__`）は18シンボルに確定済み: `Sample`/`SourceKind`/`PredictionConfig`/`TrajectoryParameters`/`Prediction`/`InvalidPrediction`/`InvalidReason`/`PredictionOutcome`/`predict`/`ThrowPredictionTracker`/`ThrowRecord`/`SCHEMA_VERSION`/`replay`/`predictions_equivalent`/例外4種。下流Specはこの入口から参照する
+- `ThrowRecord`（`schema_version` 1.0）は `to_dict`/`from_dict`/`to_json`/`from_json`/`replay`/`predictions_equivalent` まで実装・テスト済み
+- 実行時のサードパーティ依存は引き続きゼロ（`test_boundaries.py` が静的に回帰検証する）
 
 ### `prediction-core` の設計上の要点（引き継ぎ用）
 
@@ -126,7 +130,7 @@ M1 は「飛来するゴミを検出・追跡し、落下地点を予測して�
 
 ## Specs (dependency order)
 
-- [ ] prediction-core -- 放物運動フィッティングによる落下地点・時刻・残差の算出。Throw Record 最小スキーマ。ハード不要。Dependencies: none
+- [x] prediction-core -- 放物運動フィッティングによる落下地点・時刻・残差の算出。Throw Record 最小スキーマ。ハード不要。Dependencies: none
 - [ ] sensing-foundation -- Pi 4 / RealSense セットアップ、安定取得、実データ記録、入力層抽象、構造化ロギング基盤。Dependencies: none
 - [ ] trajectory-simulator -- 投擲物理・ノイズ・遅延・移動体運動モデルとパラメータ掃引によるキャッチ可能領域の算出。Dependencies: prediction-core
 - [ ] world-frame-calibration -- 床平面推定、World frame の確立、既知位置との照合による検証ステップ。Dependencies: sensing-foundation
