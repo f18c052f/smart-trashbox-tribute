@@ -4,10 +4,6 @@ Predictor コンポーネント。L4 層であり、`fitting` と `impact`(L3、
 兄弟モジュール)の両方を import してよい唯一のモジュールである
 (design.md「Dependency Direction」)。
 
-**このファイルはタスク 3.1 / 3.2 の範囲に限定する。** design.md の Predictor は
-以下をすべて要求するが、タスク 3.1 / 3.2 が実装するのは 6 段階の検証順序と
-正常系の統合のみである。
-
 - 6 段階の検証順序(要件 6.1-6.5、design.md「Predictor / Responsibilities &
   Constraints」)を、タスク 3.1 / 3.2 の2タスクに分けて実装した。
 
@@ -30,13 +26,20 @@ Predictor コンポーネント。L4 層であり、`fitting` と `impact`(L3、
   人が読める形で添えるが、`detail` の内容そのものを分岐条件には使わない
   (`types.py` の `InvalidPrediction.detail` docstring 参照)。
 
-- `elapsed_ms` の実測(`time.perf_counter_ns` と `config.measure_elapsed`)は
-  タスク 3.3 が追加する。本タスクまでは常に `None` を設定する。
+- `elapsed_ms` の実測(タスク 3.3、要件 8.1-8.5)は `predict()` の入口で
+  `config.measure_elapsed` が真の場合のみ `time.perf_counter_ns()` を1回
+  呼び、7箇所ある組み立て地点(`return`)の直前でそれぞれ出口側の
+  `time.perf_counter_ns()` を1回呼んで差分を ms に換算する。
+  `measure_elapsed` が偽のときは開始時刻の取得自体を行わない(要件 8.3)。
+  ロギング基盤・`logging` モジュールには一切依存せず、記録・集計・送出も
+  行わない(要件 8.2 / 8.4)。目標値との比較や充足判定も行わない
+  (要件 8.5、計測値をそのまま返すのみ)。
 """
 
 from __future__ import annotations
 
 import math
+import time
 from collections.abc import Sequence
 
 from prediction_core.config import PredictionConfig
@@ -45,6 +48,19 @@ from prediction_core.impact import solve_floor_impact
 from prediction_core.types import InvalidPrediction, InvalidReason, Prediction, PredictionOutcome, Sample
 
 __all__ = ["predict"]
+
+
+def _elapsed_ms(start_ns: int | None) -> float | None:
+    """入口の `start_ns` から現在までの経過時間を ms で返す(要件 8.1-8.3)。
+
+    `start_ns` が `None`(= `config.measure_elapsed` が偽で入口の計測を
+    そもそも行わなかった)場合は `time.perf_counter_ns()` を呼ばずに
+    `None` を返す。design.md Predictor Implementation Notes の
+    `(end - start) / 1e6` をそのまま用いる。
+    """
+    if start_ns is None:
+        return None
+    return (time.perf_counter_ns() - start_ns) / 1e6
 
 
 def predict(
@@ -64,9 +80,14 @@ def predict(
     Returns:
         成功時は `Prediction`。6 段階の検証順序(モジュール docstring 参照)
         のいずれかに違反した場合は、その理由を持つ `InvalidPrediction`。
-        タスク 3.2 の時点では `elapsed_ms` は常に `None`(タスク 3.3 が実測に
-        置き換える)。
+        `config.measure_elapsed` が真なら `elapsed_ms` は有限の非負値、
+        偽なら `None`(要件 8.1 / 8.3。成功・失敗いずれの場合も同様)。
     """
+    # 経過時間計測の起点(要件 8.1-8.3)。`config.measure_elapsed` が偽の場合、
+    # 右辺は短絡評価により `time.perf_counter_ns()` を呼び出さない
+    # (開始時刻の取得自体を行わないという要件 8.3 の文言どおりの実装)。
+    start_ns = time.perf_counter_ns() if config.measure_elapsed else None
+
     # ステップ1: 要素が Sample であること(要件 6.5)。
     # 違反時は `sample.t_ms` などへのアクセス自体が安全でないため、
     # `based_on_time_ms` は求めず None のまま返す。
@@ -80,7 +101,7 @@ def predict(
             ),
             sample_count=sample_count,
             based_on_time_ms=None,
-            elapsed_ms=None,
+            elapsed_ms=_elapsed_ms(start_ns),
             config=config,
         )
 
@@ -101,7 +122,7 @@ def predict(
             ),
             sample_count=sample_count,
             based_on_time_ms=max((sample.t_ms for sample in samples), default=None),
-            elapsed_ms=None,
+            elapsed_ms=_elapsed_ms(start_ns),
             config=config,
         )
 
@@ -120,7 +141,7 @@ def predict(
             ),
             sample_count=sample_count,
             based_on_time_ms=based_on_time_ms,
-            elapsed_ms=None,
+            elapsed_ms=_elapsed_ms(start_ns),
             config=config,
         )
 
@@ -138,7 +159,7 @@ def predict(
             ),
             sample_count=sample_count,
             based_on_time_ms=based_on_time_ms,
-            elapsed_ms=None,
+            elapsed_ms=_elapsed_ms(start_ns),
             config=config,
         )
     fit_result = fit_outcome
@@ -156,48 +177,44 @@ def predict(
             ),
             sample_count=sample_count,
             based_on_time_ms=based_on_time_ms,
-            elapsed_ms=None,
+            elapsed_ms=_elapsed_ms(start_ns),
             config=config,
         )
     impact = impact_outcome
 
-    candidate = Prediction(
-        predicted_hit_x_mm=impact.hit_x_mm,
-        predicted_hit_y_mm=impact.hit_y_mm,
-        predicted_hit_time_ms=impact.hit_time_ms,
-        remaining_time_ms=impact.hit_time_ms - based_on_time_ms,
-        estimated_vx_mm_s=fit_result.trajectory.estimated_vx_mm_s,
-        estimated_vy_mm_s=fit_result.trajectory.estimated_vy_mm_s,
-        estimated_vz_mm_s=fit_result.trajectory.estimated_vz_mm_s,
-        residual=fit_result.residual,
-        trajectory=fit_result.trajectory,
-        sample_count=sample_count,
-        based_on_time_ms=based_on_time_ms,
-        elapsed_ms=None,
-        config=config,
-    )
-
     # ステップ6: 算出結果が全て有限であること(要件 6.4、出力側)。
+    # `_elapsed_ms(start_ns)` は「入口で1回・出口で1回」しか呼んではならない
+    # (要件 8.1、モジュール docstring 参照)。そのため、`Prediction` /
+    # `InvalidPrediction` のどちらを返すか確定する前に、`impact` /
+    # `fit_result.trajectory` から直接(＝一度も `Prediction` に包まずに)
+    # 生の16値を取り出して検査する。こうすることで、判定結果に応じて
+    # 組み立てる側の1オブジェクトだけを構築し、そこで初めて
+    # `_elapsed_ms(start_ns)` を呼ぶ(=実際に return する箇所でちょうど
+    # 1回)。「暫定の Prediction を先に組み立ててから捨てて作り直す」実装
+    # だと、暫定側と最終側の双方で `_elapsed_ms` が呼ばれてしまい、この
+    # 呼び出し規約(入口1回+出口1回=計2回)に違反する。
+    #
     # 結果直下の8フィールドに加え、要件 6.4 の「算出結果」が結果全体を
     # 指す広い表現であることを踏まえ、同梱する trajectory の8フィールドも
     # 併せて検査する(防御的な網羅性のため)。
+    remaining_time_ms = impact.hit_time_ms - based_on_time_ms
     output_values = (
-        candidate.predicted_hit_x_mm,
-        candidate.predicted_hit_y_mm,
-        candidate.predicted_hit_time_ms,
-        candidate.remaining_time_ms,
-        candidate.estimated_vx_mm_s,
-        candidate.estimated_vy_mm_s,
-        candidate.estimated_vz_mm_s,
-        candidate.residual,
-        candidate.trajectory.t_ref_ms,
-        candidate.trajectory.x0_mm,
-        candidate.trajectory.y0_mm,
-        candidate.trajectory.z0_mm,
-        candidate.trajectory.estimated_vx_mm_s,
-        candidate.trajectory.estimated_vy_mm_s,
-        candidate.trajectory.estimated_vz_mm_s,
-        candidate.trajectory.gravity_mm_s2,
+        impact.hit_x_mm,
+        impact.hit_y_mm,
+        impact.hit_time_ms,
+        remaining_time_ms,
+        fit_result.trajectory.estimated_vx_mm_s,
+        fit_result.trajectory.estimated_vy_mm_s,
+        fit_result.trajectory.estimated_vz_mm_s,
+        fit_result.residual,
+        fit_result.trajectory.t_ref_ms,
+        fit_result.trajectory.x0_mm,
+        fit_result.trajectory.y0_mm,
+        fit_result.trajectory.z0_mm,
+        fit_result.trajectory.estimated_vx_mm_s,
+        fit_result.trajectory.estimated_vy_mm_s,
+        fit_result.trajectory.estimated_vz_mm_s,
+        fit_result.trajectory.gravity_mm_s2,
     )
     if not all(math.isfinite(value) for value in output_values):
         return InvalidPrediction(
@@ -208,8 +225,22 @@ def predict(
             ),
             sample_count=sample_count,
             based_on_time_ms=based_on_time_ms,
-            elapsed_ms=None,
+            elapsed_ms=_elapsed_ms(start_ns),
             config=config,
         )
 
-    return candidate
+    return Prediction(
+        predicted_hit_x_mm=impact.hit_x_mm,
+        predicted_hit_y_mm=impact.hit_y_mm,
+        predicted_hit_time_ms=impact.hit_time_ms,
+        remaining_time_ms=remaining_time_ms,
+        estimated_vx_mm_s=fit_result.trajectory.estimated_vx_mm_s,
+        estimated_vy_mm_s=fit_result.trajectory.estimated_vy_mm_s,
+        estimated_vz_mm_s=fit_result.trajectory.estimated_vz_mm_s,
+        residual=fit_result.residual,
+        trajectory=fit_result.trajectory,
+        sample_count=sample_count,
+        based_on_time_ms=based_on_time_ms,
+        elapsed_ms=_elapsed_ms(start_ns),
+        config=config,
+    )
