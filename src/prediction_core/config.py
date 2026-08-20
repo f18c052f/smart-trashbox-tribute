@@ -2,9 +2,10 @@
 
 本モジュールは L2 層であり、実行時に `prediction_core.units` と
 `prediction_core.errors` のみを import する（design.md「Dependency Direction」）。
-`prediction_core.types` を import してはならない。`types.py` は `PredictionConfig`
-を `TYPE_CHECKING` 下でのみ参照しており、こちらが `types` を実行時 import すると
-上向き依存の循環が生じる（タスク1.4で避けた問題を再発させる）。
+`prediction_core.types` の実行時 import は現時点で不要なため行っていないが、
+design.md の依存表は `config` が `types` を import してよい方向を許可している
+（禁止は逆方向。`types.py` は `PredictionConfig` を `TYPE_CHECKING` 下でのみ
+参照しており、`types` が `config` を実行時 import することはない）。
 
 **根拠のない固定値を埋め込まない**（要件10.5）: 重力加速度・最小サンプル数・
 時刻縮退の相対閾値はすべてここでパラメータ化され、既定値には導出根拠を併記する。
