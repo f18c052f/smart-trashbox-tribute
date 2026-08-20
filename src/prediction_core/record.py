@@ -1,15 +1,18 @@
-"""Throw Record の最小スキーマと dict / JSON 往復（要件 9.1 / 9.2 / 9.3 / 9.6）。
+"""Throw Record の最小スキーマ・dict / JSON 往復・Replay（要件 9.1-9.4 / 9.6）。
 
 本モジュールは L5 層であり、実行時に `prediction_core.types` /
-`prediction_core.config` / `prediction_core.errors` のみを import する
-（design.md「Dependency Direction」）。`predictor.py`（L4）や、まだ存在しない
-`tracker.py`（L6）を import しない。1投擲の記録に `predict()` そのものは
-不要であり（Replay はタスク 4.3 の担当）、`predictor` への依存は生じない。
+`prediction_core.config` / `prediction_core.errors` に加え、`replay` の
+実装のためだけに `prediction_core.predictor`（L4）を import する
+（design.md「Dependency Direction」表: L5 の `record` は 0〜4層を import
+可能）。まだ存在しない `tracker.py`（L6、逐次蓄積器）は import しない。
+`replay` は記録された観測サンプル系列の前置列に `predict()` を直接適用して
+予測系列を再構成するため、逐次蓄積器そのものには依存しない（design.md
+「State Management / Risks」: スキーマ層を import しただけで蓄積器まで
+引きずり込まれる状態を避けるため）。
 
-**このタスク（4.2）が実装する範囲**: `to_json` / `from_json`、`from_dict` の
-必須キー欠落・型不一致検証（`RecordSchemaError`）、未知トップレベルキーの
-`extra` への退避。`replay` / `predictions_equivalent` はタスク 4.3 の担当で
-あり、ここでは実装しない（スタブも置かない）。
+**このタスク（4.3）が実装する範囲**: `replay` / `predictions_equivalent`。
+`to_dict` / `from_dict` / `to_json` / `from_json`（タスク 4.1 / 4.2）は
+変更しない。
 
 **手動での dict 変換**（`dataclasses.asdict()` を使わない理由）:
 
@@ -30,11 +33,12 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
-from dataclasses import dataclass, field
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field, replace
 
 from prediction_core.config import PredictionConfig
 from prediction_core.errors import RecordSchemaError, RecordSerializationError
+from prediction_core.predictor import predict
 from prediction_core.types import (
     InvalidPrediction,
     InvalidReason,
@@ -45,7 +49,12 @@ from prediction_core.types import (
     TrajectoryParameters,
 )
 
-__all__ = ["SCHEMA_VERSION", "ThrowRecord"]
+__all__ = [
+    "SCHEMA_VERSION",
+    "ThrowRecord",
+    "predictions_equivalent",
+    "replay",
+]
 
 SCHEMA_VERSION: str = "1.0"
 """Throw Record スキーマの版（design.md「Throw Record JSON スキーマ」）。
@@ -394,3 +403,57 @@ class ThrowRecord:
         `from_dict` と共通である。
         """
         return cls.from_dict(json.loads(text))
+
+
+def replay(record: ThrowRecord) -> tuple[PredictionOutcome, ...]:
+    """記録された観測サンプル系列から予測系列を再構成する（要件 9.4）。
+
+    `record.samples` を記録順の**前置列**（1点目、1〜2点目、…、全点）に
+    分け、それぞれへ `record.config` で `predict()` を適用する。
+    `ThrowPredictionTracker`（逐次蓄積器、まだ存在しない）には一切依存
+    しない（design.md「Batch / Job Contract」）。
+
+    `predict()` は入力を `t_ms` 昇順に安定ソートしてから処理するため、
+    ここで渡す前置列は `record.samples` のインデックス順のままでよい
+    （事前に時刻でソートする必要はない）。
+
+    副作用を持たず、何度呼んでも同じ結果を返す（design.md
+    「Idempotency & recovery」）。
+    """
+    return tuple(
+        predict(record.samples[: prefix_length + 1], record.config)
+        for prefix_length in range(len(record.samples))
+    )
+
+
+def predictions_equivalent(
+    left: Sequence[PredictionOutcome],
+    right: Sequence[PredictionOutcome],
+) -> bool:
+    """予測系列2つが同値かどうかを判定する（要件 9.4）。
+
+    `elapsed_ms` は処理時間の実測値であり、呼び出しのたびに変動しうる
+    ため比較対象から**除外する**（design.md「Invariants」）。それ以外の
+    全フィールドは厳密に比較する。
+
+    - 長さが異なれば偽
+    - 同じ位置の要素の型が異なれば（一方が `Prediction`、他方が
+      `InvalidPrediction`）偽
+    - 上記のいずれにも該当しなければ、各要素を `elapsed_ms` を揃えた上で
+      比較し、全ペアが一致すれば真
+    """
+    if len(left) != len(right):
+        return False
+
+    for left_outcome, right_outcome in zip(left, right):
+        if type(left_outcome) is not type(right_outcome):
+            return False
+        # ここまでで同じ型（Prediction 同士、または InvalidPrediction
+        # 同士）であることが確定している。両型とも `elapsed_ms` フィールド
+        # を持つため、同一の値へ揃えてから残り全フィールドを比較する。
+        if replace(left_outcome, elapsed_ms=None) != replace(
+            right_outcome, elapsed_ms=None
+        ):
+            return False
+
+    return True

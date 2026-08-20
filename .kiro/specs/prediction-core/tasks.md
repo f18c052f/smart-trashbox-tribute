@@ -145,7 +145,7 @@
   - _Requirements: 9.3, 9.5, 9.6_
   - _Boundary: ThrowRecordCodec_
 
-- [ ] 4.3 Replay と予測系列の同値判定を実装する
+- [x] 4.3 Replay と予測系列の同値判定を実装する
   - 記録された観測サンプル系列を**前置列**（1点目、1〜2点目、…、全点）に分け、記録された設定で予測を再実行する
   - 逐次蓄積器に依存せず予測関数だけで再構成する（スキーマ層が蓄積器を引きずり込まないため）
   - 系列の同値判定を提供し、実測値である処理時間を比較対象から除外する
@@ -246,3 +246,6 @@
 - **4.1**: NaN/Infinity を含む `ThrowRecord` を `from_dict(to_dict(r)) == r` で検証すると `NaN != NaN` のため必ず失敗する。非有限値のテストは個別フィールドを `math.isnan`/`math.isinf` で確認し、往復等価性テストは有限値のみのレコードで行うこと。
 - **4.2**: `to_json`/`from_json`・必須キー/型検証（`RecordSchemaError`、メッセージにキー名を含む）・未知トップレベルキーの `extra` への退避を実装（152→172件）。`from_json` は独自の検証経路を持たず `from_dict` に完全委譲するため、検証ロジックの単一定義元が保たれている。非有限値は `to_dict()` では引き続き成功し、`to_json()` のみ `RecordSerializationError`（`json.dumps(allow_nan=False)` の `ValueError` を変換）で拒否する。
 - **4.2**: レビューで承認されたが、非ブロッキングの申し送り2件。(a) 未知トップレベルキーと明示的な `extra` キーが同名衝突した場合、現状は未知キー側が勝つ実装だが、この挙動を固定するテストが無い（design.md も優先順位を規定していない）。(b) `ensure_ascii=False` の非ASCII文字（日本語の `record_id` 等）での往復を確認するテストが無い。**task 4.3 またはそれ以降でこれらのテストを追加する余地がある（ブロッキングではない）。**
+- **4.3**: `record.py` が `predictor.py`（L4）を初めて import した（design.md 依存表どおり L5 は 0〜4層を import 可）。`tracker.py`（L6、まだ存在しない）には依存しない。`replay` は `record.samples[: i + 1]`（i は0始まり）の前置列に `predict(prefix, record.config)` を適用するだけで、`ThrowPredictionTracker` を一切使わない。`predict()` が入力を `t_ms` 昇順に安定ソートするため、前置列を事前にソートし直す必要はない。
+- **4.3**: `predictions_equivalent` は「長さ一致 → 各要素の型一致（`type(l) is not type(r)`）→ `dataclasses.replace(obj, elapsed_ms=None)` で揃えてから `==`」の3段階。**ミューテーションテストで判明した点**: 型チェック(`type(l) is not type(r)`)を削除しても既存の全テストは通り続けた。理由は `@dataclass` の自動生成 `__eq__` が `other.__class__ is self.__class__` を内部で既にチェックしており、`Prediction != InvalidPrediction` は型チェックを明示しなくても常に真になるため。したがって型チェック行は**契約を明文化する目的のためだけに残した安全な冗長コード**であり、テストでは独立に検出できない（`Prediction`/`InvalidPrediction` のフィールド構成が偶然一致することがない限り原理的に検出不能）。後続タスクで同種の直和型を比較するコードを書く際、この「dataclass の型チェックはテストで検出できない」という性質を踏まえること。
+- **4.3**: `tests/prediction_core/test_replay.py` の `_build_record` は `ThrowPredictionTracker` を使わず、`predict()` を前置列へ手動適用して `ThrowRecord` を組み立てている。5点のサンプル（`min_samples=3` の既定設定）を使うことで、先頭2件が `InsufficientSamples`、残り3件が有効な `Prediction` という混在系列を自然に作れる。**4.4（Tracker 実装）でも同じ5点パターンが使い回せる可能性がある。**
