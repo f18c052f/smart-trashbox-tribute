@@ -168,7 +168,7 @@
 
 - [ ] 5. 公開 API と全体検証
 
-- [ ] 5.1 公開 API を確定する
+- [x] 5.1 公開 API を確定する
   - パッケージ入口を再エクスポートのみとし、ロジックを持たせない
   - 公開シンボルを明示列挙し、ここに無いものを内部実装として扱う契約を成立させる
   - Throw Record スキーマの単一定義元として、下流 Spec がこの入口から参照できるようにする
@@ -251,4 +251,5 @@
 - **4.3**: `tests/prediction_core/test_replay.py` の `_build_record` は `ThrowPredictionTracker` を使わず、`predict()` を前置列へ手動適用して `ThrowRecord` を組み立てている。5点のサンプル（`min_samples=3` の既定設定）を使うことで、先頭2件が `InsufficientSamples`、残り3件が有効な `Prediction` という混在系列を自然に作れる。**4.4（Tracker 実装）でも同じ5点パターンが使い回せる可能性がある。**
 - **4.4**: `src/prediction_core/tracker.py`（L6）は `config`/`predictor`/`record`/`types` のみを import する。`add_sample` は毎回 `tuple(self._samples)`（蓄積済み全点）で `predict()` を呼び直す（スライディングウィンドウ・部分和は持たない、design.mdの明示的な禁止どおり）。`samples`/`predictions` プロパティは呼び出しごとに新しい `tuple(...)` を返すため、外部からの変更が内部状態に伝播しない。`add_sample` の戻り値は `self._predictions` へ追加したオブジェクトそのもの（`is` 同一性が成立）。
 - **4.4**: `record_id` が空文字列の場合は素の `ValueError` を送出する（`errors.py` の4例外は新設しない方針を踏襲。4例外はいずれも `ValueError` を継承しているため呼び出し側の `except ValueError` 網と矛盾しない）。`first_valid` はキャッシュせず毎回 `predictions` を先頭から線形走査する（design.mdが専用フラグ・経路を作らないよう明示しているため）。
-- **4.4**: `ThrowPredictionTracker` の公開インターフェースは `add_sample`/`samples`/`predictions`/`latest`/`first_valid`/`to_record` の6つのみ（要件5.4、駆動制御・送信メソッドなし）。**5.1（公開API確定）でこの6つを `prediction_core` の `__all__` に含めること。** `src/prediction_core/__init__.py` は現時点でまだ `__all__ = []` のまま未着手。
+- **4.4**: `ThrowPredictionTracker` の公開インターフェースは `add_sample`/`samples`/`predictions`/`latest`/`first_valid`/`to_record` の6つのみ（要件5.4、駆動制御・送信メソッドなし）。~~5.1（公開API確定）でこの6つを `prediction_core` の `__all__` に含めること。~~ **（5.1での訂正）** この6つはインスタンスメソッド/プロパティであり、`__all__` に含める対象は `ThrowPredictionTracker` クラス自体（design.mdの18シンボル列挙どおり）。この6つは同クラスを公開すれば自動的にアクセス可能になる。
+- **5.1**: `src/prediction_core/__init__.py` を18シンボル（design.md PublicApi節の列挙どおり）の明示 re-export のみに実装。ロジック無し（AST検査でも固定）。**この変更により `prediction_core.types` を import すると `__init__.py` 経由で全モジュールが `sys.modules` に載るようになった。** task 1.4 由来の `test_importing_types_does_not_import_config_at_runtime`（サブプロセスで `sys.modules` を検査する方式）はこの影響で常に失敗する状態になったため、`importlib.util.spec_from_file_location` で `types.py` を単体ファイルとしてパッケージ機構を経由せず直接ロードする方式に書き換えた（`types.py` 自体は無変更）。**後続タスク（5.4の境界回帰テスト等）でも同様に、`__init__.py` 経由の import では個別モジュールの実行時依存を独立検証できない点に注意すること。**

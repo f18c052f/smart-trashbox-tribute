@@ -17,9 +17,11 @@ design.md「L0-L2 基盤層 / CoreTypes」の State Management が定める型�
 from __future__ import annotations
 
 import dataclasses
+import importlib
 import subprocess
 import sys
 import typing
+from pathlib import Path
 
 import pytest
 
@@ -276,9 +278,32 @@ def test_residual_documents_millimetre_unit() -> None:
 
 
 def test_importing_types_does_not_import_config_at_runtime() -> None:
-    """`types` は上層の `config` を実行時 import しない（design.md「Dependency Direction」）。"""
+    """`types` は上層の `config` を実行時 import しない（design.md「Dependency Direction」）。
+
+    タスク 5.1（PublicApi）以降、`prediction_core/__init__.py` は公開 API の
+    再エクスポートのため `config` を含む全内部モジュールを import する。その
+    ため `import prediction_core.types` は Python の import 機構上、親パッケージ
+    `prediction_core` の `__init__.py` を経由し、必然的に `prediction_core.config`
+    を `sys.modules` に載せる。「`prediction_core.config` が `sys.modules` に
+    現れるか」という間接的なプローブは、もはや `types.py` **自身**の実行時
+    import の有無を判別できない。
+
+    本テストが固定したい不変条件はあくまで「`types.py` というモジュール自身が
+    `config` を実行時 import しない」ことである（`PredictionConfig` への参照は
+    `TYPE_CHECKING` ガード内に限る、モジュール docstring 参照）。そこで
+    `types.py` を**パッケージ機構を経由せず**単体ファイルとして
+    `importlib.util.spec_from_file_location` で直接ロードし
+    （`prediction_core/__init__.py` を実行しない）、その過程で
+    `prediction_core.config` が import されないことを確認する。
+    """
+    types_path = Path(importlib.import_module("prediction_core.types").__file__).resolve()
     probe = (
-        "import sys, prediction_core.types; "
+        "import sys, importlib.util; "
+        "spec = importlib.util.spec_from_file_location("
+        f"'_types_standalone_probe', {str(types_path)!r}); "
+        "module = importlib.util.module_from_spec(spec); "
+        "sys.modules[spec.name] = module; "
+        "spec.loader.exec_module(module); "
         "sys.exit(1 if 'prediction_core.config' in sys.modules else 0)"
     )
     result = subprocess.run([sys.executable, "-c", probe], check=False)
