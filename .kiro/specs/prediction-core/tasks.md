@@ -177,7 +177,7 @@
   - _Depends: 4.4_
   - _Boundary: PublicApi_
 
-- [ ] 5.2 (P) 解析解との end-to-end 一致を検証する
+- [x] 5.2 (P) 解析解との end-to-end 一致を検証する
   - 落下地点と落下時刻が解析的に既知の投擲を複数パターン用意する（水平投射・斜方投射・初期高度の高低）
   - 検証は `tests/prediction_core/test_analytic_e2e.py` に置き、サンプル生成は 1.6 のヘルパを使う
   - 大きな絶対時刻オフセットを与え、落下時刻が入力と同一基準で返ることを確認する
@@ -186,7 +186,7 @@
   - _Depends: 1.6, 5.1_
   - _Boundary: tests/prediction_core/test_analytic_e2e.py_
 
-- [ ] 5.3 (P) サンプル数と予測誤差の評価出力を検証する
+- [x] 5.3 (P) サンプル数と予測誤差の評価出力を検証する
   - 検証は `tests/prediction_core/test_error_behavior.py` に置き、1.6 のヘルパで既知の放物線へ決定的な誤差を重畳して、サンプル数を最小値から増やした予測系列を得る
   - 各予測のサンプル数・残差・落下地点誤差が同一系列から取り出せることを確認する
   - **誤差が単調に減少することを合否条件にしない**。検証対象は「評価に必要な出力が揃っていること」に限る
@@ -195,7 +195,7 @@
   - _Depends: 1.6, 5.1_
   - _Boundary: tests/prediction_core/test_error_behavior.py_
 
-- [ ] 5.4 (P) 境界と依存ゼロの回帰テストを実装する
+- [x] 5.4 (P) 境界と依存ゼロの回帰テストを実装する
   - 検証は `tests/prediction_core/test_boundaries.py` に置き、パッケージ配下の import 文を走査して標準ライブラリの許可リスト外が無いことを検査する
   - 記録層が逐次蓄積層を import していないこと（依存方向の逆流が無いこと）を検査する
   - ファイル入出力・ネットワーク・ロギング基盤への依存が持ち込まれていないことを検査する
@@ -253,3 +253,7 @@
 - **4.4**: `record_id` が空文字列の場合は素の `ValueError` を送出する（`errors.py` の4例外は新設しない方針を踏襲。4例外はいずれも `ValueError` を継承しているため呼び出し側の `except ValueError` 網と矛盾しない）。`first_valid` はキャッシュせず毎回 `predictions` を先頭から線形走査する（design.mdが専用フラグ・経路を作らないよう明示しているため）。
 - **4.4**: `ThrowPredictionTracker` の公開インターフェースは `add_sample`/`samples`/`predictions`/`latest`/`first_valid`/`to_record` の6つのみ（要件5.4、駆動制御・送信メソッドなし）。~~5.1（公開API確定）でこの6つを `prediction_core` の `__all__` に含めること。~~ **（5.1での訂正）** この6つはインスタンスメソッド/プロパティであり、`__all__` に含める対象は `ThrowPredictionTracker` クラス自体（design.mdの18シンボル列挙どおり）。この6つは同クラスを公開すれば自動的にアクセス可能になる。
 - **5.1**: `src/prediction_core/__init__.py` を18シンボル（design.md PublicApi節の列挙どおり）の明示 re-export のみに実装。ロジック無し（AST検査でも固定）。**この変更により `prediction_core.types` を import すると `__init__.py` 経由で全モジュールが `sys.modules` に載るようになった。** task 1.4 由来の `test_importing_types_does_not_import_config_at_runtime`（サブプロセスで `sys.modules` を検査する方式）はこの影響で常に失敗する状態になったため、`importlib.util.spec_from_file_location` で `types.py` を単体ファイルとしてパッケージ機構を経由せず直接ロードする方式に書き換えた（`types.py` 自体は無変更）。**後続タスク（5.4の境界回帰テスト等）でも同様に、`__init__.py` 経由の import では個別モジュールの実行時依存を独立検証できない点に注意すること。**
+- **5.2/5.3/5.4**: 3タスクとも設計時から1タスク1ファイルに分離されており（design.mdの明示的な並行実装安全性の配慮）、実際に並列実装・並列レビューを衝突なく完走できた（209→221→263件）。いずれもプロダクションコード（`src/prediction_core/**`）は無変更。
+- **5.2**: `test_analytic_e2e.py` は6パターン（水平投射・斜方投射上向き/下向き・高高度/低高度・絶対時刻オフセット1e9ms）。許容誤差は位置 `abs_tol=1e-6`mm・時刻 `abs_tol=1e-6`ms（実測誤差は`1e-13`〜`1e-15`程度で、緩すぎず厳しすぎない値であることをレビューで確認済み）。残差閾値による合否判定は使っていない。
+- **5.3**: `test_error_behavior.py` は `ThrowPredictionTracker` で決定的ノイズ（`add_noise(seed=..., stddev_mm=3.0)`）を1点ずつ蓄積し、`[(sample_count, residual, hit_error_mm), ...]` の系列を検証。**誤差の単調減少は一切アサートしない**（design.md開発標準1の明示的禁止）。レビューで判明した点: このテストは `predicted_hit_x_mm`/`predicted_hit_y_mm` の値そのものの物理的正しさ（解析解との一致）は検出できない（意図的なスコープ限定。それは5.2の責務）。
+- **5.4**: `test_boundaries.py`（34件）は `ast` による静的解析のみで `import prediction_core` を一切行わない（`__init__.py` 経由だと個別モジュールの実行時依存を独立検証できないため）。既存コードに `predictor.py:63` の `1e6`（`perf_counter_ns` のns→ms変換、`units.py` が管轄するmm/msドメインとは別関心事）が唯一の例外として行番号ピン留めで許容されている。この例外が悪用されていないか（別行への新規裸リテラル混入を検出できるか）をレビューで独立検証済み。
