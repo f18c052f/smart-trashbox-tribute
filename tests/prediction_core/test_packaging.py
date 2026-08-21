@@ -41,11 +41,28 @@ def test_requires_python_lower_bound_is_3_11() -> None:
     assert pyproject["project"]["requires-python"] == ">=3.11"
 
 
+# 許可リストは sensing-foundation が4 Spec 分（sensing / tracking / calibration /
+# m1-viz）をまとめて登録する。各 Spec が自分の extras 名を個別にここへ追記する形に
+# すると、後続4 Spec が同じ赤いテストへ個別に衝突する構図がそのまま再現してしまう
+# ため、最初に着地する Spec（sensing-foundation）が不変条件の表現だけを一度に是正
+# する（sensing-foundation design.md「test_packaging.py の改訂」）。
+ALLOWED_OPTIONAL_EXTRAS = {"sensing", "tracking", "calibration", "m1-viz"}
+
+
 def test_no_third_party_runtime_dependencies() -> None:
-    """実行時のサードパーティ依存がゼロである（design.md Allowed Dependencies）。"""
+    """実行時のサードパーティ依存がゼロである（design.md Allowed Dependencies）。
+
+    `[project].dependencies == []` は `prediction_core` の import に第三者
+    パッケージが要らないという本来守りたい不変条件であり、そのまま残す。
+    extras（optional-dependencies）は「存在しないこと」ではなく「許可された
+    名前しか無いこと」を表明する形へ緩める。extras は明示的に指定しない限り
+    インストールされず `prediction_core` の import 経路には現れないため、
+    許可リストへ広げても実行時依存ゼロ性は損なわれない
+    （sensing-foundation design.md「test_packaging.py の改訂」／唯一の認可された例外）。
+    """
     project = _load_pyproject()["project"]
     assert project.get("dependencies", []) == []
-    assert project.get("optional-dependencies", {}) == {}
+    assert set(project.get("optional-dependencies", {})) <= ALLOWED_OPTIONAL_EXTRAS
 
 
 def test_dev_dependency_is_pytest_only() -> None:

@@ -12,11 +12,14 @@ requires-python = ">=3.11"
 # numpy / scipy / pydantic を含め一切追加しないこと。
 dependencies = []
 
+[project.optional-dependencies]
+sensing = ["numpy>=1.24"]
+
 [dependency-groups]
 dev = ["pytest>=8.0"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/prediction_core"]
+packages = ["src/prediction_core", "src/sensing_foundation"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

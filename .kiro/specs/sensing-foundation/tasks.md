@@ -18,7 +18,7 @@
 
 - [ ] 1. 基盤: パッケージ骨組みと共有型
 
-- [ ] 1.1 パッケージ骨組みとテスト実行基盤を用意する
+- [x] 1.1 パッケージ骨組みとテスト実行基盤を用意する
   - `src/sensing_foundation/` と `tests/sensing_foundation/` を作成し、`src/` レイアウトの既存慣行に合わせる
   - ルートの `pyproject.toml` に**追記のみ**を行う: wheel の `packages` に `src/sensing_foundation` を足し、`[project.optional-dependencies]` に `sensing = ["numpy>=1.24"]` を新設する
   - **`[project].dependencies` は空のまま変更しない**（`prediction_core` の実行時依存ゼロを壊さないため）
