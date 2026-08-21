@@ -247,6 +247,7 @@ graph LR
 | 6 | `sources/simulated` / `sources/realsense` | 0〜5（`realsense` のみ `pyrealsense2` を**関数内で遅延 import**） |
 | 6 | `throw_store` | 0〜2 ＋ **`prediction_core`（公開入口のみ）** |
 | 7 | `sources/recorded` | 0〜6（`recording/reader` を使う） |
+| 7 | `logsummary` | 0〜6（`recording/reader` を使う。取得ループに依存しないため実機以外でも動く） |
 | 7 | `doctor` | 0〜6。**SDK への問い合わせは `sources/realsense` の probe 関数に委ね、自身は `pyrealsense2` を import しない** |
 | 8 | `bench/*` | 0〜7 |
 | 9 | `cli` | 0〜8 |
@@ -305,6 +306,7 @@ src/sensing_foundation/
 │   ├── writer.py               # SessionRecorder（連続記録／トリガ保存）
 │   └── reader.py               # SessionReader（索引読み・ブロブ読み・破損検出）
 ├── throw_store.py              # ThrowRecordStore。Throw Record スキーマを参照する唯一のモジュール（prediction_core 公開入口のみ）
+├── logsummary.py               # summarize_log / LogSummary（NDJSON ログとセッション記録の集計）。下流 Spec が集計器を二重に持たないための単一の実装
 ├── doctor.py                   # 環境診断（SDK・デバイス・USB3・RAM・OS・Python）
 ├── bench/
 │   ├── __init__.py
@@ -354,7 +356,7 @@ def test_no_third_party_runtime_dependencies() -> None:
 
 - `[project].dependencies == []` は**そのまま残す**。これが `prediction_core` の依存ゼロ性を守る本体である
 - extras は「無いこと」ではなく「**許可された名前しか無いこと**」を表明する。extras は明示的に指定しない限りインストールされないため、`prediction_core` の import 経路には現れない
-- 許可リストは**加算的に育つ**。`sensing` は本 Spec、`tracking` は `flying-object-tracking`、`calibration` は `world-frame-calibration`、`m1-viz` は `m1-prediction-validation` が各々追加する。**本 Spec は Wave 0 で最初に着地するため、定数の新設と `sensing` の登録を本 Spec が担う**
+- 許可リストは**本 Spec が4 Spec 分をまとめて登録する**。`sensing`（本 Spec）/ `tracking`（`flying-object-tracking`）/ `calibration`（`world-frame-calibration`）/ `m1-viz`（`m1-prediction-validation`）の4名を、定数の新設時に**最初から全て**書く。**後続3 Spec は当該テストを一切変更しない。** 各 Spec が自分の名前を個別に追記する形にすると、この修正で避けようとした「4 Spec が同じテストへ個別に衝突する」構図がそのまま再現する
 - **これは「`prediction_core` のツリーに触れない」という原則に対する唯一の認可された例外である。** 理由は、後続4 Spec が同じ赤いテストに個別に衝突するのを避けるため、最初に着地する Spec が不変条件の表現だけを是正するのが最も安全だからである。実装者はこれを境界違反として扱ってはならない。**変更してよいのは `tests/prediction_core/test_packaging.py` のこの1関数と新設の定数のみ**であり、`src/prediction_core/**` および他のテストには一切触れない
 
 > `src/prediction_core/**` は**一切変更しない**。テストツリーへの変更も上記1件に限る。
@@ -1401,6 +1403,8 @@ __all__ = [
     "SessionRecorder", "SessionReader", "FrameRingBuffer", "RECORDING_FORMAT_VERSION",
     # Throw Record 保存（throw_store）
     "ThrowRecordStore", "ThrowRecordReadIssue",
+    # 集計（logsummary）— m1 が「集計器を二重に持たない」ために公開入口へ出す
+    "summarize_log", "LogSummary",
     # 例外（errors）
     "SensingFoundationError", "SensingConfigError", "SourceUnavailableError",
     "DeviceNotReadyError", "SourceContractError", "RecordingFormatError",

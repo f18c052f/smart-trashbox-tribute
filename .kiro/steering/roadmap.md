@@ -6,17 +6,31 @@
 
 | 項目 | 状態 |
 |---|---|
-| フェーズ | **`prediction-core` の実装が完了した。** 全19タスク、263テスト全通過、`/kiro-validate-impl` で GO、`kiro-verify-completion` で VERIFIED 済み |
-| ドキュメント | `docs/` 7ファイル、steering 4ファイル（本ファイル含む）が整備済み。**OQ-31（Throw Record 最小スキーマ）は決着し [decisions.md D-8](../../docs/decisions.md#d-8-throw-record-最小スキーマを-prediction-core-で確定した-oq-31-決着) へ移行済み** |
-| Spec | `prediction-core` は実装完了・**`main` へマージ済み**。残り6件は `brief.md` のみ |
+| フェーズ | **全7Specの生成が完了した。** `/kiro-spec-batch` で残り6Specを依存ウェーブ順に生成し、クロスSpecレビュー2巡で整合を取った |
+| ドキュメント | `docs/` 7ファイル、steering 4ファイル（本ファイル含む）が整備済み |
+| Spec | **実装完了は `prediction-core` のみ**（`main` へマージ済み、263テスト全通過）。残り6件は**Spec生成済み・実装未着手** |
 | 実機 | **Raspberry Pi 4 / RealSense D435 ともに未セットアップ**（OS 未導入） |
-| ブランチ | `spec/prediction-core` は `main` へ fast-forward マージ済み。次の作業は `main` から新しいブランチを切る |
+| ブランチ | **`spec/spec-batch` に6Spec分を作成済み**（未マージ）。実装は `main` から `spec/<feature>` を切る |
 
 ### 次のアクション
 
-1. **`/kiro-spec-batch`** — `prediction-core` が OQ-31 を決着済みのため、
-   `sensing-foundation`（OQ-32「Record / Replay のデータ形式」を同時に決められる。「別々に決めない」の制約は既に満たされている）を含む残り6Specの生成に進める
-2. 並行して**実機セットアップ**（`development-environment.md §16` の手順。#3〜#6 を fps 計測より先に）
+1. **`spec/spec-batch` をレビューして `main` へマージする。**
+   6Specは自動承認（`-y` 相当）で生成しているため、`spec.json` の `approved: true` は人間のレビューを経ていない
+2. **`/kiro-impl sensing-foundation`** — Wave 0 かつ他3Specの上流。
+   ただしタスク群9は実機必須のため、実機セットアップと並行して進める
+3. 並行して**実機セットアップ**（`development-environment.md §16` の手順。#3〜#6 を fps 計測より先に）
+
+### 着手順序の制約（Spec生成で判明したもの）
+
+- **`sensing-foundation` タスク1.1 を最初に着地させる。** `tests/prediction_core/test_packaging.py` の
+  不変条件を extras 許可リスト方式へ改訂するタスクであり、これが無いまま他Specが
+  `[project.optional-dependencies]` を追加すると**マージ済みの prediction-core のテストが赤くなる**。
+  これは「`prediction_core` のツリーに触れない」原則に対する**唯一の認可された例外**である
+- **`sensing-foundation` タスク1.8（`geometry.py`）が `world-frame-calibration` と
+  `flying-object-tracking` の前提になる。** ピンホール逆投影は上流の単独所有とし、
+  下流2Specは自前実装を持たない。二重実装は `requirements.md §6.2` が警告する
+  「座標系ずれが『予測が悪い』にしか見えない」事態を招くため
+- `trajectory-simulator` と `simulator-visualization` は**ハード不要**で今すぐ着手できる
 
 ### `prediction-core` 実装完了の要点（引き継ぎ用）
 
@@ -131,12 +145,15 @@ M1 は「飛来するゴミを検出・追跡し、落下地点を予測して�
 ## Specs (dependency order)
 
 - [x] prediction-core -- 放物運動フィッティングによる落下地点・時刻・残差の算出。Throw Record 最小スキーマ。ハード不要。Dependencies: none
-- [ ] sensing-foundation -- Pi 4 / RealSense セットアップ、安定取得、実データ記録、入力層抽象、構造化ロギング基盤。Dependencies: none
-- [ ] trajectory-simulator -- 投擲物理・ノイズ・遅延・移動体運動モデルとパラメータ掃引によるキャッチ可能領域の算出。Dependencies: prediction-core
-- [ ] world-frame-calibration -- 床平面推定、World frame の確立、既知位置との照合による検証ステップ。Dependencies: sensing-foundation
-- [ ] flying-object-tracking -- 飛翔物の検出、3D位置取得、フレーム間追跡。Dependencies: sensing-foundation
-- [ ] m1-prediction-validation -- 実データを prediction-core へ接続し、落下地点をプロット。時間予算7項目を実測して M1 完了判定。Dependencies: prediction-core, world-frame-calibration, flying-object-tracking
-- [ ] simulator-visualization -- ブラウザでの軌跡アニメーションとキャッチ可能領域の表示。**先送り可**。Dependencies: trajectory-simulator
+- [x] sensing-foundation -- Pi 4 / RealSense セットアップ、安定取得、実データ記録、入力層抽象、構造化ロギング基盤。Dependencies: none
+- [x] trajectory-simulator -- 投擲物理・ノイズ・遅延・移動体運動モデルとパラメータ掃引によるキャッチ可能領域の算出。Dependencies: prediction-core
+- [x] world-frame-calibration -- 床平面推定、World frame の確立、既知位置との照合による検証ステップ。Dependencies: sensing-foundation
+- [x] flying-object-tracking -- 飛翔物の検出、3D位置取得、フレーム間追跡。Dependencies: sensing-foundation
+- [x] m1-prediction-validation -- 実データを prediction-core へ接続し、落下地点をプロット。時間予算7項目を実測して M1 完了判定。Dependencies: prediction-core, world-frame-calibration, flying-object-tracking
+- [x] simulator-visualization -- ブラウザでの軌跡アニメーションとキャッチ可能領域の表示。**先送り可**。Dependencies: trajectory-simulator
+
+> **`[x]` は Spec が生成済み（requirements / design / tasks の3フェーズ完了）であることを示す。実装完了ではない。**
+> 実装が完了しているのは `prediction-core` のみ。
 
 ### 着手ウェーブ
 

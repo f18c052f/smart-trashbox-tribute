@@ -890,8 +890,16 @@ def camera_ray_unit(calibration: "CalibrationResult",
                     point_world_mm: tuple[float, float, float]) -> tuple[float, float, float]:
     """World 系で表した、カメラから当該点へ向かう単位ベクトル（要件 6.3 の材料）。"""
 
-def resolve_tracking_settings(*, config_path: Path | None = None) -> "TrackingSettings":
+def resolve_tracking_settings(*, config_path: Path | None,
+                              env: Mapping[str, str],
+                              overrides: Mapping[str, object]) -> "TrackingSettings":
     """上流の `TrackingSettings.resolve()` への素通し。
+
+    上流の署名は `resolve(cls, *, file, env, overrides)` で**3つとも必須**である。
+    本関数が `config_path` だけを受け取って `env` / `overrides` を内部で空に
+    埋めると、上流側の環境変数と CLI 上書きが**黙って捨てられる**。
+    本 Spec の CLI は「CLI 引数 > 環境変数 > 設定ファイル > 既定値」を掲げているため、
+    3つとも呼び出し元（`cli.py`）から受け取り、そのまま渡す。
 
     `cli.py` が `run_throw` へ渡す値を調達するための入口である。**本 Spec は追跡の
     設定値を一切決めない**（既定値も持たない）。この関数が存在するのは、
@@ -1594,7 +1602,10 @@ def compute_budget_update(aggregate: ThrowAggregate, latency: LatencyResult,
 - **上流由来の2値の調達は `run-throw` / `bench-overhead` の入口が担う**（全層を参照してよい唯一のモジュール）:
   - `Logger` を `UpstreamGateway.get_logger_handle()` から得る
   - 上流の追跡設定を `Seam.resolve_tracking_settings()`（= `flying_object_tracking.TrackingSettings.resolve()`
-    への素通し）から得る。**`flying_object_tracking` を import するのは `seam.py` だけ**という
+    への素通し）から得る。上流の署名は `file` / `env` / `overrides` の**3つとも必須**なので、
+    `cli.py` が3つとも供給する（`env` / `overrides` を継ぎ目側で空に埋めない。
+    埋めると上流の環境変数・上書きが黙って捨てられ、本 CLI が掲げる優先順位と食い違う）。
+    **`flying_object_tracking` を import するのは `seam.py` だけ**という
     本 Spec の境界を崩さないため、`cli.py` は上流パッケージを直接 import せず継ぎ目経由で調達する。
     **本 Spec は追跡の設定値・方式を決めない**（OQ-26 は上流の担当）。
     上流の解決結果をそのまま `ThrowRunner.run_throw()` へ渡すだけであり、
@@ -1729,8 +1740,10 @@ def compute_budget_update(aggregate: ThrowAggregate, latency: LatencyResult,
   ずれた場合の症状（共通偏りとして現れ「予測が悪い」に潰れる。`docs/requirements.md §6.2`）を
   テストの docstring に書く（要件 1.10）。
   本テストは上流3パッケージの**公開入口だけ**を参照する。
-  本体側で `sensing_foundation.geometry` に触れてよいのは `upstream.py` / `seam.py` に限る、という
-  境界規則（[Allowed Dependencies](#allowed-dependencies)）は本テストによって緩まない
+  本体側で `sensing_foundation`（`geometry` を含む）に触れてよいのは**接点モジュール `upstream.py` 1つに限る**、という
+  境界規則（[Allowed Dependencies](#allowed-dependencies)）は本テストによって緩まない。
+  `seam.py` が受け取る `CameraTrack` は既にカメラ座標系の3D点であり、`seam.py` は `WorldTransform` を
+  適用するだけなので、逆投影演算を必要としない
 - **帰属 ★**: 既知の偏りを注入した投擲群に対し、
   (a) World 固定の偏り → キャリブレーション由来、
   (b) カメラ視線方向の偏り → 検出由来の候補、
