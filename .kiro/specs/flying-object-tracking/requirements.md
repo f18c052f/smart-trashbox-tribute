@@ -13,7 +13,8 @@ RealSense D435 の Depth フレーム列から**飛来する空き缶だけを�
 - **`m1-prediction-validation`**: 実データを `prediction_core` へ流すには、まず点列が必要になる。
   `docs/requirements.md §8 M1` の実測項目のうち、
   「リリース〜検出開始までの時間」と「何サンプル取れたか」は**本 Spec が作る点列がなければ測れない**
-- **`world-frame-calibration`**: 変換すべき「カメラ座標系の点」を本 Spec から受け取る
+- **`world-frame-calibration`**: 変換すべき「カメラ座標系の点」が実際に流れてくる相手として本 Spec を前提にする
+  （ただし同 Spec は本 Spec に import 依存せず、点を受け取る結合層は `m1-prediction-validation` が持つ）
 - **`prediction-core`**: 実データ系統の唯一の供給元が本 Spec になる
 
 ### 現状
@@ -71,8 +72,17 @@ RealSense D435 の Depth フレーム列から**飛来する空き缶だけを�
 > `docs/requirements.md §6.2` は「座標系が数 cm ずれていても症状は『予測が悪い』にしか見えない」と
 > 警告している。検出誤差と座標系ずれを分離するために、変換は1箇所（`world-frame-calibration`）に置く。
 
-したがって出力は**カメラ座標系の点列**であり、`world-frame-calibration` がそれを受け取って
-World frame へ変換し、`prediction_core.Sample` を構成する。
+したがって出力は**カメラ座標系の点列**である。
+これを受け取って World frame へ変換し `prediction_core.Sample` を構成するのは
+**`m1-prediction-validation` の結合層（seam）**である。
+`world-frame-calibration` は**変換そのもの（`WorldTransform`）の所有者**であり、
+seam がそれを呼ぶ。すなわち本 Spec の出力の直接の消費者は `m1-prediction-validation` である。
+
+また、**画素と Depth からカメラ座標を得る基本演算そのもの（生カウント → mm の換算・
+画素中心の規約・ピンホール式・無効画素の判定）は上流 `sensing-foundation` が1箇所で持つ。**
+本 Spec と `world-frame-calibration` が別々に実装すると、上記の「数 cm のずれ」が
+2経路で食い違う形で現れ、切り分け不能になるためである。
+本 Spec は**候補領域内のどの画素をどう代表させるか**という集約方針だけを持つ。
 
 ### A-3. 対象物は空き缶に固定
 
@@ -149,8 +159,14 @@ World frame へ変換し、`prediction_core.Sample` を構成する。
 - **OpenCV は本 Spec が導入する。** `sensing-foundation` が意図的に導入を見送り、
   「検出が必要とする道具であり `flying-object-tracking` の責務」と明記している
 - ⚠️ **`pyproject.toml` の `[project].dependencies` は空のまま維持する。**
-  `tests/prediction_core/test_packaging.py` が静的に検証している。
-  OpenCV / NumPy は **optional extras** として宣言する
+  OpenCV / NumPy は **optional extras**（`tracking`）として宣言する
+- ⚠️ **前提**: `tests/prediction_core/test_packaging.py` は現状、
+  `[project].dependencies` が空であることに**加えて**
+  `[project.optional-dependencies]` が**空であること**も表明している。
+  この表明を「基本依存は空、かつ extras は許可リスト
+  （`sensing` / `tracking` / `calibration` / `m1-viz`）の部分集合」へ緩める改修は
+  **`sensing-foundation` が所有する**。**本 Spec は当該テストを変更しない**が、
+  本 Spec の extras 追加が成立するのは**その改修が先に landing した後**である
 - **`prediction_core` へサードパーティ依存を逆流させない**
 - **`prediction_core` の入力契約に RealSense 固有の型を漏らさない**
   （漏らすと simulated 入力が繋がらなくなる。`.kiro/steering/roadmap.md` Shared seams）
@@ -175,7 +191,9 @@ World frame へ変換し、`prediction_core.Sample` を構成する。
 ### A-13. 未決のまま残すもの
 
 - **OQ-40**（リポジトリ全体のディレクトリ構成）: 本 Spec は `src/flying_object_tracking/` 1パッケージと
-  その配下だけを定める。全体構成は決めない
+  その配下だけを定める。全体構成は決めない。
+  **全 Spec が landing した後も配布名（`[project].name`）は `prediction-core` のままであり、
+  wheel には複数パッケージが同居する。この改称は OQ-40 として先送りし、Spec ごとに蒸し返さない**
 - **OQ-41**（Python 環境構築・パッケージ管理）: 既存の `pyproject.toml` に乗る。
   **OpenCV を Pi 上で apt / pip のどちらで入れるか**という実測結果を OQ-41 の判断材料として報告する
 - **OQ-02**（対象ゴミの最終スコープ）: 判断しない。空き缶固定の前提で進める
@@ -249,8 +267,10 @@ flying-object-tracking は、`sensing-foundation` が供給するフレーム列
 - **Adjacent expectations**:
   - `sensing-foundation` は入力元によらないフレーム列と、記録／再生と、構造化ロギングを提供する。
     本 Spec はその**公開入口だけ**を使い、決定を再定義しない
-  - `world-frame-calibration` は本 Spec が出すカメラ座標系の点を受け取り、World frame へ変換する。
-    **変換の正しさはそちらが担保する**
+  - `world-frame-calibration` は **World 変換そのもの（`WorldTransform`）と、
+    画素 → カメラ座標の基本演算に乗る側**を担当する。**変換の正しさはそちらが担保する**。
+    本 Spec が出すカメラ座標系の点を実際に受け取って変換を適用するのは
+    `m1-prediction-validation` の結合層である
   - `prediction-core` の入力は `(t, x, y, z)` サンプル列であり、Throw Record スキーマは
     `SCHEMA_VERSION` 1.0 で確定している（`docs/decisions.md` D-8）。**独自スキーマを定義しない**
   - `m1-prediction-validation` は End-to-End の時間予算を評価する。
@@ -338,6 +358,7 @@ _出典: A-2, A-8_
 5. If 候補領域内に有効な Depth 画素が十分に存在しない場合, then the flying-object-tracking shall その候補の3D位置を算出せず、理由とともに無効として扱う
 6. The flying-object-tracking shall 3D位置の算出のために候補領域外の画素を逆投影しない
 7. The flying-object-tracking shall 各3D位置に、その元となったフレームの時刻を同一の時間基準で付与する
+8. The flying-object-tracking shall 画素と距離値からカメラ座標を求める基本演算（無効画素の判定・距離値から mm への換算・画素座標からカメラ座標への逆投影）を自身で実装せず、上流が公開する共通実装を用いる
 
 ### Requirement 6: フレーム間追跡と1投擲の点列
 

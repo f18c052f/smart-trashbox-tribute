@@ -21,12 +21,13 @@
 - **Sources Consulted**: `.kiro/specs/sensing-foundation/design.md`（Boundary Commitments / Dependency Direction / File Structure Plan / CoreTypes / FrameSource / SessionReader / StructuredLogger）
 - **Findings**:
   - 入口は `for frame in source.frames():` の1本。`CaptureFrame` は `depth`（`numpy.uint16`, shape=(h, w), **読み取り専用**）、`profile`（`StreamProfile`: 解像度・fps・`depth_scale_mm`・`color_enabled`・`intrinsics`）、`t_capture_ms`、`source`（`SourceKind`）を持つ
-  - `CameraIntrinsics` は `fx_px` / `fy_px` / `ppx_px` / `ppy_px` / `model` / `coeffs`（5要素）を持つ。**逆投影の関数は提供されない**
+  - `CameraIntrinsics` は `fx_px` / `fy_px` / `ppx_px` / `ppy_px` / `model` / `coeffs`（5要素）を持つ。~~**逆投影の関数は提供されない**~~ **【更新】** `sensing-foundation` は後に `geometry.py`（要件 3.8）を追加し、`depth_raw_to_mm` / `is_valid_depth` / `deproject_pixel` を公開入口から提供する
   - 構造化ログは NDJSON。予約 stage は `system` / `capture` / `record` のみで、**下流は自分の stage 名を足してよい**（`logger.stage(...)` / `logger.timed(...)`）
   - 記録セッションは `manifest.json` + `frames.ndjson` + `depth.bin` + `summary.json`。`SessionReader` 経由で読め、**SDK も実機も無い環境で再生できる**
   - `sensing_foundation` は OpenCV を**意図的に導入していない**。宣言済みのサードパーティ依存は `numpy` のみで、extras として宣言されている
 - **Implications**:
-  - **逆投影（画素 + Depth → カメラ座標）は本 Spec が実装する。** これは上流の欠落ではなく境界の置き方の結果であり、`pyrealsense2` に依存しないという利点がある
+  - ~~**逆投影（画素 + Depth → カメラ座標）は本 Spec が実装する。**~~ **【差し替え済み】** 上の調査は `sensing-foundation` の当時の設計だけを見て行われたものであり、`flying-object-tracking` が**独立に同等の逆投影を `projection.py` として設計していた**ことを知らずに下した結論だった。両者が別々に式を持つと、画素中心規約・`depth_scale_mm` の適用位置・無効画素の扱いのわずかな差が「予測が悪い」としか現れない座標ずれになり（`docs/requirements.md §6.2`）、`m1-prediction-validation` の誤差切り分けが**互いに食い違う2経路の上に載る**。本 Spec が排除しようとしている当のものと区別できない。
+    → **基本演算は `sensing_foundation.geometry`（同 Spec 要件 3.8 / `depth_raw_to_mm` / `is_valid_depth` / `deproject_pixel`）が所有し、本 Spec と `flying-object-tracking` はこれを呼ぶ。** 一致は `m1-prediction-validation` のクロス Spec 契約テスト（同 Spec 要件 1.10 / `tests/m1_validation/test_deprojection_contract.py`）が許容差なしで固定する。本 Spec に残るのは**範囲限定・歪みモデルの受理判定・無効点方針**である（要件 3.8）
   - **Depth 配列を in-place で書き換えない。** 平均化・マスク処理はすべて新しい配列を確保する。破ると Replay の再現性が壊れる
   - stage 名は `calibrate` を使う。予約名と衝突しない
   - recorded セッションだけで全機能を動かせるため、**要件 9（ハードウェア非依存の検証可能性）は上流の設計によって既に道が開いている**
@@ -86,8 +87,8 @@
   - RealSense の Depth ストリームはステレオ演算の前段で整流されているため、**Depth ストリームの歪み係数は 0 であることが通例**である。SDK 側も、歪みモデルによっては逆投影を拒否する実装になっている
   - 歪み係数が非ゼロの場合、正しい逆投影には反復解法かモデル固有の逆変換が要る。これを本 Spec で実装すると、検証されないコード経路が増える
 - **Implications**:
-  - **歪み係数が厳密に 0 の場合のみ対応し、非ゼロならモデル名を添えて失敗させる**（要件 3.5 / 5 系）。無視して黙って進む選択肢は、本 Spec の趣旨（静かに間違えない）に真っ向から反する
-  - 逆投影は本 Spec の `deproject` モジュールが持つ。`pyrealsense2` に依存しないため、WSL 上でも記録データで完全に動く
+  - **歪み係数が厳密に 0 の場合のみ対応し、非ゼロならモデル名を添えて失敗させる**（要件 3.5 / 5 系）。無視して黙って進む選択肢は、本 Spec の趣旨（静かに間違えない）に真っ向から反する。**この受理判定は本 Spec に残る**（上流 `geometry.py` は歪み補正を持たず係数 0 を前提に恒等として扱うため、非ゼロを弾く番人がどこかに要る）
+  - ~~逆投影は本 Spec の `deproject` モジュールが持つ。~~ **【差し替え済み】** 上の「上流契約の確定」の Implications を参照。**式そのものは `sensing_foundation.geometry.deproject_pixel` が持ち**、本 Spec の `deproject` モジュールは範囲の切り出し・受理判定・無効点除外だけを持つ（要件 3.8）。上流の当該モジュールは純関数のみで `pyrealsense2` を要求しないため、「WSL 上でも記録データで完全に動く」という性質は維持される
 
 ### 検証の設計: 何をもって「検証した」と言えるか
 
@@ -192,12 +193,14 @@
 - **Rationale**: 座標系のずれは症状が「予測が悪い」にしか見えない。**部分的に正しい結果を返すことが、このプロジェクトで最も高くつく失敗**である
 - **Trade-offs**: 現場で「動かない」ことが増える。→ 失敗理由を分岐可能な列挙値にし、何を直せばよいかをレポートに出す
 
-### Decision 5: 幾何コアを NumPy のみに閉じ、`sensing_foundation` への接点を1モジュールに集約する
+### Decision 5: 幾何コアを NumPy のみに閉じ、`sensing_foundation` への接点を最小限のモジュールに集約する
 
 - **Context**: `flying-object-tracking` と並行実装するため、境界が実行時にしか分からない構造は避けたい
-- **Selected Approach**: `upstream.py` だけが `sensing_foundation` を import する。幾何・変換・検証・永続化は NumPy と標準ライブラリのみに依存する。この規則を静的テストで回帰検証する
-- **Rationale**: `prediction_core` が `test_boundaries.py` で依存方向を静的に守っている先例に揃う。幾何コアが上流なしでテストできるため、実機どころか `sensing_foundation` の実装完了すら待たずに着手できる
-- **Trade-offs**: `CameraIntrinsics` / `StreamProfile` に対応する値オブジェクトを本 Spec 側にも持つことになる。→ 変換は `upstream.py` の1箇所に閉じ、**フィールド名を上流と一致させて**写経ミスを起こしにくくする
+- **Selected Approach**: `upstream.py` だけが `sensing_foundation` の**副作用を伴う機能**（取得・ロギング）を import する。幾何・変換・検証・永続化は NumPy と標準ライブラリのみに依存する。この規則を静的テストで回帰検証する
+  - **【更新】** 逆投影の基本演算を上流へ移した決定（本 Spec 要件 3.8）に伴い、`deproject.py` が上流の `deproject_pixel` / `CameraIntrinsics` の**2シンボルだけ**を参照する例外が加わった。いずれも純関数・値オブジェクトで実機も SDK も要求しないため、幾何コアがハードウェアなしでテストできる性質は変わらない。参照シンボルの列挙固定を `test_boundaries.py` に足すことで、例外が広がらないようにする
+- **Rationale**: `prediction_core` が `test_boundaries.py` で依存方向を静的に守っている先例に揃う。幾何コアが実機なしでテストできる
+- **Trade-offs**: `CameraIntrinsics` / `StreamProfile` に対応する値オブジェクトを本 Spec 側にも持つことになる。→ 変換は `upstream.to_intrinsics`（上流 → 自 Spec）と `deproject.to_camera_intrinsics`（自 Spec → 上流）の2箇所に閉じ、**フィールド名を上流と一致させて**写経ミスを起こしにくくする
+- **Trade-offs**: 幾何コアが `sensing-foundation` タスク 1.8（`geometry.py`）の着地を待つことになった。→ 同モジュールは純関数3つで同 Spec の最初の波に含まれるため、実質的な待ち時間は生じない。逆投影の式を本 Spec と `flying-object-tracking` が別々に持つことのリスクの方がはるかに大きい
 
 ### Decision 6: `prediction_core` に依存しない
 
@@ -220,8 +223,10 @@
 
 - **マーカー設置の再現性が系の再現性を支配する** — 手順書で設置方法（床に印を残す等）を定め、要件 7.4 の比較手段で毎回数値を残す
 - **基線長が短い設置で静かに精度が落ちる** — 下限で失敗させ、ヨー感度を結果に埋め込む
-- **`sensing-foundation` が未実装の間、本 Spec の上流アダプタが検証できない** — 幾何コアを上流非依存にし、アダプタは薄い写経に留める。アダプタのテストは上流の公開型を模した最小のダブルで行い、実装完了後に結合テストで確かめる
+- **`sensing-foundation` が未実装の間、本 Spec の上流アダプタが検証できない** — アダプタは薄い写経に留め、テストは上流の公開型を模した最小のダブルで行い、実装完了後に結合テストで確かめる。幾何コアが上流に依存するのは `geometry.py`（`sensing-foundation` タスク 1.8。純関数3つ、実機・SDK 不要）だけであり、これは同 Spec の最初の波で着地する
+- **上流の逆投影プリミティブを「速いから」と本 Spec で書き直す** — `m1-prediction-validation` のクロス Spec 契約テスト（同 Spec 要件 1.10）が**許容差なしの一致**を要求しているため、書き直した瞬間に破れる。ベクトル化が必要になったら上流 `geometry.py` へベクトル版を足す
 - **`pyproject.toml` を `flying-object-tracking` と同時に編集して衝突する** — 追記位置を `[tool.hatch.build.targets.wheel].packages` と `[project.optional-dependencies]` の2箇所に限定し、既存記述を書き換えない。**`[project].dependencies` は空のまま触らない**
+- **`calibration` extras の追記で `tests/prediction_core/test_packaging.py` が赤くなる** — 同テストは当初 `optional-dependencies == {}` も表明していた。この不変条件の是正（`ALLOWED_OPTIONAL_EXTRAS` への差し替え）は **`sensing-foundation` タスク 1.1 の所有**であり、本 Spec は当該テストを触らない。着地済みであることを確認してから追記する
 - **暫定の許容値が既成事実になる** — `ToleranceSpec.provisional` をレポートに必ず出し、`--help` と docstring にも明記する
 - **記録セッションの Depth を平均化する際に元配列を壊す** — 平均化は新しい `float64` 配列へ確保する。境界テストで in-place 変更が無いことを確かめる
 - **入射角が浅い設置（壁の高い位置から床を舐めるように見る）で平面推定が劣化する** — 入射角を推定品質に含め、下限を下回れば失敗させる

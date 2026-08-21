@@ -8,10 +8,14 @@
 **(a) 検出方式を同一データ上で実測比較できる状態を作ること**（OQ-26 の決着条件そのもの）と、
 **(b) 座標系の境界を型で閉じること**（World 変換をここに書けなくすること）の2点にある。
 
-**Users**: `world-frame-calibration` が本 Spec の出力（カメラ座標系の点列）を受け取り World frame へ変換する。
-`m1-prediction-validation` は本 Spec が残す `detect` / `track` 区間の計測値と、
+**Users**: 本 Spec の出力（カメラ座標系の点列 `CameraTrack`）を受け取るのは
+**`m1-prediction-validation` の `seam.py`** である。`seam.py` は
+`world-frame-calibration` が所有する `WorldTransform` を使って World frame へ変換し、
+`prediction_core.Sample` を構成する。すなわち `world-frame-calibration` は
+**変換の提供者**であって本 Spec の出力の消費者ではない。
+`m1-prediction-validation` はさらに、本 Spec が残す `detect` / `track` 区間の計測値と、
 追跡開始時刻（`docs/requirements.md §3` 区間1 の実測に必要）を使う。
-`prediction-core` へは**直接繋がらない**。間に必ず `world-frame-calibration` が入る。
+`prediction-core` へは**直接繋がらない**。間に必ず World 変換（`WorldTransform`）が入る。
 
 **Impact**: 本 Spec はリポジトリに**初めて OpenCV を持ち込む**層である。
 `sensing-foundation` が意図的に導入を見送り、本 Spec の責務として明示した道具である。
@@ -75,6 +79,10 @@
 ### Allowed Dependencies
 
 - **`sensing_foundation` の公開入口（`sensing_foundation.__init__`）のみ。** 内部モジュールへ直接 import しない
+- **逆投影の基本演算は上流の公開入口から借りる。**
+  `depth_raw_to_mm` / `is_valid_depth` / `deproject_pixel` を呼ぶ。
+  **本 Spec はピンホール式・mm 換算・無効画素の判定を自前で実装しない**
+  （`world-frame-calibration` と同じ実装に乗ることが、誤差切り分けの前提である）
 - **`prediction_core` へは依存しない**（import しない）。本 Spec は `Sample` を構成できない。
   これが「World 変換を持たない」ことの構造的な保証である（`research.md` Decision 1）
 - **宣言するサードパーティ依存は `numpy` と GUI 無し OpenCV の2つ**
@@ -99,6 +107,15 @@
 - サードパーティ依存の追加（Pi 側の導入手順が変わる）
 - **上流由来**: `sensing_foundation` の `CaptureFrame` / `StreamProfile` / `CameraIntrinsics` /
   `FrameSource` / ログ形式版の変更（同 Spec の Revalidation Triggers が発火したとき）
+- **上流由来（逆投影の基本演算）**: `sensing_foundation` の
+  `depth_raw_to_mm` / `is_valid_depth` / `deproject_pixel` の変更
+  （画素中心規約・`depth_scale_mm` の適用位置・無効画素の判定を含む）。
+  本 Spec の `PointEstimator` はこの3関数の上に乗っており、
+  変更は `m1-prediction-validation` の**要件 1.10 クロス Spec 契約テスト**
+  （`tests/m1_validation/test_deprojection_contract.py`）を直撃する
+- **上流由来（パッケージング）**: `tests/prediction_core/test_packaging.py` の
+  extras 許可リスト（`ALLOWED_OPTIONAL_EXTRAS`）の変更。
+  当該改修は `sensing-foundation` が所有する
 
 ---
 
@@ -121,7 +138,11 @@
 
 **未決のまま残すもの**（明示）:
 
-- **OQ-40**（全体のディレクトリ構成）: 本 Spec は `src/flying_object_tracking/` 1パッケージだけを定める
+- **OQ-40**（全体のディレクトリ構成）: 本 Spec は `src/flying_object_tracking/` 1パッケージだけを定める。
+  **全 Spec が landing した後も `[project].name` は `prediction-core` のままであり、
+  wheel には `prediction_core` / `sensing_foundation` / `flying_object_tracking` /
+  `world_frame_calibration` / `m1_validation` / `trajectory_sim` が同居する。
+  この配布名の改称は OQ-40 として先送りする**（各 Spec で個別に蒸し返さない）
 - **OQ-41**（Python 環境構築・パッケージ管理）: 既存の `pyproject.toml` に乗る。
   **Pi 上で OpenCV を apt / pip のどちらで導入したか**の実測結果を OQ-41 の判断材料として報告する
 - **OQ-02**（対象ゴミの最終スコープ）: 判断しない。φ65mm を設定値として分離することで、
@@ -230,7 +251,9 @@ graph TB
   公開 API の一点集約、無効を値で返す方針
 - **New components rationale**: 各コンポーネントは要件の責務境界（ROI／マスク生成／候補抽出／
   候補絞り込み／逆投影／追跡／計測／比較）に 1 対 1 で対応する。
-  **実装が1つしかない抽象は置かない**（例: 逆投影のストラテジ抽象を作らない）
+  **実装が1つしかない抽象は置かない**（例: 逆投影のストラテジ抽象を作らない）。
+  なお**逆投影の基本演算そのものは上流 `sensing_foundation` に1つだけ存在する**。
+  本 Spec はそれを呼ぶだけであり、ここでも抽象を挟まない
 - **Steering compliance**:
   - `tech.md` 開発標準1 — 未実測値を合否条件にしない。方式選定は相対比較で定義する（要件 8.10 / 4.9）
   - `tech.md` 開発標準4 — 部品を替える前に設定で詰める。ROI・方式・閾値をすべて設定にする（要件 12.1）
@@ -281,7 +304,7 @@ graph LR
 | 3 | `detection/mask_ops` | 0〜2 ＋ `numpy` ＋ **`cv2`（本パッケージで `cv2` を import する唯一の場所）** |
 | 4 | `detection/masks/*` | 0〜3（`mask_ops` を使う。`cv2` を直接 import しない） |
 | 5 | `detection/detector` | 0〜4 |
-| 5 | `projection` | 0〜2 ＋ `numpy`（`detection` を import しない） |
+| 5 | `projection` | 0〜2 ＋ `numpy` ＋ **`sensing_foundation`（公開入口の逆投影基本演算 `depth_raw_to_mm` / `is_valid_depth` / `deproject_pixel`）**（`detection` を import しない） |
 | 6 | `tracking` | 0〜2（`detection` / `projection` を import しない。点だけを受け取る） |
 | 7 | `pipeline` | 0〜6 ＋ `sensing_foundation` |
 | 8 | `bench/*` | 0〜7 |
@@ -341,6 +364,9 @@ src/flying_object_tracking/
 │   ├── candidates.py               # 連結成分 → Candidate 化と、寸法・距離による絞り込み
 │   └── detector.py                 # Detector プロトコルと既定実装（マスク生成 + 共通後段）
 ├── projection.py                   # 候補領域の有効画素 → カメラ座標系 CameraPoint（代表値の決定）
+│                                   #   逆投影の基本演算は sensing_foundation の
+│                                   #   depth_raw_to_mm / is_valid_depth / deproject_pixel を呼ぶ。
+│                                   #   ピンホール式をここに書かない
 ├── tracking.py                     # SingleObjectTracker（ゲート・ライフサイクル・終了理由）
 ├── pipeline.py                     # TrackingPipeline（検出 → 逆投影 → 追跡 + 計測）と track_source
 ├── bench/
@@ -359,7 +385,8 @@ tests/flying_object_tracking/
 ├── test_mask_ops.py
 ├── test_masks.py                   # 3方式が同一の入力に対し同一形式のマスクを返すこと
 ├── test_candidates.py              # 寸法・距離による絞り込みと除外理由の計数
-├── test_projection.py              # 逆投影の往復（合成器の逆演算との一致）
+├── test_projection.py              # 代表値の決定と往復（合成器の逆演算との一致）。
+│                                   #   上流の基本演算に委譲していることも確認する
 ├── test_tracking.py                # 対応付け・欠測許容・終了理由・決定的なタイブレーク
 ├── test_pipeline.py                # 検出 → 逆投影 → 追跡の結合。既知軌道の往復
 ├── test_readonly_depth.py          # read-only Depth に対する in-place 変更の検出
@@ -373,9 +400,22 @@ tests/flying_object_tracking/
 
 - `pyproject.toml` — `[tool.hatch.build.targets.wheel].packages` に `src/flying_object_tracking` を**追記**する。
   `[project.optional-dependencies]` に **`tracking = ["numpy>=1.24", "opencv-python-headless>=4.8"]`** を追記する。
-  **`[project].dependencies` は空のまま変更しない**（`tests/prediction_core/test_packaging.py` が検証している）
-- `.gitignore` — 比較結果・エクスポートの出力先（既定 `var/`）を追加する。
-  **`sensing-foundation` が既に `var/` を追加している場合は重複させない**
+  **`[project].dependencies` は空のまま変更しない**。
+  > ⚠️ **前提（landing 順序）**: `tests/prediction_core/test_packaging.py` は現状、
+  > `[project].dependencies == []` **と** `[project.optional-dependencies] == {}` の
+  > **両方**を表明している。後者があるため、extras を1つでも足した時点で
+  > **既にマージ済みの `prediction-core` のテストが赤くなる**。
+  > この表明を「基本依存は空、かつ extras は許可リストの部分集合」へ緩める改修は
+  > **`sensing-foundation`（Wave 0）が所有する**:
+  > `ALLOWED_OPTIONAL_EXTRAS = {"sensing", "tracking", "calibration", "m1-viz"}` に対する
+  > `set(project.get("optional-dependencies", {})) <= ALLOWED_OPTIONAL_EXTRAS`。
+  > **本 Spec は当該テストを再改修しない。** `tracking` はこの許可リストに含まれており、
+  > 本 Spec の `pyproject.toml` 追記が成立するのは**この改修が landing した後**である
+- `.gitignore` — 比較結果・エクスポートの出力先（既定 `var/`）を**冪等に**追加する。
+  `var/` の記載が無ければ追加し、**既にあれば何もしない**（重複させない）。
+  `var/` 配下の出力ディレクトリの作成も同様に**存在すれば作らない**（`mkdir -p` 相当）。
+  **他 Spec の landing 順序に依存しない書き方にする**
+  （`git worktree` での並行実装でもどちらが先でも成立させるため）
 - `.kiro/specs/flying-object-tracking/measurements.md` — **新規**。
   検出方式の比較結果と **OQ-26 の選定根拠**、計測 ON/OFF 比較、OpenCV 導入手段の実測を人が読む形で記録する
   （生データは `var/` 配下で版管理しない）
@@ -397,6 +437,7 @@ sequenceDiagram
     participant Mask as MaskBuilder
     participant Cand as CandidateExtractor
     participant Proj as PointEstimator
+    participant Geo as sensing foundation geometry
     participant Trk as SingleObjectTracker
     participant Met as TrackingMetrics
     App->>Pipe: process one CaptureFrame
@@ -410,9 +451,11 @@ sequenceDiagram
     Det-->>Pipe: candidates
     Pipe->>Met: end detect stage
     Pipe->>Proj: estimate camera point per candidate
-    Proj->>Proj: collect valid depth pixels in candidate box
-    Proj->>Proj: robust representative depth
-    Proj->>Proj: deproject to camera frame mm
+    Proj->>Geo: is_valid_depth per pixel in candidate box
+    Proj->>Proj: robust representative depth (trimmed mean)
+    Proj->>Geo: depth_raw_to_mm for representative depth
+    Proj->>Geo: deproject_pixel to camera frame mm
+    Geo-->>Proj: x_mm y_mm z_mm
     Proj->>Proj: fine filter by expected size at distance
     Proj-->>Pipe: camera points and failures
     Pipe->>Met: begin track stage
@@ -510,6 +553,7 @@ graph LR
 | 5.4 | 用いたカメラパラメータの出所を追跡可能に | PointEstimator | `CameraPoint.intrinsics_source` | — |
 | 5.5 | 有効画素不足は無効として理由付きで扱う | PointEstimator | `PointFailure`, `PointFailureReason` | 1フレームの処理 |
 | 5.6 | 候補領域外を逆投影しない | PointEstimator | `estimate(frame, candidate)` | 1フレームの処理 |
+| 5.8 | 逆投影の基本演算を上流の共有実装に委ねる | PointEstimator, test_boundaries | `sensing_foundation` の `depth_raw_to_mm` / `is_valid_depth` / `deproject_pixel` | 1フレームの処理 |
 | 6.1, 6.2, 6.4 | 単一物体の対応付けと点列への追加 | SingleObjectTracker | `update` | 追跡ライフサイクル |
 | 6.3 | 追跡開始時刻の記録 | SingleObjectTracker | `CameraTrack.started_t_ms` | 追跡ライフサイクル |
 | 6.5 | 欠測超過で終了・終了理由の付与 | SingleObjectTracker | `TrackEndReason` | 追跡ライフサイクル |
@@ -530,7 +574,7 @@ graph LR
 | 9.1, 9.5 | 最終棄却を持たない／誤追跡でも例外にしない | SingleObjectTracker | — | 追跡ライフサイクル |
 | 9.2, 9.3 | 明らかな外れは除外し理由を計数 | CandidateFilter, TrackingMetrics | `CandidateRejection` | 1フレームの処理 |
 | 9.4 | 信頼度の材料を点に付与 | TrackPoint | `TrackPoint.quality` | — |
-| 10.1, 10.6 | 無効 Depth を有効としない／埋めない | PointEstimator | `valid_pixels` | 1フレームの処理 |
+| 10.1, 10.6 | 無効 Depth を有効としない／埋めない | PointEstimator | `is_valid_depth`（上流）による `valid_pixels` の算出 | 1フレームの処理 |
 | 10.2 | 1フレームの失敗で止まらない | TrackingPipeline | `process` は例外を伝播しない | 1フレームの処理 |
 | 10.3 | フレーム欠落を検出し記録 | TrackingPipeline, CameraTrack | `gap_before` の引き継ぎ | 追跡ライフサイクル |
 | 10.4 | カメラパラメータ欠落は明示して失敗 | PointEstimator | `IntrinsicsUnavailableError` | — |
@@ -559,7 +603,7 @@ graph LR
 | MaskBuilder + masks/* | L4 検出 | 3方式の前景マスク生成 | 4.1, 4.2, 4.3 | MaskOps (P0), Config (P0) | Service, State |
 | Detector | L5 検出 | フレーム → 候補集合。既定実装がマスク＋共通後段 | 3.1〜3.7, 4.1 | MaskBuilder (P0), CandidateExtractor (P0) | Service |
 | CandidateExtractor / Filter | L5 検出 | 連結成分の候補化と粗い絞り込み・除外計数 | 3.2, 3.3, 3.4, 9.2 | MaskOps (P0) | Service |
-| PointEstimator | L5 逆投影 | 候補 → カメラ座標系の代表3D点と本判定 | 2.5, 2.6, 5.1〜5.7, 10.1, 10.4 | CoreTypes (P0), numpy (P0) | Service |
+| PointEstimator | L5 逆投影 | 候補 → カメラ座標系の代表3D点と本判定（基本演算は上流へ委譲） | 2.5, 2.6, 5.1〜5.8, 10.1, 10.4 | CoreTypes (P0), numpy (P0), sensing_foundation geometry (P0) | Service |
 | SingleObjectTracker | L6 追跡 | 対応付け・ライフサイクル・点列の確定 | 6.1〜6.9, 9.1, 9.5 | CoreTypes (P0) | Service, State |
 | TrackingPipeline | L7 統合 | 3段の結線と計測、フレーム欠落の引き継ぎ | 1.1, 1.2, 10.2, 10.3 | 上記すべて (P0), sensing_foundation (P0) | Service |
 | DetectorComparison | L8 比較 | 3方式の実測比較と判定規則の適用（OQ-26） | 4.4〜4.9, 8.4, 11.5 | TrackingPipeline (P0) | Batch |
@@ -1003,13 +1047,14 @@ def create_detector(settings: TrackingSettings) -> Detector: ...
 
 | Field | Detail |
 |---|---|
-| Intent | 候補領域内の有効 Depth 画素だけからカメラ座標系の代表3D点を求め、寸法の本判定を行う |
-| Requirements | 2.5, 2.6, 5.1, 5.2, 5.3, 5.4, 5.5, 5.6, 5.7, 10.1, 10.4, 10.6, 3.3 |
+| Intent | 候補領域内の有効 Depth 画素だけからカメラ座標系の代表3D点を求め、寸法の本判定を行う。**逆投影の基本演算は上流に委譲し、本コンポーネントは「どの画素をどう代表させるか」という集約方針だけを持つ** |
+| Requirements | 2.5, 2.6, 5.1, 5.2, 5.3, 5.4, 5.5, 5.6, 5.7, 5.8, 10.1, 10.4, 10.6, 3.3 |
 
 **Dependencies**
 
 - Inbound: TrackingPipeline (P0)
-- Outbound: CoreTypes (P0), TrackingSettings (P0)
+- Outbound: CoreTypes (P0), TrackingSettings (P0),
+  **`sensing_foundation`（公開入口）の `depth_raw_to_mm` / `is_valid_depth` / `deproject_pixel` (P0)**
 - External: numpy (P0)。**`cv2` を使わない**
 
 **Contracts**: Service [x]
@@ -1028,17 +1073,39 @@ class PointEstimator:
   `t_ms == frame.t_capture_ms`
 - Invariants: **候補の外接矩形の外側を一切読まない**（要件 5.6）
 
+**責務の分割**（FIX の要点。**ここが本コンポーネントの設計上の肝である**）:
+
+| 誰が持つか | 何を固定するか |
+|---|---|
+| **`sensing_foundation`（上流）** | 無効画素の述語（`is_valid_depth`）、生カウント → mm の換算（`depth_raw_to_mm`）、画素中心の規約とピンホール式（`deproject_pixel`） |
+| **本 Spec（`PointEstimator`）** | 候補領域内の**どの有効画素をどう集約するか**（トリム代表値）、候補の絞り込み、`intrinsics_source` の記録、失敗理由の分類 |
+
+> ⚠️ `world-frame-calibration`（床平面推定）も同じ上流関数に乗る。
+> **`docs/requirements.md §6.2`** が警告するとおり、座標が数 cm ずれても症状は
+> 「予測が悪い」にしか見えない。2経路の逆投影が画素中心規約・`depth_scale_mm` の
+> 適用位置・無効画素の扱いのどれかで食い違うと、`m1-prediction-validation` の
+> 誤差切り分けが土台から崩れる。ゆえに**基本演算は1箇所に固定する**。
+> この一致は `m1-prediction-validation` が
+> **`tests/m1_validation/test_deprojection_contract.py`（要件 1.10）**として
+> クロス Spec 契約テストで強制している
+
 **アルゴリズム上の約束**（実装の詳細ではなく、契約として固定するもの）:
 
-1. 外接矩形内の Depth のうち **0（無効値）を除外**する。埋めない（要件 10.1 / 10.6）
+1. 外接矩形内の Depth のうち**無効値を除外**する。判定は
+   **`sensing_foundation.is_valid_depth()` にのみ委ねる**（`raw == 0` を自前で書かない）。
+   埋めない（要件 10.1 / 10.6 / 5.8）
 2. 有効画素が `min_valid_depth_px` 未満なら `INSUFFICIENT_VALID_PIXELS` として無効（要件 5.5）
 3. 代表距離は**外れ値に強い代表値**（両側 `depth_trim_ratio` を落としたトリム平均）とする。
-   ばらつきが `max_depth_spread_mm` を超えたら `DEPTH_SPREAD_TOO_LARGE` として無効
-4. 代表距離を `profile.depth_scale_mm` で mm に換算する。**「1カウント = 1mm」と決め打ちしない**
-5. ピンホールモデルで逆投影する:
-   `x_mm = (cx_px - ppx_px) * z_mm / fx_px`、`y_mm = (cy_px - ppy_px) * z_mm / fy_px`
+   ばらつきが `max_depth_spread_mm` を超えたら `DEPTH_SPREAD_TOO_LARGE` として無効。
+   **この集約方針は本 Spec 固有のものであり、上流には無い**
+4. 代表距離の mm 換算は **`sensing_foundation.depth_raw_to_mm(raw, profile.depth_scale_mm)`**
+   でのみ行う。**`depth_scale_mm` を自分で掛けない**し、「1カウント = 1mm」とも決め打ちしない（要件 5.8）
+5. 逆投影は **`sensing_foundation.deproject_pixel(frame.profile.intrinsics, u_px, v_px, z_mm)`**
+   を呼ぶ。**ピンホール式を本 Spec に書かない**。渡す `z_mm` は手順4で mm 換算済みの値であり、
+   `u_px` / `v_px` は候補重心の小数画素座標（**`+0.5` の補正を足さない**。規約は上流が持つ）（要件 5.8）
 6. **寸法の本判定**: `expected_diameter_px = fx_px * diameter_mm / z_mm` を求め、
-   見かけの直径が `[min_scale, max_scale]` の範囲外なら `SIZE_MISMATCH` として除外（要件 3.3）
+   見かけの直径が `[min_scale, max_scale]` の範囲外なら `SIZE_MISMATCH` として除外（要件 3.3）。
+   これは逆投影ではなく**候補の絞り込み**であり、本 Spec の責務である
 7. 距離帯（`z_min_mm` / `z_max_mm`）の外なら `OUT_OF_DEPTH_BAND` として無効
 
 **Implementation Notes**
@@ -1047,8 +1114,11 @@ class PointEstimator:
   現時点の値は `"stream_profile"` の1種類だが、**出所を記録する枠だけ先に作る**。
   キャリブレーションで別の内因値を使う可能性は `world-frame-calibration` 側にあり、
   そのとき「どのパラメータで逆投影したか」が分からないと誤差を切り分けられない
-- Validation: `world-frame-calibration` へ渡すのは**カメラ座標系の値のみ**。
+- Validation: 下流へ渡すのは**カメラ座標系の値のみ**。
   床平面・World 原点・回転はここに登場しない（要件 5.3）
+- Validation: **本モジュールにピンホール式・`* depth_scale_mm`・`raw == 0` が現れないこと**を
+  `test_boundaries.py` で静的に検査する（要件 5.8）。
+  数値としての一致は `m1-prediction-validation` の要件 1.10 契約テストが担保する
 - Risks: 対象が小さいため、外接矩形が背景を多く含むと代表距離が背景に引かれる。
   トリム平均と `max_depth_spread_mm` の2段で守るが、**足りなければ設定で詰める**
   （`development-environment.md §13.2` の改善順序）
@@ -1253,16 +1323,28 @@ class DetectorComparisonResult:
 
 ### 受け渡し（ハンドオフ）
 
-本 Spec が外へ出す唯一のデータは `CameraTrack` である。**`world-frame-calibration` が受け取り、
-World frame へ変換して `prediction_core.Sample` を構成する。**
+本 Spec が外へ出す唯一のデータは `CameraTrack` である。
+**これを受け取るのは `m1-prediction-validation` の `seam.py` である。**
+`seam.py` が `CameraTrack` と `CalibrationResult` を突き合わせ、
+`world_frame_calibration.WorldTransform.apply_point()` で World frame へ変換し、
+`prediction_core.Sample` を構成する。
+
+> ⚠️ **`world-frame-calibration` は `CameraTrack` の消費者ではない。**
+> 同 Spec は**変換の提供者**（`WorldTransform` の所有者）であり、
+> その Allowed Dependencies は `prediction_core` の import を禁じているため
+> `Sample` を構成できない。また `flying_object_tracking` にも依存しない。
+> `roadmap.md` の Boundary Strategy が言う「World 変換は1箇所」は
+> **`WorldTransform` を誰が所有するか**の話であって、受け渡しの経路の話ではない。
+> 結合点（seam）は `m1-prediction-validation` の**存在理由**そのものである。
 
 ```mermaid
 graph LR
     Frame[CaptureFrame from sensing foundation] --> Cand[Candidate image space]
     Cand --> Pt[CameraPoint camera frame mm]
     Pt --> Trk[CameraTrack handoff]
-    Trk --> Cal[world frame calibration]
-    Cal --> Smp[prediction core Sample world frame]
+    Trk --> Seam[m1 prediction validation seam py]
+    Cal[world frame calibration WorldTransform] --> Seam
+    Seam --> Smp[prediction core Sample world frame]
     Smp --> Pred[prediction core predict]
 ```
 
@@ -1362,6 +1444,10 @@ OpenCV と NumPy は extras `tracking` として導入する。
 - `test_projection.py` — 既知の内因値・既知の距離に対して逆投影が解析解と一致すること。
   有効画素不足・ばらつき過大・距離帯外がそれぞれ正しい `PointFailureReason` を返すこと。
   内因が無いとき `IntrinsicsUnavailableError` を送出すること（要件 5.1〜5.7 / 10.4）
+- `test_projection.py` — **上流の基本演算に委譲していること**: Depth の mm 換算・無効画素の判定・
+  ピンホール式を自前で持たず、`sensing_foundation` の
+  `depth_raw_to_mm` / `is_valid_depth` / `deproject_pixel` の結果と一致すること（要件 5.8）。
+  ただし**トリム代表値の決定は本 Spec 固有**であり、ここで固定するのはその集約方針である
 - `test_tracking.py` — 欠測許容の境界（`max_missing_frames` ちょうどで継続、超過で `LOST`）、
   等速外挿ゲート、**距離同値時のタイブレークが決定的**であること、`rivals` の計数（要件 6.2〜6.9）
 
@@ -1396,8 +1482,14 @@ OpenCV と NumPy は extras `tracking` として導入する。
 - `sensing_foundation` の**内部モジュール**（`sensing_foundation.types` 等）への直接 import が無いこと（要件 1.5）
 - **`cv2` を import しているのは `detection/mask_ops.py` だけ**であること
 - 依存方向表に反する import が無いこと（特に `tracking` → `detection` / `projection`）
+- **`projection.py` が逆投影の基本演算を自前で持たない**こと（要件 5.8）:
+  ピンホール式（`ppx_px` / `ppy_px` を用いた画素→mm の除算）、`depth_scale_mm` の直接の乗算、
+  無効 Depth の直値比較（`== 0`）が現れず、`sensing_foundation` の
+  `depth_raw_to_mm` / `is_valid_depth` / `deproject_pixel` を呼んでいること
 - `pyproject.toml` の **`[project].dependencies` が空**であること（要件 13.3 / 13.4）
 - `[project.optional-dependencies].tracking` に numpy と OpenCV が宣言されていること
+  （**extras 表明そのものの緩和は `sensing-foundation` が所有する。本 Spec は
+  `tests/prediction_core/test_packaging.py` を変更しない**）
 - `src/prediction_core/**` / `src/sensing_foundation/**` を参照する相対 import が無いこと（要件 13.1 / 13.5）
 
 ### 実機テスト（ハード到着後）

@@ -48,6 +48,12 @@
   - 逆投影のためにカメラパラメータを自前で持たない。`frame.profile.intrinsics` を使う
   - `depth_scale_mm` を無視して「Depth の値 = mm」と決め打ちしない（D435 の既定は 1mm だが、
     **設定で変わりうる値を固定値として扱わない**）
+  - ⚠️ **逆投影の演算そのものも自前で持たない。** 上流の公開入口が
+    `depth_raw_to_mm` / `is_valid_depth` / `deproject_pixel` を提供しており、
+    生カウント → mm の換算・画素中心の規約・ピンホール式・無効画素の判定を1箇所に固定している。
+    `world-frame-calibration` も同じ関数に乗るため、**本 Spec が独自に式を書くと
+    2経路が食い違い、`m1-prediction-validation` の誤差切り分けが成立しなくなる**。
+    本 Spec が持つのは**候補領域内の画素をどう代表させるか**という集約方針だけである
 
 ### `CaptureFrame.depth` の read-only 契約
 
@@ -120,12 +126,19 @@
 - **Context**: `[project].dependencies` は `[]` でなければならない
   （`tests/prediction_core/test_packaging.py` が静的に検証している）
 - **Findings**:
+  - ⚠️ **当該テストの表明は `[project].dependencies == []` だけではない。**
+    `[project.optional-dependencies] == {}`（extras が1つも無いこと）も併せて表明している。
+    したがって **extras を1つ足した時点で既存テストが赤くなる**。
+    この表明を許可リスト方式
+    （`ALLOWED_OPTIONAL_EXTRAS = {"sensing", "tracking", "calibration", "m1-viz"}` の部分集合）
+    へ緩める改修は **`sensing-foundation`（Wave 0）が所有する**。本 Spec は再改修しない
   - 現在の `pyproject.toml` には `[project.optional-dependencies]` が存在しない。
     `sensing-foundation` が `sensing = ["numpy>=1.24"]` を新設する予定
   - OpenCV の GUI 機能は不要（`docs/development-environment.md §4`「GUI 表示を必須要件にしない」）
 - **Implications**:
   - 追加は **`[project.optional-dependencies] tracking`** への追記のみとする。
-    `[project].dependencies` には触れない
+    `[project].dependencies` には触れない。
+    **着手前に上流の許可リスト改修が landing していることを確認する**（順序依存）
   - **GUI 無しの構成を選ぶ。** 依存の重さと headless 運用の両方に効く
   - ⚠️ **Pi 上で OpenCV を apt で入れるか pip で入れるかは実機まで確定させない**（OQ-41）。
     実測結果を OQ-41 の判断材料として `measurements.md` に記録する

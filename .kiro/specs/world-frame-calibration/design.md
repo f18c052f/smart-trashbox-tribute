@@ -12,7 +12,7 @@
 
 - Depth から床平面を推定し、推定品質（内点数・残差・入射角）を伴って返す（要件 1）
 - World frame の原点・軸方向を**カメラ設置に依存しない形で**一意に確立する（要件 2。OQ-03）
-- カメラ座標 → World 座標の変換と、画素 + Depth → カメラ座標の逆投影を提供する（要件 3）
+- カメラ座標 → World 座標の変換を提供する（要件 3）。画素 + Depth → カメラ座標の逆投影は、**基本演算を `sensing_foundation.geometry` に委ね**、本 Spec は範囲限定・歪みモデル受理判定・無効点方針だけを持つ（要件 3.4 / 3.5 / 3.8）
 - **確立に使っていない独立点との照合により、誤差をバイアス・ばらつき・距離依存に分解して報告し、単体で合否を出す**（要件 4）
 - 座標系が定まらない条件では、部分的な結果を返さずに識別可能な理由で失敗する（要件 5）
 - 結果を永続化し、設定不一致を検出する（要件 6）
@@ -23,7 +23,7 @@
 ### Non-Goals
 
 - 飛翔物の検出・追跡（`flying-object-tracking`）、予測（`prediction-core`、実装済み）
-- フレーム取得・記録・再生・構造化ロギング基盤（`sensing-foundation`）
+- フレーム取得・記録・再生・構造化ロギング基盤、および**ピンホール逆投影の基本演算**（`sensing-foundation`）
 - 移動体オドメトリの実装（M3）。**原点を合わせる手順の定義までを持つ**
 - 設置形態の決定（OQ-06）、リポジトリ全体のディレクトリ構成（OQ-40）、Python 環境構築方針（OQ-41）
 - Throw Record スキーマの定義・変更（`prediction-core` が正。D-8）
@@ -39,7 +39,7 @@
 
 - **床平面の推定と推定品質**: 平面パラメータ、内点数・内点率・残差代表値・使用フレーム数・入射角（要件 1）
 - **World frame の定義**: 原点・軸方向の決め方そのもの。**OQ-03 を決着させる**（要件 2）
-- **カメラ座標 → World 座標の変換**と、画素 + Depth → カメラ座標の**逆投影**（要件 3）
+- **カメラ座標 → World 座標の変換**（要件 3.1〜3.3 / 3.6 / 3.7）。逆投影については、**探索範囲への限定**・**扱えない歪みモデルの拒否**・**無効点（NaN）を平面当てはめへ流さない方針**を持つ（要件 1.3 / 1.4 / 3.4 / 3.5）。ピンホールの基本演算そのものは持たない（要件 3.8）
 - **独立検証**: 検証点の定義・誤差の分解・距離依存性・合否判定・レポート形式（要件 4）
 - **縮退条件の定義と失敗理由の列挙**（要件 5）
 - **キャリブレーション結果の永続化形式**（`CALIBRATION_FORMAT_VERSION`）と整合性検査（要件 6）
@@ -53,6 +53,7 @@
 - 飛翔物の検出・追跡・フレーム間対応付け（`flying-object-tracking`）。**向こうはカメラ座標系のまま引き渡す**
 - 落下地点・落下時刻の予測（`prediction-core`）
 - フレーム取得・記録・再生・構造化ロギング基盤（`sensing-foundation`）
+- **ピンホール逆投影の基本演算**（`sensing_foundation.geometry`。同 Spec 要件 3.8）: 無効 Depth 判定 `is_valid_depth`、生カウント → mm 換算 `depth_raw_to_mm`、画素中心規約と逆投影式 `deproject_pixel`。**本 Spec はこれらを再実装せず呼ぶ**（要件 3.8）
 - 移動体オドメトリの実装、目標座標の送信、移動体側のすべて（M3 以降）
 - カメラを移動させる運用・エゴモーション補正（カメラは固定運用）
 - 段階別レイテンシの**集計と判断**（`m1-prediction-validation` / OQ-27）
@@ -63,13 +64,16 @@
 
 ### Allowed Dependencies
 
-- **`sensing_foundation` の公開入口（`sensing_foundation.__init__`）のみ**。内部モジュールへ直接 import しない。**接点は `upstream.py` 1モジュールに限る**
+- **`sensing_foundation` の公開入口（`sensing_foundation.__init__`）のみ**。内部モジュールへ直接 import しない。**接点は `upstream.py` / `deproject.py` / `cli.py` の3モジュールに限る**（`cli.py` は従来どおり設定解決のみ）
+  - `upstream.py` — フレーム収集・型写像・ロギング委譲（従来どおり）。生 Depth → mm の換算と無効画素の判定に `depth_raw_to_mm` / `is_valid_depth` を用いる
+  - `deproject.py` — **逆投影の基本演算 `deproject_pixel` と型 `CameraIntrinsics` のみ**を参照する。⚠️ **これは当初の「接点は `upstream.py` だけ」という制約を意図的に緩めたものである。** 基本演算は L2 の逆投影で必要になるため、`upstream.py`（L8）経由では層を逆流させずに届かない。緩めた代わりに、`deproject.py` が参照してよい上流シンボルを上記2つに限定し、`test_boundaries.py` で列挙固定する（要件 3.8 / 8.2）
+  - この2モジュールが参照する上流シンボルはいずれも**純関数・値オブジェクトであり、実機・SDK を要求しない**。したがって要件 9.2（ハード不要）は維持される
 - **`numpy` のみ**をサードパーティ依存として宣言する（extras `calibration`）。**`[project].dependencies` は空のまま維持する**
 - 標準ライブラリ（`json` / `math` / `dataclasses` / `enum` / `pathlib` / `argparse` / `time` / `typing`）
 - **禁止**:
   - `prediction_core` への依存（[research.md Decision 6](./research.md#decision-6-prediction_core-に依存しない)）
   - `cv2`（OpenCV）と `pyrealsense2` の import。前者は `flying-object-tracking` の道具、後者は `sensing-foundation` が遅延 import で扱う
-  - `upstream.py` / `cli.py` 以外のモジュールからの `sensing_foundation` の import
+  - `upstream.py` / `deproject.py` / `cli.py` 以外のモジュールからの `sensing_foundation` の import
   - `prediction_core` / `sensing_foundation` へのサードパーティ依存の逆流
 
 ### Revalidation Triggers
@@ -81,9 +85,12 @@
 - `CALIBRATION_FORMAT_VERSION` の変更、および保存結果の必須フィールドの変更
 - `PLAN_FORMAT_VERSION` の変更（設置者が持つ plan ファイルが読めなくなる）
 - 検証レポートの誤差定義の変更（バイアス・ばらつき・距離帯の算出方法）
-- 逆投影が対応する歪みモデルの拡大・縮小
+- 逆投影が対応する歪みモデルの拡大・縮小（本 Spec が持つのは**受理判定**であり、式そのものではない）
+- **検証許容値（`ToleranceSpec`）の実測による更新**。既定値は暫定であり、実測後にタスク 8.3 で見直される。影響する下流は **`m1-prediction-validation`** である: 同 Spec の `seam.open_calibration()` は非 PASS の結果に対して（`allow_unverified` を明示しない限り）`SeamFailure(CALIBRATION_NOT_VERIFIED)` を送出し、**M1 の計測実行そのものを止める**。すなわち本 Spec の暫定許容値が、境界をまたいで実行可否を握っている唯一の数値である。許容値を締める／緩める変更は、`m1-prediction-validation` の実行可否の変化として現れるため、必ず向こうへ通知する（m1 側は失敗メッセージに `provisional` フラグと `source` 文字列を出しており、運用者が「校正が本当に悪い」のか「暫定許容値が厳しすぎる」のかを区別できるようにしてある）
 - `calibrate` stage のイベント名・キーの変更（`m1-prediction-validation` の集計が壊れる）
 - **上流由来**: `sensing_foundation` の `CaptureFrame` / `StreamProfile` / `CameraIntrinsics` の非追加変更、`FrameSource` の意味論変更、`RECORDING_FORMAT_VERSION` の変更
+- **上流由来（共有プリミティブ）**: `sensing_foundation.geometry` の `deproject_pixel` / `depth_raw_to_mm` / `is_valid_depth` の規約変更（画素中心規約に `+0.5` を入れる、mm 換算の位置を移す、無効値の定義を変える、歪み補正を足す等）。この演算は **`flying-object-tracking` と共有**しており、変えると両 Spec の座標が同時に動く。`m1-prediction-validation` のクロス Spec 契約テスト（同 Spec 要件 1.10 / `tests/m1_validation/test_deprojection_contract.py`）が両経路の**許容差なしの一致**を固定しているため、変更時は必ず同テストを再確認する
+- **`tests/prediction_core/test_packaging.py` の `ALLOWED_OPTIONAL_EXTRAS` の縮小**。本 Spec が追記する `calibration` extras は同許可リストに載っていることが前提である（[Modified Files](#modified-files) を参照）
 
 ---
 
@@ -98,6 +105,7 @@
 - **OQ-06**（設置形態）: 決めない。本方式は**カメラ設置に依存しない**ため壁固定でも三脚でも成立する。ただし設置形態を変えたら再実施が要る旨を `procedure.md` に書く
 - **OQ-26**（物体検出方式）: `flying-object-tracking` の担当。本 Spec のマーカー観測は**静止対象を範囲指定で観測するだけ**であり、検出方式の決定ではない
 - **OQ-40 / OQ-41**: 本 Spec は `src/world_frame_calibration/` 1パッケージの位置だけを定める。環境構築方針は既存の設定に乗る
+  - **OQ-40 の残り（配布名）**: 全 Spec 着地後も `[project].name` は `prediction-core` のままで、wheel には `prediction_core` / `sensing_foundation` / `flying_object_tracking` / `world_frame_calibration` / `m1_validation` / `trajectory_sim` の6パッケージが入る。**この改名は OQ-40 で一括して決める事項であり、本 Spec では蒸し返さない**（`sensing-foundation` design.md の同趣旨の記述と同じ扱い）
 - **許容値の実測**: 既定の許容値は暫定。実機での実測後に `measurements.md` で見直す（`tech.md` 開発標準1）
 
 ---
@@ -119,7 +127,9 @@
 
 ### Architecture Pattern & Boundary Map
 
-**Selected pattern**: **依存のない幾何コア ＋ 単一の上流アダプタ（Functional Core / Imperative Shell）**。幾何・変換・検証・永続化は NumPy と標準ライブラリだけの純粋な層とし、`sensing_foundation` に触れるのは `upstream.py` 1モジュールに限る。これにより幾何コアは上流の実装完了を待たずに単体テストでき、境界違反を静的テストで検出できる。
+**Selected pattern**: **依存のない幾何コア ＋ 単一の上流アダプタ（Functional Core / Imperative Shell）**。幾何・変換・検証・永続化は NumPy と標準ライブラリだけの純粋な層とし、`sensing_foundation` の**副作用を伴う機能**（フレーム取得・ロギング・設定解決）に触れるのは `upstream.py` / `cli.py` に限る。これにより幾何コアは上流の実装完了を待たずに単体テストでき、境界違反を静的テストで検出できる。
+
+> ⚠️ **唯一の例外**: `deproject.py` は `sensing_foundation.geometry` の**純関数 `deproject_pixel` と値オブジェクト `CameraIntrinsics`** を参照する（要件 3.8）。これは副作用を持たず、実機も SDK も要求しないため Functional Core の性質を壊さない。代わりに幾何コアは `sensing-foundation` タスク 1.8（`geometry.py`）の着地を前提とする。**逆投影の式を本 Spec と `flying-object-tracking` が別々に書くことを避けるための、意図的な依存である。**
 
 ```mermaid
 graph TB
@@ -127,6 +137,7 @@ graph TB
         SF[sensing foundation public api]
         Frames[CaptureFrame stream]
         Log[StructuredLogger]
+        Geo[geometry deproject_pixel]
     end
     subgraph Shell
         UP[upstream adapter]
@@ -153,6 +164,8 @@ graph TB
     SF --> UP
     Frames --> UP
     Log --> UP
+    Geo --> UP
+    Geo --> Deproj
     UP --> Deproj
     UP --> CLI
     Plan --> CLI
@@ -216,7 +229,8 @@ graph LR
 |---|---|---|
 | 0 | `errors` / `linalg` | 標準ライブラリ ＋ `numpy`（`linalg` のみ）。互いに import しない |
 | 1 | `types` | `errors`, `linalg` |
-| 2 | `plan` / `deproject` | 0〜1 |
+| 2 | `plan` | 0〜1 |
+| 2 | `deproject` | 0〜1 ＋ **`sensing_foundation`（公開入口の `deproject_pixel` / `CameraIntrinsics` のみ）** |
 | 3 | `plane` / `transform` | 0〜2 |
 | 4 | `anchors` | 0〜3 |
 | 5 | `frame` | 0〜4 |
@@ -227,7 +241,13 @@ graph LR
 | 9 | `cli` | 0〜8 |
 | 9 | `__init__` | 0〜8（再エクスポートのみ。ロジックを持たない） |
 
-> **`upstream` だけが `sensing_foundation` を import する。** これが本設計で最も重要な構造的制約である。幾何コア（0〜7）は上流の実装完了を待たずに完成でき、`flying-object-tracking` と並行実装しても衝突しない。`test_boundaries.py` がこの規則と、`cv2` / `pyrealsense2` / `prediction_core` を import していないことを静的に検証する。
+> **`sensing_foundation` を import してよいのは `upstream` / `deproject` / `cli` だけである。** これが本設計で最も重要な構造的制約であり、`test_boundaries.py` がこの規則と、`cv2` / `pyrealsense2` / `prediction_core` を import していないことを静的に検証する。
+>
+> - `upstream` — フレーム取得・ロギング・型写像。**上流の副作用に触れる唯一のモジュール**
+> - `deproject` — **`deproject_pixel` と `CameraIntrinsics` の2シンボルのみ**（要件 3.8）。`test_boundaries.py` はこの2つ以外の上流シンボルが `deproject` に現れないことも固定する
+> - `cli` — 設定解決（`RuntimeSettings`）のみ
+>
+> この限定により、幾何コア（0〜7）は上流の**実機依存部分**の完成を待たずに単体テストでき、`flying-object-tracking` と並行実装しても衝突しない。ただし `sensing-foundation` タスク 1.8（`geometry.py`、純関数3つ）は幾何コアの前提である。
 >
 > **`report` が `upstream` を import しないのは意図的である。** レポート生成にログ送出を絡めると、ログ無効時にレポートが変わりうる。レポートは純粋な変換に保つ。
 
@@ -260,7 +280,8 @@ src/world_frame_calibration/
 │                        #   PixelRegion / Plane / PlaneQuality / AnchorObservation /
 │                        #   AnchorRole / FrameGeometry / ToleranceSpec
 ├── plan.py              # CalibrationPlan の読み書きと検証。PLAN_FORMAT_VERSION
-├── deproject.py         # 画素 + Depth → カメラ座標。歪みモデルの受理判定
+├── deproject.py         # 範囲限定の逆投影。歪みモデルの受理判定と無効点の除外。
+│                        #   ピンホール基本演算は sensing_foundation.geometry を呼ぶ（式を持たない）
 ├── plane.py             # RANSAC + SVD による床平面推定と推定品質の算出
 ├── transform.py         # WorldTransform（回転と平行移動のみ）と適用・逆変換・差分
 ├── anchors.py           # 範囲 + 高さバンド + ロバスト代表値によるマーカー観測
@@ -268,7 +289,8 @@ src/world_frame_calibration/
 ├── result.py            # CalibrationResult の組み立て・直列化・整合性検査・比較
 ├── verify.py            # 独立検証: 誤差分解・距離帯集計・合否判定
 ├── report.py            # 人間可読の要約と機械可読 JSON の生成
-├── upstream.py          # sensing_foundation との唯一の接点（フレーム収集・型写像・ロギング）
+├── upstream.py          # 上流の副作用に触れる唯一の接点（フレーム収集・型写像・ロギング。
+│                        #   mm 換算と無効判定は上流 depth_raw_to_mm / is_valid_depth を呼ぶ）
 └── cli.py               # calibrate / verify / show / compare
 
 tests/world_frame_calibration/
@@ -277,7 +299,7 @@ tests/world_frame_calibration/
 ├── test_linalg.py
 ├── test_types.py
 ├── test_plan.py
-├── test_deproject.py           # 逆投影の正しさと歪みモデル拒否
+├── test_deproject.py           # 上流プリミティブへの委譲・歪みモデル拒否・範囲限定・無効点除外
 ├── test_plane.py               # 既知平面の復元・外れ値耐性・内点不足での失敗
 ├── test_transform.py           # 直交性・往復変換・差分の意味
 ├── test_anchors.py             # 範囲・高さバンド・ロバスト性・未検出時の失敗
@@ -293,7 +315,21 @@ tests/world_frame_calibration/
 
 ### Modified Files
 
-- `pyproject.toml` — `[tool.hatch.build.targets.wheel].packages` に `src/world_frame_calibration` を**追記**する。`[project.optional-dependencies]` に `calibration = ["numpy>=1.24"]` を**追記**する。**`[project].dependencies` は空のまま変更しない**（`tests/prediction_core/test_packaging.py` が空であることを表明している）
+- `pyproject.toml` — `[tool.hatch.build.targets.wheel].packages` に `src/world_frame_calibration` を**追記**する。`[project.optional-dependencies]` に `calibration = ["numpy>=1.24"]` を**追記**する。**`[project].dependencies` は空のまま変更しない**（`tests/prediction_core/test_packaging.py::test_no_third_party_runtime_dependencies` が**実行時依存ゼロ**を表明している）
+
+> ⚠️ **前提: `calibration` extras を追記できるのは、上記テストの extras 不変条件が是正された後である。**
+>
+> 同テストは `[project].dependencies == []` に加えて **`[project.optional-dependencies] == {}` も表明している**（`tests/prediction_core/test_packaging.py:44-48`）。すなわち extras を1つでも新設した時点で、既にマージ済みの `prediction-core` のテスト群が赤くなる。
+>
+> この不変条件の是正は **`sensing-foundation` のタスク 1.1 が所有する**（同 Spec の task 1.1 が `sensing` extras を足す時点で最初に赤くなるため、そこに置かれている）。是正後の形は次のとおりで、`calibration` は**この許可リストに含まれている**:
+>
+> ```python
+> ALLOWED_OPTIONAL_EXTRAS = {"sensing", "tracking", "calibration", "m1-viz"}
+> assert project.get("dependencies", []) == []
+> assert set(project.get("optional-dependencies", {})) <= ALLOWED_OPTIONAL_EXTRAS
+> ```
+>
+> **本 Spec は当該テストを再改訂しない。** `tests/prediction_core/**` は本 Spec の境界外のままである（[Out of Boundary](#out-of-boundary)）。タスク 1.1 の着手前に、この是正が着地していることを確認する。
 - `.kiro/specs/world-frame-calibration/procedure.md` — **新規**。設置のたびに実施する手順書（要件 7.2 / 7.5 / 7.6）
 - `.kiro/specs/world-frame-calibration/measurements.md` — **新規**。実機での推定品質・検証誤差・再現性・許容値見直しの**結論**を記録する（生データは `var/` 配下で版管理しない）
 
@@ -374,7 +410,7 @@ flowchart TB
 |---|---|---|---|---|
 | 1.1 | 床平面をカメラ座標系の平面として推定 | FloorPlaneEstimator | `estimate_floor_plane` | calibrate |
 | 1.2 | 推定品質（点数・内点率・残差）を提供 | FloorPlaneEstimator, GeoTypes | `PlaneQuality` | calibrate |
-| 1.3 | 無効 Depth 画素を除外 | Deprojector, FloorPlaneEstimator | `deproject_region` | calibrate |
+| 1.3 | 無効 Depth 画素を除外 | UpstreamAdapter, Deprojector, FloorPlaneEstimator | 上流 `is_valid_depth`（収集時）, `deproject_region`（NaN 除外） | calibrate |
 | 1.4 | 探索範囲に限定し全画素展開を要求しない | CalibrationPlan, Deprojector | `PixelRegion` | calibrate |
 | 1.5 | 内点下限割れで平面を返さない | FloorPlaneEstimator, Errors | `FailureReason.PLANE_NOT_SUPPORTED` | calibrate |
 | 1.6 | 複数フレームで安定化し使用枚数を残す | UpstreamAdapter, GeoTypes | `average_depth`, `DepthImage.frames_used` | calibrate |
@@ -391,10 +427,11 @@ flowchart TB
 | 3.1 | カメラ座標点を World 座標へ変換 | WorldTransform | `apply_point` | 下流利用 |
 | 3.2 | 複数点の一括変換 | WorldTransform | `apply` | 下流利用 |
 | 3.3 | 回転と平行移動のみ | WorldTransform, LinAlg | `is_orthonormal` | — |
-| 3.4 | 画素 + Depth + 内部パラメータ → カメラ座標 | Deprojector | `deproject_pixel`, `deproject_region` | calibrate / verify |
+| 3.4 | 画素 + Depth + 内部パラメータ → カメラ座標 | Deprojector（上流 Geometry へ委譲） | `deproject_region`, 上流 `deproject_pixel` | calibrate / verify |
 | 3.5 | 非対応の歪み係数で失敗 | Deprojector | `FailureReason.UNSUPPORTED_DISTORTION` | calibrate |
 | 3.6 | 適用にカメラ・SDK・I/O を要求しない | WorldTransform, PublicApi | 依存方向 | — |
 | 3.7 | 床上の点の z が品質範囲内で 0 | WorldFrameBuilder, Verifier | `verify_calibration` | verify |
+| 3.8 | 逆投影の基本演算を再実装せず上流を呼ぶ | Deprojector, UpstreamAdapter, BoundaryTest | 上流 `deproject_pixel` / `depth_raw_to_mm` / `is_valid_depth`, `test_boundaries.py` | calibrate / verify |
 | 4.1 | 検出・予測なしで単体完了 | Verifier, CLI | `verify` サブコマンド | verify |
 | 4.2 | 軸ごとの差分を報告 | Verifier | `PointError.error_mm` | verify |
 | 4.3 | 独立点を要求、確立点のみは無効 | Verifier | `FailureReason.VERIFICATION_NOT_INDEPENDENT` | verify |
@@ -456,7 +493,7 @@ flowchart TB
 | LinAlg | L0 | 正規直交化・直交性検査・回転差分・ロバスト統計 | 2.4, 3.3, 7.4 | numpy (P0) | Service |
 | GeoTypes | L1 | 値オブジェクトの定義 | 1.2, 1.6, 2.5, 2.8, 4.6 | errors (P1), linalg (P2) | State |
 | CalibrationPlan | L2 | 設置者の入力（範囲・マーカー・検証点・下限・許容値） | 1.4, 4.9, 7.1 | types (P0) | State, Batch |
-| Deprojector | L2 | 画素 + Depth → カメラ座標、歪みモデル受理判定 | 1.3, 1.4, 3.4, 3.5 | types (P0) | Service |
+| Deprojector | L2 | 範囲限定の逆投影（基本演算は上流へ委譲）、歪みモデル受理判定、無効点除外 | 1.3, 1.4, 3.4, 3.5, 3.8 | types (P0), sensing_foundation.geometry (P0 外部) | Service |
 | FloorPlaneEstimator | L3 | RANSAC + SVD による床平面推定と品質算出 | 1.1-1.7, 5.1, 5.4, 9.3, 9.4 | deproject (P0) | Service |
 | WorldTransform | L3 | 剛体変換の保持と適用・逆変換・差分 | 3.1-3.3, 3.6, 7.4, 10.4, 11.4 | linalg (P0) | Service, State |
 | AnchorObserver | L4 | 範囲 + 高さバンドのロバスト代表値としてマーカーを観測 | 2.2, 2.6, 5.2, 9.3 | plane (P1), deproject (P0) | Service |
@@ -464,7 +501,7 @@ flowchart TB
 | CalibrationResultStore | L6 | 結果の組み立て・直列化・整合性検査・比較 | 6.1-6.6, 7.4, 4.10 | frame (P0), plan (P1) | Batch, State |
 | Verifier | L7 | 独立検証と誤差分解・距離帯集計・合否判定 | 4.1-4.10, 3.7, 9.3 | result (P0), anchors (P1) | Service, Batch |
 | Reporter | L8 | 人間可読要約と機械可読 JSON の生成 | 4.8, 6.5, 10.6 | verify (P0), result (P0) | Batch |
-| UpstreamAdapter | L8 | `sensing_foundation` との唯一の接点 | 1.6, 1.7, 8.1-8.5, 10.1-10.5 | sensing_foundation (P0 外部) | Service |
+| UpstreamAdapter | L8 | 上流の副作用（取得・ロギング）に触れる唯一の接点 | 1.3, 1.6, 1.7, 3.8, 8.1-8.5, 10.1-10.5 | sensing_foundation (P0 外部) | Service |
 | CLI | L9 | 4サブコマンドの入口 | 4.1, 7.1, 7.3, 8.5, 10.3 | 全コンポーネント (P0) | Service |
 | PublicApi | L9 | 公開シンボルの再エクスポート | 3.6, 8.6 | 全コンポーネント (P0) | — |
 | Procedure | ドキュメント | 設置手順書 | 7.2, 7.3, 7.5, 7.6, 11.3 | — | — |
@@ -625,7 +662,7 @@ class ToleranceSpec:
 
 **Implementation Notes**
 
-- Integration: `Intrinsics` と `StreamSignature` は上流型のフィールド名を**そのまま**採る。写像は `upstream.py` の1箇所に閉じ、写経ミスを起こしにくくする
+- Integration: `Intrinsics` と `StreamSignature` は上流型のフィールド名を**そのまま**採る。上流 → 自 Spec の写像は `upstream.to_intrinsics` の1箇所、自 Spec → 上流の逆写像は `deproject.to_camera_intrinsics` の1箇所に閉じ、いずれもフィールド名が同一であるため機械的な転記になる（要件 3.8 の委譲で `CameraIntrinsics` を作り直す必要が生じたため、写像は2箇所になる）
 - Validation: 生成時に検証しない（`prediction_core` / `sensing_foundation` の方針を踏襲）。検証は `deproject` と `plan` の境界で行う
 - Risks: `FrameGeometry.yaw_sensitivity_deg_per_mm` は**基線長が短い設置で静かに精度が落ちる罠**の唯一の可視化手段である（[research.md](./research.md#ヨー誤差の増幅とマーカー間距離の下限)）。レポートから落とさない
 
@@ -698,32 +735,40 @@ def save_plan(plan: CalibrationPlan, path: Path) -> None: ...
 
 | Field | Detail |
 |---|---|
-| Intent | 画素座標と Depth からカメラ座標系の点を求め、扱えない歪みモデルを拒否する |
-| Requirements | 1.3, 1.4, 3.4, 3.5 |
+| Intent | 探索範囲の有効画素だけを上流の逆投影プリミティブへ通し、扱えない歪みモデルを拒否する |
+| Requirements | 1.3, 1.4, 3.4, 3.5, 3.8 |
 
 **Contracts**: Service [x]
 
 ```python
+# deproject.py — 本 Spec で唯一、幾何コアから上流を参照するモジュール（要件 3.8）
+from sensing_foundation import CameraIntrinsics, deproject_pixel  # この2シンボルのみ
+
 def ensure_supported_distortion(intr: Intrinsics) -> None:
     """歪み係数がすべて 0 でなければ CalibrationFailure(UNSUPPORTED_DISTORTION)。"""
 
-def deproject_pixel(intr: Intrinsics, u_px: float, v_px: float, z_mm: float
-                    ) -> tuple[float, float, float]: ...
+def to_camera_intrinsics(intr: Intrinsics) -> CameraIntrinsics:
+    """自 Spec の Intrinsics を上流の CameraIntrinsics へ戻す。フィールド名が同一のため機械的。"""
 
 def deproject_region(image: DepthImage, region: PixelRegion
                      ) -> tuple["np.ndarray", "np.ndarray"]:
-    """範囲内の有効画素だけを (N, 3) の点群と (N, 2) の画素座標として返す。"""
+    """範囲内の有効画素だけを (N, 3) の点群と (N, 2) の画素座標として返す。
+    1点ごとの逆投影は上流の deproject_pixel に委ね、本関数は範囲の切り出しと
+    無効点（NaN）の除外だけを行う。"""
 ```
 
-- Preconditions: `region` が画像内。`ensure_supported_distortion` を通過していること
+- Preconditions: `region` が画像内。`ensure_supported_distortion` を通過していること。`image.depth_mm` は**すでに mm 単位**である（換算は `upstream.py` が上流の `depth_raw_to_mm` で済ませている）
 - Postconditions: `deproject_region` は NaN 画素を除外して返す（要件 1.3）。返り値は新しい配列であり入力を参照しない
-- Invariants: 逆投影は `x = (u - ppx_px) / fx_px * z`、`y = (v - ppy_px) / fy_px * z`、`z = z_mm`
+- Invariants: **逆投影の式・画素中心規約・無効値の定義を本モジュールが持たない**（要件 3.8）。これらは `sensing_foundation.geometry` の docstring が正であり、本モジュールはその結果を範囲分だけ束ねる
 
 **Implementation Notes**
 
 - Integration: **範囲外の画素を一切触らない。** これが「全画素の3次元展開をしない」（要件 1.4、`development-environment.md §4`）の実装上の担保である
-- Validation: 歪み係数の判定は厳密な 0 比較とする。近似で受理すると「少しだけ歪んだ座標」が静かに流れる
-- Risks: `fx_px` / `fy_px` が 0 の内部パラメータ（未初期化）を受け取ると発散する。`CalibrationConfigError` で弾く
+- Integration: **ピンホールの式をここに書き直さない。** `flying-object-tracking` も同じ上流関数を呼ぶため、両者の座標が定義上一致する。この一致は `m1-prediction-validation` のクロス Spec 契約テスト（同 Spec 要件 1.10 / `tests/m1_validation/test_deprojection_contract.py`）が**許容差なし**で固定する。ここで式を「最適化のために」ベクトル化して書き直すと、その瞬間に契約テストが破れる。ベクトル化が必要になった場合は、上流の `geometry.py` へベクトル版を足す（本 Spec で書かない）
+- Validation: 歪み係数の判定は厳密な 0 比較とする。近似で受理すると「少しだけ歪んだ座標」が静かに流れる。**この受理判定は本 Spec の責務である**（上流は歪み補正を持たず、係数が 0 である前提で恒等に扱うため、非ゼロを弾く番人がどこかに要る）
+- Validation: 無効点（NaN）を平面当てはめ・マーカー観測へ**一切流さない**方針も本 Spec の責務である。上流の `is_valid_depth` は生値に対する述語であり、平均化後の欠測（`valid_count == 0` → NaN）を弾くのは本モジュールの仕事である
+- Risks: `fx_px` / `fy_px` が 0 の内部パラメータ（未初期化）を受け取ると発散する。上流も呼び出し前に弾くことを期待しているため、本モジュールが `CalibrationConfigError` で弾く
+- Risks: `Intrinsics` と `CameraIntrinsics` の相互写像が2箇所（`upstream.to_intrinsics` と `deproject.to_camera_intrinsics`）に分かれる。フィールド名が同一であることが前提なので、上流の `CameraIntrinsics` のフィールド名変更は Revalidation Trigger に該当する
 
 ---
 
@@ -1080,12 +1125,13 @@ def render_difference_text(diff: TransformDifference) -> str: ...
 
 | Field | Detail |
 |---|---|
-| Intent | `sensing_foundation` との唯一の接点として、フレーム収集・型写像・ロギング委譲を行う |
-| Requirements | 1.6, 1.7, 8.1, 8.2, 8.3, 8.4, 8.5, 10.1, 10.2, 10.3, 10.4, 10.5 |
+| Intent | 上流の副作用（フレーム収集・ロギング）に触れる唯一の接点として、収集・型写像・ロギング委譲を行う |
+| Requirements | 1.3, 1.6, 1.7, 3.8, 8.1, 8.2, 8.3, 8.4, 8.5, 10.1, 10.2, 10.3, 10.4, 10.5 |
 
 **Responsibilities & Constraints**
 
-- **本モジュールだけが `sensing_foundation` を import する。** `test_boundaries.py` が静的に検証する
+- **上流の副作用を伴う機能を使うのは本モジュールだけである。** 幾何コアからの上流参照は `deproject.py` の2シンボル（`deproject_pixel` / `CameraIntrinsics`）のみであり、`test_boundaries.py` が両方を静的に検証する
+- **生 Depth → mm の換算と無効画素の判定は、上流の `depth_raw_to_mm` / `is_valid_depth` を用いる**（要件 3.8）。`raw * depth_scale_mm` を本モジュールが自分で書かない。無効値の定義（`INVALID_DEPTH_RAW`）も上流のものを使い、「生値 0」を自前の条件式で判定しない
 - フレームの平均化は**新しい `float64` 配列**へ行う。上流の読み取り専用 Depth を破壊しない（要件 1.7）
 - ロギングは上流の `Logger` へ委譲し、**stage 名 `calibrate` を使う**。基盤を再実装しない（要件 10.1 / 10.2）
 
@@ -1115,7 +1161,7 @@ def timed_apply(logger, transform: WorldTransform, points_camera_mm): ...
 ```
 
 - Preconditions: `frame_count >= 1`。収集中に `StreamProfile` が変化しないこと（変化すれば `CalibrationConfigError`）
-- Postconditions: `DepthImage.frames_used` は実際に平均へ寄与した枚数。無効画素（生値 0）は平均から除外し、寄与ゼロの画素は NaN
+- Postconditions: `DepthImage.frames_used` は実際に平均へ寄与した枚数。無効画素（上流 `is_valid_depth` が偽）は平均から除外し、寄与ゼロの画素は NaN。有効画素は上流 `depth_raw_to_mm` で mm へ換算してから平均する
 - Invariants: 入力 `CaptureFrame.depth` を書き換えない。同一のフレーム列に対して同一の `DepthImage` を返す（要件 8.3）
 
 **Implementation Notes**
@@ -1209,6 +1255,12 @@ def timed_apply(logger, transform: WorldTransform, points_camera_mm): ...
 
 **不変条件**: 範囲は画像内・非空・半開区間。`height_band_mm` は下限 < 上限。検証点ラベルは一意で、`origin` / `x_axis` と重複しない（重複した場合は検証時に除外・明示される）。
 
+> ⚠️ **`tolerance` は Spec 境界を越えて実行可否を握る唯一の暫定値である。** `Verifier` の PASS / FAIL はこの値で決まり、`m1-prediction-validation` の `seam.open_calibration()` は非 PASS の結果に対して（`allow_unverified` を明示しない限り）`SeamFailure(CALIBRATION_NOT_VERIFIED)` を送出して **M1 の計測実行そのものを止める**。
+>
+> これは `tech.md` 開発標準1（未実測の数値を合否条件にしない）に反しない: 導出根拠を `source` に記録し、`provisional` フラグを結果・レポート・下流へ**常に運び**、許容値が与えられなければ `NOT_JUDGED` を返して判定しないためである。m1 側も失敗メッセージに `provisional` と `source` を出し、運用者が「校正が本当に悪い」のか「暫定許容値が厳しすぎる」のかを区別できるようにしてある。
+>
+> ただし**この値を動かすことは下流の実行可否を動かすこと**であるため、タスク 8.3 での実測による見直しは [Revalidation Triggers](#revalidation-triggers) に該当する。
+
 ### キャリブレーション結果（`<calibration_id>.json`）
 
 `CalibrationResult` をそのまま JSON 化する。回転は 3×3 の入れ子配列、平行移動は3要素配列。読み込み時に **`calibration_format_version` の既知性**と**回転の正規直交性**を検査する。`verification` は未検証なら省略され、`verification_state` は `not_verified` になる。
@@ -1284,7 +1336,7 @@ flowchart TB
 ### Unit Tests
 
 - `test_plane.py` — 既知の平面から生成した点群で法線と距離を復元する（要件 1.1）。外れ値を 40% 混ぜても内点が正しく選ばれる。内点が下限を割ると `PLANE_NOT_SUPPORTED`（要件 1.5）、有効点が最小サンプル数未満で `INSUFFICIENT_DEPTH_POINTS`（要件 5.1）、浅い入射角で `INCIDENCE_ANGLE_TOO_SHALLOW`（要件 5.4）。同一シードで同一結果（要件 9.4）
-- `test_deproject.py` — 内部パラメータから作った既知の点を投影 → 逆投影して往復一致（要件 3.4）。歪み係数が非ゼロなら `UNSUPPORTED_DISTORTION`（要件 3.5）。範囲外の画素に触れないこと（要件 1.4）と NaN 画素の除外（要件 1.3）
+- `test_deproject.py` — 内部パラメータから作った既知の点を投影 → 逆投影して往復一致（要件 3.4）。歪み係数が非ゼロなら `UNSUPPORTED_DISTORTION`（要件 3.5）。範囲外の画素に触れないこと（要件 1.4）と NaN 画素の除外（要件 1.3）。**`deproject_region` の各点が上流 `sensing_foundation.deproject_pixel` の返り値と完全一致すること**（要件 3.8。式を書き直していないことの検出）。`to_camera_intrinsics` の往復が `upstream.to_intrinsics` と無損失であること
 - `test_transform.py` — 回転が正規直交で行列式 +1（要件 3.3）。`apply` と `apply_point` の一致、`inverse` の往復（要件 3.1 / 3.2）。`compare_transforms` が既知の平行移動・ヨー回転を分離して返す（要件 7.4）
 - `test_anchors.py` — 高さバンド内の点だけが使われる。範囲内に外れ値を混ぜても中央値が動かない（要件 2.6 / 9.3）。点数不足で `ANCHOR_NOT_FOUND` とラベルの報告（要件 5.2）
 - `test_frame.py` — 原点マーカーが (0,0,0)、方向マーカーが (baseline, 0, 0) に落ちる（要件 2.2 / 2.3）。床上の点の z が 0（要件 3.7）。右手系（要件 2.4）。基線長不足で `ANCHOR_BASELINE_TOO_SHORT`（要件 2.7 / 5.3）。ヨー感度が基線長の逆数に一致（要件 2.8）。**カメラ姿勢を変えてもマーカー配置が同じなら同一の World 座標が出る**（要件 2.9）
@@ -1294,7 +1346,7 @@ flowchart TB
 - `test_result.py` — 保存 → 読み込みで変換が一致（要件 6.1）。必須フィールドの存在（要件 6.2）。未知の形式版で失敗（要件 6.3）。解像度違いの `signature` で `PROFILE_MISMATCH`（要件 6.4）。`attach_verification` 後に `verification_state` が変わる（要件 6.5 / 6.6）
 - `test_verify.py` — 既知のバイアスを与えた検証点で `bias_mm` がそれを検出し、`scatter_rms_mm` が小さいままであること（要件 4.4）。距離帯ごとの集計（要件 4.5）。確立用マーカーを検証点に混ぜると除外・明示され、独立点ゼロで `VERIFICATION_NOT_INDEPENDENT`（要件 4.3）。許容値ありで PASS / FAIL、無しで `NOT_JUDGED`（要件 4.6 / 4.7）。高さのある検証点で垂直誤差が出る（要件 4.9）。レポートに `calibration_id` と `signature`（要件 4.10）
 - `test_upstream.py` — 上流公開型を模した最小ダブルで、`CaptureFrame.depth` が**書き換えられていない**こと（要件 1.7）、`frames_used` の記録（要件 1.6）、`Intrinsics` / `StreamSignature` の写像（要件 8.4）、`NullLogger` 相当で計測値が生成されないこと（要件 10.5）
-- `test_boundaries.py` — `upstream` / `cli` 以外が `sensing_foundation` を import しない（要件 8.2）。全モジュールが `cv2` / `pyrealsense2` / `prediction_core` を import しない（要件 8.6 / 11.1 / 11.2）。層をまたぐ逆方向 import が無い。変更対象が自パッケージに閉じている（要件 11.5）
+- `test_boundaries.py` — `upstream` / `deproject` / `cli` 以外が `sensing_foundation` を import しない（要件 8.2）。**`deproject` が参照する上流シンボルが `deproject_pixel` と `CameraIntrinsics` の2つだけである**こと、および**本パッケージのどこにもピンホールの式（`ppx_px` / `fx_px` を用いた除算）が現れない**ことを静的に検証する（要件 3.8）。全モジュールが `cv2` / `pyrealsense2` / `prediction_core` を import しない（要件 8.6 / 11.1 / 11.2）。層をまたぐ逆方向 import が無い。変更対象が自パッケージに閉じている（要件 11.5。**`tests/prediction_core/**` を変更していないことを含む**）
 
 ### E2E Tests
 

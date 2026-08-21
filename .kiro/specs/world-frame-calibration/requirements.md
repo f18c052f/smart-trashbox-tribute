@@ -116,6 +116,12 @@ RealSense D435 の Depth から**床平面を推定して World frame を確立�
 - Depth バッファは**読み取り専用として扱い、その場で書き換えない**（Replay の再現性が壊れるため）
 - 構造化ログは `sensing-foundation` の仕組みに乗り、**本 Spec は自分の段階名を足すだけ**にする
   （`docs/development-environment.md §13.1` の段階別レイテンシは各 Spec が自区間を計測する方針）
+- **ピンホール逆投影の基本演算は `sensing-foundation` が持つ**（同 Spec 要件 3.8 / `geometry.py`）。
+  無効 Depth の判定・生カウントから mm への換算・画素からカメラ座標系への逆投影の3つは、
+  **本 Spec も `flying-object-tracking` も再実装せず同じ関数を呼ぶ**。
+  両者が別々に同等の式を書くと、画素中心規約・mm 換算位置・無効画素の扱いのわずかな差が
+  「予測が悪い」としか現れない座標ずれになり（`docs/requirements.md §6.2`）、
+  本 Spec が切り分けようとしている当のものと区別できなくなる
 
 ### A-6. 資源制約: 毎フレーム巨大な Point Cloud を作らない
 
@@ -234,6 +240,8 @@ world-frame-calibration は、Depth から**床平面を推定して World frame
   - 飛翔物の検出・追跡・3D位置取得（→ `flying-object-tracking`。カメラ座標系までを持つ）
   - 落下地点・落下時刻の予測（→ `prediction-core`。実装済み）
   - フレーム取得・記録・再生・構造化ロギング基盤（→ `sensing-foundation`）
+  - **ピンホール逆投影の基本演算**（無効 Depth 判定・mm 換算・逆投影式）（→ `sensing-foundation` 要件 3.8）。
+    本 Spec は呼ぶだけで、式・画素中心規約・無効画素の扱いを自分で決めない
   - M1 の end-to-end 計測と完了判定（→ `m1-prediction-validation`）
   - **移動体オドメトリ原点初期化の実装**（→ M3）。手順としては定義するが実装は持たない
   - 移動体のオドメトリそのもの（`docs/requirements.md` FR-6）
@@ -242,9 +250,13 @@ world-frame-calibration は、Depth から**床平面を推定して World frame
   - Throw Record スキーマの定義・変更（`prediction-core` が正。`docs/decisions.md` D-8）
 - **Adjacent expectations**:
   - `sensing-foundation` は、入力元によらない共通のフレーム表現とカメラ内部パラメータ、
-    および構造化ログの送出手段を提供する。本 Spec はその**公開入口だけ**を使う
+    構造化ログの送出手段、および**ピンホール逆投影の基本演算**（`geometry.py`）を提供する。
+    本 Spec はその**公開入口だけ**を使う
   - `flying-object-tracking` は検出結果を**カメラ座標系のまま**引き渡す。
-    World への変換は本 Spec が行い、向こう側で座標系を持たない
+    World への変換は本 Spec が行い、向こう側で座標系を持たない。
+    **両 Spec は同じ逆投影の基本演算に乗る**ことが、片方で校正した床平面をもう片方の点に適用してよい根拠になる。
+    この一致は `m1-prediction-validation` のクロス Spec 契約テスト
+    （同 Spec 要件 1.10 / `tests/m1_validation/test_deprojection_contract.py`）が許容差なしで固定する
   - `m1-prediction-validation` は、本 Spec の検証レポートを**誤差要因の切り分け材料**として使う。
     予測誤差の評価そのものは向こうが持つ
   - `prediction-core` は入力サンプルが**既に World frame へ変換済み**であることを前提としている。
@@ -303,6 +315,7 @@ _出典: A-5, A-6_
 5. If カメラ内部パラメータのレンズ歪み係数が本 Spec の扱えない値である場合, then the world-frame-calibration shall 変換を返さず、扱えない理由を示して失敗する
 6. The world-frame-calibration shall 変換の適用に、カメラ・SDK・ファイル入出力への接続を要求しない
 7. When 床平面上にある点が変換された場合, the world-frame-calibration shall その World 座標の z 成分が推定品質の範囲内で 0 となる結果を返す
+8. The world-frame-calibration shall 無効 Depth の判定・生 Depth 値から mm への換算・画素からカメラ座標系への逆投影の基本演算を自身で再実装せず、`sensing-foundation` が公開する共通の演算を用いる
 
 ### Requirement 4: 独立検証ステップ ★
 
