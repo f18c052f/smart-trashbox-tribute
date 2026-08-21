@@ -43,7 +43,7 @@
   - _Depends: 1.2, 1.3_
   - _Boundary: Params_
 
-- [ ] 1.5 ホイール径からの性能導出とパラメータパス表を実装する
+- [x] 1.5 ホイール径からの性能導出とパラメータパス表を実装する
   - ホイール径・モータ回転数・速度効率から最高速度を導出する構築手段を用意し、導出に使った値をパラメータへ残す
   - パラメータ木を走査して掃引が指定できるパスの表を生成し、単位をフィールド名の接尾辞から導く。手書きの表を二重管理しない
   - パス指定によるパラメータ置換を実装し、未知のパスを掃引定義エラーとして拒否する
@@ -249,3 +249,5 @@
 ## Implementation Notes
 
 - `tests/` 配下に `__init__.py` が無く pytest が prepend インポートモードのため、`tests/trajectory_sim/test_*.py` のベース名が `tests/prediction_core/test_*.py` と重複すると `import file mismatch` で収集が失敗する（1.1, 1.2 で発生・確認済み）。既知の衝突名: `test_packaging.py`（1.1 で `test_trajectory_sim_packaging.py` へ回避済み）、`test_units.py`（1.2 で `test_trajectory_sim_units.py` へ回避済み）、**`test_boundaries.py`（5.4 で衝突する見込み。着手時に `test_trajectory_sim_boundaries.py` 等へ改名すること）**。`--import-mode=importlib` への変更は `tests/prediction_core` 側の既存テスト（`test_predictor.py` 等の `import analytic`）を壊すため不採用。
+- 1.5 で `PARAMETER_PATHS` の要素型 `ParameterPath` を design.md 未定義のまま実装した（design.md は `Mapping[str, ParameterPath]` としか書いていない）。`src/trajectory_sim/params.py` で `path: str` / `unit: str` / `component: str | None` / `field_name: str` を持つ frozen dataclass として定義済み。3.2（SweepEngine）と 4.1（ResultSerializer）はこの形に従うこと。
+- 1.5 の `replace_by_path` は enum 系パス（`catch.policy` / `calibration_stage`）へ不正な文字列を渡すと `SweepDefinitionError` ではなく素の `ValueError`（enum コンストラクタ由来）を送出する。3.2（SweepEngine / `AxisSpec` 値検証）はこの値を検証時に `SweepDefinitionError` へラップし直すこと。

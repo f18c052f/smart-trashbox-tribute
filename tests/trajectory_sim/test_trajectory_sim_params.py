@@ -14,19 +14,22 @@ import math
 import pytest
 from prediction_core import PredictionConfig, Sample
 
-from trajectory_sim.errors import ParameterError
+from trajectory_sim.errors import ParameterError, SweepDefinitionError
 from trajectory_sim.params import (
+    PARAMETER_PATHS,
     CalibrationStage,
     CatchCriteria,
     CatchPolicy,
     DrivetrainParams,
     LayoutParams,
     ObservationParams,
+    ParameterPath,
     Provenance,
     ScenarioParams,
     ThrowDispersion,
     ThrowParams,
     make_sample,
+    replace_by_path,
 )
 
 
@@ -478,7 +481,7 @@ class TestMakeSample:
 
 
 # ---------------------------------------------------------------------------
-# Provenance の値そのものの確認（キー検証はタスク1.5の範囲外）
+# Provenance の値そのものの確認
 # ---------------------------------------------------------------------------
 
 
@@ -487,11 +490,237 @@ class TestProvenanceEnum:
         assert Provenance.MEASURED == "measured"
         assert Provenance.ASSUMED == "assumed"
 
-    def test_scenario_params_accepts_provenance_mapping_without_key_validation(
-        self,
+
+# ---------------------------------------------------------------------------
+# タスク1.5: DrivetrainParams.from_wheel によるホイール径からの最高速度導出
+# （要件4.2）
+# ---------------------------------------------------------------------------
+
+
+class TestDrivetrainFromWheel:
+    def _from_wheel(self, wheel_diameter_mm: float) -> DrivetrainParams:
+        return DrivetrainParams.from_wheel(
+            wheel_diameter_mm=wheel_diameter_mm,
+            motor_rpm=530.0,
+            speed_efficiency=1.0,
+            max_accel_mm_s2=2000.0,
+            max_decel_mm_s2=2500.0,
+            control_period_ms=10.0,
+            command_latency_ms=20.0,
+        )
+
+    def test_from_wheel_matches_drivetrain_spec_theoretical_speed(self) -> None:
+        # docs/drivetrain-spec.md §3.1: 60mm・無負荷530RPM の理論周速は
+        # 約1.66 m/s = 1660 mm/s 前後と引用されている。
+        drivetrain = self._from_wheel(wheel_diameter_mm=60.0)
+        assert drivetrain.max_speed_mm_s == pytest.approx(1665.9, abs=1.0)
+        assert drivetrain.max_speed_mm_s / 1000.0 == pytest.approx(1.66, abs=0.01)
+
+    def test_from_wheel_retains_values_used_for_derivation(self) -> None:
+        drivetrain = self._from_wheel(wheel_diameter_mm=60.0)
+        assert drivetrain.wheel_diameter_mm == 60.0
+        assert drivetrain.motor_rpm == 530.0
+        assert drivetrain.speed_efficiency == 1.0
+
+    def test_from_wheel_different_wheel_diameters_yield_different_speeds(self) -> None:
+        drivetrain_60mm = self._from_wheel(wheel_diameter_mm=60.0)
+        drivetrain_48mm = self._from_wheel(wheel_diameter_mm=48.0)
+        assert drivetrain_60mm.max_speed_mm_s != drivetrain_48mm.max_speed_mm_s
+        assert drivetrain_48mm.max_speed_mm_s == pytest.approx(
+            drivetrain_60mm.max_speed_mm_s * (48.0 / 60.0)
+        )
+
+    def test_from_wheel_goes_through_post_init_validation(self) -> None:
+        with pytest.raises(ParameterError) as excinfo:
+            DrivetrainParams.from_wheel(
+                wheel_diameter_mm=60.0,
+                motor_rpm=530.0,
+                speed_efficiency=1.0,
+                max_accel_mm_s2=2000.0,
+                max_decel_mm_s2=2500.0,
+                control_period_ms=-1.0,
+                command_latency_ms=20.0,
+            )
+        assert "control_period_ms" in str(excinfo.value)
+
+    def test_from_wheel_returns_real_drivetrain_params_instance(self) -> None:
+        drivetrain = self._from_wheel(wheel_diameter_mm=60.0)
+        assert isinstance(drivetrain, DrivetrainParams)
+        assert drivetrain.max_accel_mm_s2 == 2000.0
+        assert drivetrain.max_decel_mm_s2 == 2500.0
+        assert drivetrain.control_period_ms == 10.0
+        assert drivetrain.command_latency_ms == 20.0
+
+
+# ---------------------------------------------------------------------------
+# タスク1.5: PARAMETER_PATHS -- パラメータ木を走査して生成するパス表
+# （要件6.1, 9.4）
+# ---------------------------------------------------------------------------
+
+
+class TestParameterPaths:
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "throw.speed_mm_s",
+            "throw.release_x_mm",
+            "throw.elevation_deg",
+            "throw.gravity_mm_s2",
+            "dispersion.speed_sigma_mm_s",
+            "observation.dropout_ratio",
+            "observation.detection_start_delay_ms",
+            "observation.distance_sigma_rel_per_m2",
+            "drivetrain.max_speed_mm_s",
+            "drivetrain.motor_rpm",
+            "catch.policy",
+            "catch.position_tolerance_mm",
+            "layout.home_x_mm",
+            "calibration_stage",
+        ],
+    )
+    def test_expected_paths_are_present(self, path: str) -> None:
+        assert path in PARAMETER_PATHS
+        entry = PARAMETER_PATHS[path]
+        assert isinstance(entry, ParameterPath)
+        assert entry.path == path
+
+    def test_prediction_field_is_excluded(self) -> None:
+        assert not any(p.startswith("prediction.") for p in PARAMETER_PATHS)
+        assert "prediction" not in PARAMETER_PATHS
+
+    def test_provenance_field_is_excluded(self) -> None:
+        assert not any(p.startswith("provenance.") for p in PARAMETER_PATHS)
+        assert "provenance" not in PARAMETER_PATHS
+
+    @pytest.mark.parametrize(
+        ("path", "expected_unit"),
+        [
+            ("throw.release_x_mm", "mm"),
+            ("throw.speed_mm_s", "mm/s"),
+            ("throw.elevation_deg", "deg"),
+            ("throw.gravity_mm_s2", "mm/s^2"),
+            ("observation.detection_start_delay_ms", "ms"),
+            ("observation.dropout_ratio", ""),
+            ("observation.distance_sigma_rel_per_m2", "1/m^2"),
+            ("drivetrain.max_speed_mm_s", "mm/s"),
+            ("drivetrain.max_accel_mm_s2", "mm/s^2"),
+            ("drivetrain.motor_rpm", "rpm"),
+            ("catch.policy", ""),
+            ("calibration_stage", ""),
+        ],
+    )
+    def test_unit_is_derived_from_field_name_suffix(
+        self, path: str, expected_unit: str
     ) -> None:
+        assert PARAMETER_PATHS[path].unit == expected_unit
+
+    def test_component_and_field_name_are_recorded_for_nested_path(self) -> None:
+        entry = PARAMETER_PATHS["throw.speed_mm_s"]
+        assert entry.component == "throw"
+        assert entry.field_name == "speed_mm_s"
+
+    def test_component_is_none_for_top_level_path(self) -> None:
+        entry = PARAMETER_PATHS["calibration_stage"]
+        assert entry.component is None
+        assert entry.field_name == "calibration_stage"
+
+    def test_parameter_paths_is_immutable_mapping(self) -> None:
+        with pytest.raises(TypeError):
+            PARAMETER_PATHS["throw.speed_mm_s"] = PARAMETER_PATHS["throw.speed_mm_s"]  # type: ignore[index]
+
+
+# ---------------------------------------------------------------------------
+# タスク1.5: replace_by_path -- パス指定によるパラメータ置換
+# ---------------------------------------------------------------------------
+
+
+class TestReplaceByPath:
+    def test_replace_numeric_nested_path(self) -> None:
+        params = _valid_scenario_params()
+        updated = replace_by_path(params, "throw.speed_mm_s", 4000.0)
+        assert updated.throw.speed_mm_s == 4000.0
+        # 他のフィールドは変化しない
+        assert updated.throw.release_x_mm == params.throw.release_x_mm
+        assert updated.observation is params.observation
+        # 元のインスタンスは変更されない（不変）
+        assert params.throw.speed_mm_s == 3000.0
+
+    def test_replace_numeric_top_level_scalar_like_path_round_trips(self) -> None:
+        params = _valid_scenario_params()
+        updated = replace_by_path(params, "drivetrain.motor_rpm", 3000.0)
+        assert updated.drivetrain.motor_rpm == 3000.0
+
+    def test_replace_catch_policy_enum_path_with_string_value(self) -> None:
+        params = _valid_scenario_params()
+        updated = replace_by_path(params, "catch.policy", "pass_through")
+        assert updated.catch.policy is CatchPolicy.PASS_THROUGH
+
+    def test_replace_calibration_stage_enum_path_with_string_value(self) -> None:
+        params = _valid_scenario_params()
+        updated = replace_by_path(params, "calibration_stage", "m1_calibrated")
+        assert updated.calibration_stage is CalibrationStage.M1_CALIBRATED
+
+    def test_replace_by_path_returns_new_scenario_params_instance(self) -> None:
+        params = _valid_scenario_params()
+        updated = replace_by_path(params, "throw.speed_mm_s", 4000.0)
+        assert isinstance(updated, ScenarioParams)
+        assert updated is not params
+
+    def test_unknown_dotted_path_raises_sweep_definition_error(self) -> None:
+        params = _valid_scenario_params()
+        with pytest.raises(SweepDefinitionError) as excinfo:
+            replace_by_path(params, "throw.nonexistent_field", 1.0)
+        assert "throw.nonexistent_field" in str(excinfo.value)
+
+    def test_unknown_bogus_path_raises_sweep_definition_error(self) -> None:
+        params = _valid_scenario_params()
+        with pytest.raises(SweepDefinitionError) as excinfo:
+            replace_by_path(params, "totally.bogus", 1.0)
+        assert "totally.bogus" in str(excinfo.value)
+
+    def test_replace_by_path_still_enforces_field_validation(self) -> None:
+        params = _valid_scenario_params()
+        with pytest.raises(ParameterError):
+            replace_by_path(params, "throw.speed_mm_s", -1.0)
+
+
+# ---------------------------------------------------------------------------
+# タスク1.5: ScenarioParams.provenance のキー検証（要件9.4）
+# ---------------------------------------------------------------------------
+
+
+class TestProvenanceKeyValidation:
+    def test_valid_provenance_keys_are_accepted(self) -> None:
         params = dataclasses.replace(
             _valid_scenario_params(),
-            provenance={"anything.not.validated": Provenance.ASSUMED},
+            provenance={
+                "throw.speed_mm_s": Provenance.MEASURED,
+                "drivetrain.max_speed_mm_s": Provenance.ASSUMED,
+                "calibration_stage": Provenance.ASSUMED,
+            },
         )
-        assert params.provenance == {"anything.not.validated": Provenance.ASSUMED}
+        assert params.provenance["throw.speed_mm_s"] is Provenance.MEASURED
+        assert params.provenance["drivetrain.max_speed_mm_s"] is Provenance.ASSUMED
+        assert params.provenance["calibration_stage"] is Provenance.ASSUMED
+
+    def test_invalid_provenance_key_is_rejected(self) -> None:
+        with pytest.raises(ParameterError) as excinfo:
+            dataclasses.replace(
+                _valid_scenario_params(),
+                provenance={"anything.not.validated": Provenance.ASSUMED},
+            )
+        assert "anything.not.validated" in str(excinfo.value)
+
+    def test_invalid_provenance_key_rejected_on_direct_construction(self) -> None:
+        with pytest.raises(ParameterError) as excinfo:
+            ScenarioParams(
+                throw=_valid_throw(),
+                dispersion=ThrowDispersion(),
+                observation=_valid_observation(),
+                drivetrain=_valid_drivetrain(),
+                catch=CatchCriteria(),
+                layout=LayoutParams(home_x_mm=500.0, home_y_mm=500.0),
+                prediction=PredictionConfig(),
+                provenance={"bogus.path": Provenance.MEASURED},
+            )
+        assert "bogus.path" in str(excinfo.value)

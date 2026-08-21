@@ -18,11 +18,24 @@ dataclass の必須フィールドであり、省略した構築は `TypeError` 
 （`prediction_core.PredictionConfig` と同じ形。`src/prediction_core/config.py`
 参照）。
 
-本タスク（1.4）の範囲は上記データクラスとフィールド単位の検証、および
+タスク 1.4 の範囲は上記データクラスとフィールド単位の検証、および
 `prediction_core.Sample` を構築する `make_sample` までである。
-`DrivetrainParams.from_wheel` / `PARAMETER_PATHS` / `replace_by_path` /
-`provenance` のキー検証はタスク 1.5 の範囲であり、本モジュールには
-含めない。
+タスク 1.5 では、これに加えて `DrivetrainParams.from_wheel`（ホイール径・
+モータ回転数・速度効率からの最高速度導出、要件4.2）、`PARAMETER_PATHS`
+（掃引が指定できるパラメータパス表、要件6.1）、`replace_by_path`
+（パス指定によるパラメータ置換）、および `ScenarioParams.provenance` の
+キー検証（要件9.4）を追加する。
+
+`PARAMETER_PATHS` は `ScenarioParams` のデータクラス木を
+`dataclasses.fields()` で走査して構築時に一度だけ生成し、手書きの表を
+二重管理しない（design.md「Params」Implementation Notes）。単位は
+フィールド名の接尾辞（`_mm_s2` → `_mm_s` → `_mm` 等、詳細は
+`_SUFFIX_UNITS` を参照）から導く。`ParameterPath` はこの表のエントリの
+形であり、design.md 本文には型の内部構造が明記されていないため、本
+モジュールが「パス文字列・単位・所属コンポーネント・フィールド名」を
+持つ最小限の frozen dataclass として定義する（設計ギャップの補完。
+掃引エンジン（タスク3.2）・結果直列化（タスク4.1）はこの形を前提に
+`PARAMETER_PATHS` を消費する）。
 
 `Sample` / `PredictionConfig` は `prediction_core` の公開 API
 （`from prediction_core import ...`）からのみ import する。`__all__` は
@@ -35,12 +48,14 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, is_dataclass, replace
 from enum import StrEnum
+from types import MappingProxyType
+from typing import get_type_hints
 
 from prediction_core import PredictionConfig, Sample
 
-from trajectory_sim.errors import ParameterError
+from trajectory_sim.errors import ParameterError, SweepDefinitionError
 
 __all__ = [
     "CalibrationStage",
@@ -53,6 +68,9 @@ __all__ = [
     "CatchCriteria",
     "LayoutParams",
     "ScenarioParams",
+    "ParameterPath",
+    "PARAMETER_PATHS",
+    "replace_by_path",
     "make_sample",
 ]
 
@@ -278,6 +296,50 @@ class DrivetrainParams:
         if self.speed_efficiency is not None:
             _require_positive_finite(self.speed_efficiency, "speed_efficiency")
 
+    @classmethod
+    def from_wheel(
+        cls,
+        *,
+        wheel_diameter_mm: float,
+        motor_rpm: float,
+        speed_efficiency: float,
+        max_accel_mm_s2: float,
+        max_decel_mm_s2: float,
+        control_period_ms: float,
+        command_latency_ms: float,
+        integration_step_ms: float = 1.0,
+    ) -> "DrivetrainParams":
+        """ホイール径・モータ回転数・速度効率から最高速度を導出する（要件4.2）。
+
+        最高速度（ホイール外周の周速）は、ホイール円周に毎秒回転数と
+        速度効率を乗じて算出する:
+
+            max_speed_mm_s = pi * wheel_diameter_mm * (motor_rpm / 60) * speed_efficiency
+
+        これは `docs/drivetrain-spec.md §3.1` が示す理論周速の算出式と
+        同じである（60mm ホイール・無負荷530RPM・効率1.0 のとき
+        約1.66 m/s = 1665.9 mm/s となり、同ドキュメントの引用値と一致
+        する）。
+
+        導出に用いた `wheel_diameter_mm` / `motor_rpm` / `speed_efficiency`
+        は、そのまま構築される `DrivetrainParams` の同名フィールドに保持
+        されるため、結果からいつでも導出根拠を追跡できる（要件4.2）。
+        検証は通常の構築（`cls(...)`）と同じ `__post_init__` を通るため、
+        ここで独自の検証を重複させない。
+        """
+        max_speed_mm_s = math.pi * wheel_diameter_mm * (motor_rpm / 60.0) * speed_efficiency
+        return cls(
+            max_speed_mm_s=max_speed_mm_s,
+            max_accel_mm_s2=max_accel_mm_s2,
+            max_decel_mm_s2=max_decel_mm_s2,
+            control_period_ms=control_period_ms,
+            command_latency_ms=command_latency_ms,
+            integration_step_ms=integration_step_ms,
+            wheel_diameter_mm=wheel_diameter_mm,
+            motor_rpm=motor_rpm,
+            speed_efficiency=speed_efficiency,
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class CatchCriteria:
@@ -345,10 +407,12 @@ class ScenarioParams:
             Responsibilities）。
         calibration_stage: 較正段階。既定値は `CalibrationStage.
             UNCALIBRATED`（未較正）（要件9.2）。
-        provenance: 各パラメータの出所（実測 / 想定）の対応表。キーは
-            （タスク1.5で導入する）パラメータパス表のパス文字列と
-            一致させる想定だが、本タスクではキーの妥当性検証を行わない
-            （タスク1.5の範囲）。既定値は空の `dict`。
+        provenance: 各パラメータの出所（実測 / 想定）の対応表（要件9.4）。
+            キーは `PARAMETER_PATHS` のパス文字列と一致させなければ
+            ならない。一致しないキーは `__post_init__` が `ParameterError`
+            で拒否する（design.md「Params」Implementation Notes
+            Risks: 「出所が黙って無視される事態を防ぐ」）。既定値は空の
+            `dict`。
     """
 
     throw: ThrowParams
@@ -360,6 +424,210 @@ class ScenarioParams:
     prediction: PredictionConfig
     calibration_stage: CalibrationStage = CalibrationStage.UNCALIBRATED
     provenance: Mapping[str, Provenance] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        """`provenance` の各キーが `PARAMETER_PATHS` のパスと一致することを検証する（要件9.4）。
+
+        `PARAMETER_PATHS` は本クラス定義の直後にモジュールレベルで構築
+        されるため、この検証はどの `ScenarioParams` インスタンス構築時
+        にも安全に参照できる（モジュール完全ロード後でなければ
+        インスタンスは作られない）。
+        """
+        for key in self.provenance:
+            if key not in PARAMETER_PATHS:
+                raise ParameterError(
+                    f"provenance のキー {key!r} は PARAMETER_PATHS のパス"
+                    "文字列と一致しない。既知のパスのみを出所の対応表の"
+                    "キーとして指定できる。"
+                )
+
+
+@dataclass(frozen=True, slots=True)
+class ParameterPath:
+    """`PARAMETER_PATHS` の1エントリ（要件4.2, 6.1, 9.4）。
+
+    design.md「Params」は `PARAMETER_PATHS: Mapping[str, ParameterPath]`
+    という型のみを宣言し、`ParameterPath` 自身の内部構造までは定めて
+    いない（設計ギャップ）。ここでは、後続タスクが必要とする2つの機能
+    ――(a) 単位文字列の報告（掃引エンジンの `AxisSpec.unit` 構築、
+    タスク3.2）、(b) パス文字列からの値の取得・置換（`replace_by_path`）
+    ――を満たす最小限の形として、以下の4フィールドを持つ frozen
+    dataclass を選んだ。
+
+    Attributes:
+        path: パス文字列そのもの（例: `"throw.speed_mm_s"`,
+            `"calibration_stage"`）。`PARAMETER_PATHS` の対応するキーと
+            常に一致する。
+        unit: フィールド名の接尾辞から導いた単位文字列（`_SUFFIX_UNITS`
+            参照）。認識できない接尾辞・enum フィールドは `""`
+            （無次元）とし、`motor_rpm` のみ例外的に `"rpm"` とする
+            （`_FIELD_NAME_UNIT_OVERRIDES` 参照）。
+        component: `ScenarioParams` 直下のネストしたデータクラス
+            フィールド名（例: `"throw"`）。`ScenarioParams` 自身の
+            直接のフィールド（例: `calibration_stage`）の場合は `None`。
+        field_name: `component` の中のリーフフィールド名。`component`
+            が `None` の場合は `ScenarioParams` 直下のフィールド名
+            そのもの。
+    """
+
+    path: str
+    unit: str
+    component: str | None
+    field_name: str
+
+
+# フィールド名の接尾辞から単位を導くための表（design.md「Params」
+# Implementation Notes: 「単位はフィールド名の接尾辞…から導く。手書きの
+# 表を二重管理しない」）。この表自体はパス表そのものではなく単位の導出
+# 規則であり、二重管理を避けるための唯一の情報源である。
+#
+# より特殊的な（長い）接尾辞を先に判定する。特に `_mm_s2` / `_mm_s` は
+# `_mm` の前に判定しないと `_mm` に誤って一致してしまう。
+_SUFFIX_UNITS: tuple[tuple[str, str], ...] = (
+    ("_mm_s2", "mm/s^2"),
+    ("_mm_s", "mm/s"),
+    ("_per_m2", "1/m^2"),
+    ("_mm", "mm"),
+    ("_deg", "deg"),
+    ("_ms", "ms"),
+    ("_ratio", ""),
+)
+
+# 接尾辞では単位を判定できないフィールド名に対する個別の例外表。
+# `motor_rpm` は回転数（rpm）であることが明確なので明示する。
+# `policy` / `calibration_stage` のような enum フィールドと
+# `speed_efficiency`（無次元の比）は、下の既定フォールバック `""` に
+# 委ねる。
+_FIELD_NAME_UNIT_OVERRIDES: Mapping[str, str] = MappingProxyType({"motor_rpm": "rpm"})
+
+
+def _derive_unit(field_name: str) -> str:
+    """フィールド名の接尾辞（または個別の例外表）から単位文字列を導く。
+
+    どちらにも該当しない場合は `""`（無次元 / enum など単位を持たない
+    フィールド）を返す。この既定フォールバックも本関数に一本化し、
+    呼び出し側で単位判定ロジックを重複させない。
+    """
+    if field_name in _FIELD_NAME_UNIT_OVERRIDES:
+        return _FIELD_NAME_UNIT_OVERRIDES[field_name]
+    for suffix, unit in _SUFFIX_UNITS:
+        if field_name.endswith(suffix):
+            return unit
+    return ""
+
+
+# `PARAMETER_PATHS` から除外する `ScenarioParams` 直下のフィールド。
+# - prediction: `prediction_core.PredictionConfig` であり、本パッケージが
+#   所有しない上流型。design.md の依存関係表がこのパッケージの所有範囲を
+#   `prediction_core` の内部にまで広げないよう明示的に線引きしている。
+# - provenance: `Mapping[str, Provenance]` であり、掃引可能な単一の
+#   スカラー/リーフ値ではない。
+_EXCLUDED_SCENARIO_FIELDS: frozenset[str] = frozenset({"prediction", "provenance"})
+
+
+def _build_parameter_paths() -> Mapping[str, ParameterPath]:
+    """`ScenarioParams` のデータクラス木を走査し `PARAMETER_PATHS` を構築する。
+
+    `dataclasses.fields()` で `ScenarioParams` 直下のフィールドを列挙し、
+    値がさらにデータクラスであるものは1階層だけ再帰してリーフフィールド
+    を `"<component>.<field>"` の形でパスにする。データクラスでない
+    直接のフィールド（`calibration_stage`）はそのままのフィールド名を
+    パスとする。手書きの表は一切持たず、この走査結果だけが唯一の情報源
+    である。
+
+    `ScenarioParams` は `from __future__ import annotations` の影響で
+    `Field.type` が文字列注釈のままになるため、`typing.get_type_hints`
+    で実体の型へ解決してからデータクラス判定を行う。この関数はクラスの
+    構造を調べるだけで、いかなる `ScenarioParams` インスタンスも構築
+    しない。
+    """
+    paths: dict[str, ParameterPath] = {}
+    scenario_hints = get_type_hints(ScenarioParams)
+    for scenario_field in fields(ScenarioParams):
+        name = scenario_field.name
+        if name in _EXCLUDED_SCENARIO_FIELDS:
+            continue
+        field_type = scenario_hints[name]
+        if is_dataclass(field_type):
+            component = name
+            for nested_field in fields(field_type):
+                leaf_name = nested_field.name
+                path = f"{component}.{leaf_name}"
+                paths[path] = ParameterPath(
+                    path=path,
+                    unit=_derive_unit(leaf_name),
+                    component=component,
+                    field_name=leaf_name,
+                )
+        else:
+            paths[name] = ParameterPath(
+                path=name,
+                unit=_derive_unit(name),
+                component=None,
+                field_name=name,
+            )
+    return MappingProxyType(paths)
+
+
+PARAMETER_PATHS: Mapping[str, ParameterPath] = _build_parameter_paths()
+"""掃引の軸として指定できるパラメータパスの表（要件6.1, design.md
+「Params」Invariants: 「`PARAMETER_PATHS` に載っているパスは必ず
+`replace_by_path` で置換できる。未知のパスは `SweepDefinitionError` で
+拒否する」）。モジュールロード時に一度だけ `_build_parameter_paths()` に
+より生成される不変マッピング。
+"""
+
+
+# パス文字列からその値を coerce すべき enum 型への対応表。
+# `dataclasses.replace` はフィールドの型への coerce を行わないため、
+# 掃引エンジン（タスク3.2）が `AxisSpec.values` から渡す生の `str` を
+# enum フィールドへ書き込む前に、ここで明示的に変換する。数値フィールド
+# は各データクラスの `__post_init__` 検証にそのまま委ね、ここで重複した
+# 検証を行わない。
+_ENUM_PATH_TYPES: Mapping[str, type[StrEnum]] = MappingProxyType(
+    {
+        "catch.policy": CatchPolicy,
+        "calibration_stage": CalibrationStage,
+    }
+)
+
+
+def replace_by_path(params: ScenarioParams, path: str, value: float | str) -> ScenarioParams:
+    """`path` が指すリーフフィールドだけを `value` に置き換えた新しい `ScenarioParams` を返す。
+
+    `path` は `PARAMETER_PATHS` のキーでなければならない。未知のパスは
+    掃引定義側の誤りとして `trajectory_sim.errors.SweepDefinitionError`
+    を送出する（design.md「Params」Invariants）。
+
+    全データクラスが `frozen=True` であるため、対象がネストした
+    コンポーネント（例: `"throw.speed_mm_s"`）の場合は、まずそのコン
+    ポーネントを `dataclasses.replace` し、次にそのコンポーネントを
+    `ScenarioParams` へ `dataclasses.replace` する、という2段階の置換
+    を行う。
+
+    `catch.policy` / `calibration_stage` のような enum 値のパスに文字列
+    が渡された場合は、対応する enum 型へ明示的に coerce してから置換
+    する（`dataclasses.replace` 自体は型 coerce を行わないため）。それ
+    以外の数値フィールドは coerce を行わず、置換後の再構築時に対象の
+    データクラスの `__post_init__` がそのまま検証する。
+    """
+    parameter_path = PARAMETER_PATHS.get(path)
+    if parameter_path is None:
+        raise SweepDefinitionError(
+            f"未知のパラメータパス: path={path!r} は PARAMETER_PATHS に"
+            "存在しない。掃引の軸名には PARAMETER_PATHS のキーのみを"
+            "指定できる。"
+        )
+
+    enum_type = _ENUM_PATH_TYPES.get(path)
+    coerced_value: float | str | StrEnum = enum_type(value) if enum_type is not None else value
+
+    if parameter_path.component is None:
+        return replace(params, **{parameter_path.field_name: coerced_value})
+
+    component_value = getattr(params, parameter_path.component)
+    new_component = replace(component_value, **{parameter_path.field_name: coerced_value})
+    return replace(params, **{parameter_path.component: new_component})
 
 
 def make_sample(t_ms: float, x_mm: float, y_mm: float, z_mm: float) -> Sample:
