@@ -79,7 +79,7 @@
   - _Depends: 1.4_
   - _Boundary: ThrowPhysics_
 
-- [ ] 2.2 (P) 到達可否の閉形式判定を実装する
+- [x] 2.2 (P) 到達可否の閉形式判定を実装する
   - 静止状態からの到達可能距離を、加速区間と最高速度飽和区間に分けて閉形式で算出する
   - 目標点で停止するために必要な最短所要時間を、三角形プロファイルと台形プロファイルの場合分けで算出する
   - 停止方針と通過方針それぞれについて、与えられた持ち時間で必要移動量に到達できるかを判定する
@@ -251,3 +251,4 @@
 - `tests/` 配下に `__init__.py` が無く pytest が prepend インポートモードのため、`tests/trajectory_sim/test_*.py` のベース名が `tests/prediction_core/test_*.py` と重複すると `import file mismatch` で収集が失敗する（1.1, 1.2 で発生・確認済み）。既知の衝突名: `test_packaging.py`（1.1 で `test_trajectory_sim_packaging.py` へ回避済み）、`test_units.py`（1.2 で `test_trajectory_sim_units.py` へ回避済み）、**`test_boundaries.py`（5.4 で衝突する見込み。着手時に `test_trajectory_sim_boundaries.py` 等へ改名すること）**。`--import-mode=importlib` への変更は `tests/prediction_core` 側の既存テスト（`test_predictor.py` 等の `import analytic`）を壊すため不採用。
 - 1.5 で `PARAMETER_PATHS` の要素型 `ParameterPath` を design.md 未定義のまま実装した（design.md は `Mapping[str, ParameterPath]` としか書いていない）。`src/trajectory_sim/params.py` で `path: str` / `unit: str` / `component: str | None` / `field_name: str` を持つ frozen dataclass として定義済み。3.2（SweepEngine）と 4.1（ResultSerializer）はこの形に従うこと。
 - 1.5 の `replace_by_path` は enum 系パス（`catch.policy` / `calibration_stage`）へ不正な文字列を渡すと `SweepDefinitionError` ではなく素の `ValueError`（enum コンストラクタ由来）を送出する。3.2（SweepEngine / `AxisSpec` 値検証）はこの値を検証時に `SweepDefinitionError` へラップし直すこと。
+- 2.2 の `min_time_to_stop_at`（台形分岐）で、三角形/台形の境界distance付近では `v_peak_unsat` と `d1+d2` がIEEE754丸め誤差で最大機械イプシロン程度食い違い、`d_cruise` が微小負値になることがある（約0.5%のランダムパラメータで再現）。`assert d_cruise >= 0` ではなく `d_cruise = max(0.0, distance_mm - d1 - d2)` でクランプ済み。2.3（数値積分 `simulate`）・3.2（掃引の格子点が境界distanceに一致しうる）でも同種の境界丸め誤差に注意すること。
