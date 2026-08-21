@@ -370,24 +370,23 @@ class TestOpenSourceRejectsMisconfiguration:
 
 
 class TestLiveAdapterCaseIsDeferredToTask61:
-    """`live`（`RealSenseSource`、タスク 6.1）は本タスクの対象に含めない。
+    """`live`（`RealSenseSource`）の**内容比較**（3アダプタ共通の系列一致）は
+    タスク 9.3（実機必須）まで引き続き保留する。
 
     tasks.md 4.6「実機アダプタは同テストの対象に含める形にしておき、実行は
     タスク 9.3 で行う」に対応する。第3の契約テストケース
     （`open_source(settings_with_live, ...)` で得た `FrameSource` を
     `_consume()` へ渡し、`_assert_series_equivalent()` で simulated/recorded
-    と比較する）は、RealSense の SDK・実機の両方が無ければ実行できない
-    ため、意図的に延期する——これは書き忘れではなく、ハードウェア依存という
-    構造的な理由による意図的な延期である。延期の実装は
-    `sensing_foundation.sources.realsense`（タスク 6.1 が新設する）を
-    `open_source()` の LIVE 分岐が遅延 import する形に既に配線済みであり
-    （`source.py` の `open_source()` docstring「LIVE の場合」参照）、
-    タスク 6.1 が完了した時点で、このクラスへ次のケースを1つ追加するだけで
-    3アダプタ共通の契約テストが完成する（本ファイルの `_consume()` /
-    `_assert_series_equivalent()` / このクラス以外の構造は一切書き換え
-    不要）:
+    と比較する）は、RealSense の実機が無ければ実行できないため、意図的に
+    延期する——これは書き忘れではなく、ハードウェア依存という構造的な理由
+    による意図的な延期である。**タスク 6.1 の完了により
+    `sensing_foundation.sources.realsense.RealSenseSource` 自体は存在する
+    ようになった**（`open_source()` の LIVE 分岐が遅延 import する形に既に
+    配線済み。`source.py` の `open_source()` docstring「LIVE の場合」参照）
+    が、本 WSL 環境には `pyrealsense2` も実機も無いため、3アダプタ共通の
+    内容比較はタスク 9.3（Pi 4 + D435 実機）まで実行できないままである:
 
-        def test_live_case(self, ...):
+        def test_live_case(self, ...):  # タスク 9.3 で有効化する
             settings = RuntimeSettings(source=SourceKind.LIVE, ...)
             metrics, clock = _make_metrics_and_clock(...)
             live_source = open_source(settings, metrics, clock=clock)
@@ -397,16 +396,26 @@ class TestLiveAdapterCaseIsDeferredToTask61:
     本テストクラス自体は、その延期が「壊れて動かない」のではなく
     「意図的に、SDK/実機なしで安全に検出可能な形で保留されている」ことを
     固定する: `open_source()` は LIVE 分岐へ正しくディスパッチし、
-    `RealSenseSource` 未実装環境では `ModuleNotFoundError`
-    （`ImportError` の一種）で失敗する——他の例外や無限ハングにはならない。
+    `RealSenseSource` の構築自体には成功する（タスク 6.1 完了により
+    モジュール・クラスが存在するため）。`pyrealsense2` の実際の import は
+    `RealSenseSource.start()` まで遅延される設計（タスク 6.1）のため、
+    構築ではなく `_consume()`（`with source:` 経由で `start()` を呼ぶ）の
+    時点で `SourceUnavailableError`（`sensing_foundation.errors`、
+    `pyrealsense2` を import できないことを検出して変換した専用の例外。
+    「次に何を確認すべきか」の案内文つき）を送出する——`ModuleNotFoundError`
+    そのものではなく、他の例外や無限ハングにもならない。
     """
 
-    def test_live_branch_dispatches_and_fails_without_realsense_module(self) -> None:
+    def test_live_branch_constructs_but_fails_at_start_without_sdk(self) -> None:
         settings = RuntimeSettings(source=SourceKind.LIVE)
         metrics, clock = _make_metrics_and_clock("live-deferred")
 
-        with pytest.raises(ModuleNotFoundError):
-            open_source(settings, metrics, clock=clock)
+        live_source = open_source(settings, metrics, clock=clock)
+
+        from sensing_foundation.errors import SourceUnavailableError
+
+        with pytest.raises(SourceUnavailableError):
+            _consume(live_source)
 
 
 # ----------------------------------------------------------------------------
