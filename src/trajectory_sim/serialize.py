@@ -1,14 +1,19 @@
-"""掃引結果を JSON 化可能な辞書へ変換する（design.md「ResultSerializer」/
-要件 7.1, 7.2, 7.3, 7.6, 7.7, 9.1, 9.3, 9.4, 9.6, 9.7）。
+"""掃引結果を JSON 化可能な辞書へ変換し、ファイルへ書き出す
+（design.md「ResultSerializer」/ 要件 7.1, 7.2, 7.3, 7.4, 7.5, 7.6, 7.7,
+8.2, 9.1, 9.3, 9.4, 9.5, 9.6, 9.7, 10.5, 5.8）。
 
-**本タスク（4.1）の範囲**: `sweep_result_to_dict` という、純粋でメモリ上
-だけの辞書組み立て関数のみを実装する。ファイルへの書き出し
-（`write_sweep_result`）、出力キーの許可リスト検査、非有限値・未知の
-enum 値の拒否（`OutputError`）、`json.dump` の設定（`ensure_ascii=False`
-等）は、いずれも後続タスク（4.2）の責務であり、ここには含めない
-（design.md「ResultSerializer」Batch / Job Contract は 4.2 が担う）。
-したがって本モジュールは非有限値や未知の enum 値を拒否せず、与えられた
-`SweepResult` の内容をそのまま忠実に辞書へ写像する。
+**タスク4.1**: `sweep_result_to_dict` という、純粋でメモリ上だけの辞書
+組み立て関数を実装した。与えられた `SweepResult` の内容を、非有限値や
+未知の enum 値を拒否せず、そのまま忠実に辞書へ写像する。
+
+**タスク4.2（本追加分）**: 書き出し前の検証（`_validate_output_dict` /
+`_find_non_finite` / `_find_unknown_enum_value`）と、実際のファイル書き出し
+（`write_sweep_result`）を追加する（design.md「ResultSerializer」
+Batch / Job Contract）。検証は純粋関数として I/O から切り離し、
+ファイルへ触れる前に完了させることで「部分的なファイルを残さない」
+（要件7.5 相当の運用要件、および設計上の耐障害性）を実現する。
+出力キーの許可リスト検査により、「合否」「達成」「NFR-7」に相当する
+断定的なキーが混入しないことをテストで固定する（要件9.5）。
 
 `OUTPUT_SCHEMA_VERSION`（本 Spec 独自の出力形式の版）は、
 `prediction_core.ThrowRecord` の `schema_version`（Throw Record 自身の
@@ -48,12 +53,25 @@ from __future__ import annotations
 
 import dataclasses
 import enum
+import json
+import math
+import os
+import tempfile
 from collections.abc import Mapping
+from pathlib import Path
 
-from trajectory_sim.params import CalibrationStage, ScenarioParams
-from trajectory_sim.results import MODEL_EXCLUSIONS, CellResult, SweepResult
+from trajectory_sim.errors import OutputError
+from trajectory_sim.params import CalibrationStage, CatchPolicy, Provenance, ScenarioParams
+from trajectory_sim.results import (
+    MODEL_EXCLUSIONS,
+    CellResult,
+    CellStatus,
+    NotEvaluatedReason,
+    SweepResult,
+)
+from trajectory_sim.sweep import SweepKind
 
-__all__ = ["OUTPUT_SCHEMA_VERSION", "sweep_result_to_dict"]
+__all__ = ["OUTPUT_SCHEMA_VERSION", "sweep_result_to_dict", "write_sweep_result"]
 
 OUTPUT_SCHEMA_VERSION: str = "1.0"
 """本 Spec 独自の出力形式の版（要件7.3）。
@@ -176,3 +194,226 @@ def sweep_result_to_dict(result: SweepResult) -> dict[str, object]:
         "cells": [_cell_to_dict(cell) for cell in result.cells],
         "throw_records": throw_records,
     }
+
+
+_ALLOWED_TOP_LEVEL_KEYS: frozenset[str] = frozenset(
+    {
+        "output_schema_version",
+        "calibration",
+        "model_exclusions",
+        "sweep",
+        "parameters",
+        "parameter_provenance",
+        "cells",
+        "throw_records",
+    }
+)
+"""`sweep_result_to_dict` が出力する最上位キーの許可リスト（要件9.5）。
+
+このリストに無いキーが最上位に混入した場合は `OutputError` とする。
+「合否」「達成」「NFR-7」に相当する断定的な項目が後から静かに紛れ込む
+ことを防ぐ回帰ガードである。ネストした構造の内部キーはそれぞれの
+モジュール（`results` / `params`）が定義するフィールド名で決まるため、
+ここでは検査しない。
+"""
+
+_ALLOWED_CALIBRATION_KEYS: frozenset[str] = frozenset({"stage", "notice"})
+"""`calibration` サブ辞書に許されるキー（要件9.1, 9.3, 9.5）。
+
+`calibration` は `stage` と（未較正時のみの）`notice` 以外のキーを
+持ち得ない。ここに断定的なキーが紛れ込む余地を防ぐ第二の防衛層である。
+"""
+
+
+def _find_non_finite(value: object, path: str = "$") -> str | None:
+    """`value` の中に非有限の `float`（`inf` / `-inf` / `nan`）があれば、
+    その場所を示すパス文字列を返す（要件9.5 に隣接する出力契約の検査、
+    design.md「ResultSerializer」Batch / Job Contract）。
+
+    `dict` は `.items()` を、`list` / `tuple` は添字付きで再帰する。
+    それ以外の葉（`str` / `int` / `bool` / `None` 等）は再帰しない。
+    """
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            return path
+        return None
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            found = _find_non_finite(item, f"{path}.{key}")
+            if found is not None:
+                return found
+        return None
+    if isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            found = _find_non_finite(item, f"{path}[{index}]")
+            if found is not None:
+                return found
+        return None
+    return None
+
+
+def _find_unknown_enum_value(result_dict: Mapping[str, object]) -> str | None:
+    """既知の enum の集合に含まれない文字列値があれば、その説明を返す
+    （design.md「ResultSerializer」Batch / Job Contract:
+    「非有限値・未知の列挙値を検出したら書き出さずに `OutputError`」）。
+
+    `throw_records` の中身（`ThrowRecord.to_dict()` の結果）は、ここでの
+    enum 知識を持たずに素通しする（モジュール docstring 参照）。
+    """
+    calibration_stages = {stage.value for stage in CalibrationStage}
+    sweep_kinds = {kind.value for kind in SweepKind}
+    catch_policies = {policy.value for policy in CatchPolicy}
+    provenances = {provenance.value for provenance in Provenance}
+    cell_statuses = {status.value for status in CellStatus}
+    not_evaluated_reasons = {reason.value for reason in NotEvaluatedReason}
+
+    calibration = result_dict.get("calibration", {})
+    stage_value = calibration.get("stage") if isinstance(calibration, Mapping) else None
+    if stage_value not in calibration_stages:
+        return f"calibration.stage の値 {stage_value!r} は既知の CalibrationStage ではない。"
+
+    sweep = result_dict.get("sweep", {})
+    kind_value = sweep.get("kind") if isinstance(sweep, Mapping) else None
+    if kind_value not in sweep_kinds:
+        return f"sweep.kind の値 {kind_value!r} は既知の SweepKind ではない。"
+
+    parameters = result_dict.get("parameters", {})
+    if not isinstance(parameters, Mapping):
+        parameters = {}
+
+    params_stage_value = parameters.get("calibration_stage")
+    if params_stage_value not in calibration_stages:
+        return (
+            f"parameters.calibration_stage の値 {params_stage_value!r} は"
+            "既知の CalibrationStage ではない。"
+        )
+
+    catch = parameters.get("catch", {})
+    policy_value = catch.get("policy") if isinstance(catch, Mapping) else None
+    if policy_value not in catch_policies:
+        return f"parameters.catch.policy の値 {policy_value!r} は既知の CatchPolicy ではない。"
+
+    params_provenance = parameters.get("provenance", {})
+    if isinstance(params_provenance, Mapping):
+        for path_key, provenance_value in params_provenance.items():
+            if provenance_value not in provenances:
+                return (
+                    f"parameters.provenance[{path_key!r}] の値 {provenance_value!r} は"
+                    "既知の Provenance ではない。"
+                )
+
+    top_level_provenance = result_dict.get("parameter_provenance", {})
+    if isinstance(top_level_provenance, Mapping):
+        for path_key, provenance_value in top_level_provenance.items():
+            if provenance_value not in provenances:
+                return (
+                    f"parameter_provenance[{path_key!r}] の値 {provenance_value!r} は"
+                    "既知の Provenance ではない。"
+                )
+
+    cells = result_dict.get("cells", [])
+    if isinstance(cells, (list, tuple)):
+        for index, cell in enumerate(cells):
+            if not isinstance(cell, Mapping):
+                continue
+            status_value = cell.get("status")
+            if status_value not in cell_statuses:
+                return (
+                    f"cells[{index}].status の値 {status_value!r} は既知の CellStatus ではない。"
+                )
+            reason_value = cell.get("not_evaluated_reason")
+            if reason_value is not None and reason_value not in not_evaluated_reasons:
+                return (
+                    f"cells[{index}].not_evaluated_reason の値 {reason_value!r} は"
+                    "既知の NotEvaluatedReason ではない。"
+                )
+
+    return None
+
+
+def _validate_output_dict(result_dict: Mapping[str, object]) -> None:
+    """書き出し前の出力辞書を検証する（design.md「ResultSerializer」
+    Batch / Job Contract、要件7.5, 8.2, 9.5）。
+
+    I/O を一切行わない純粋関数である。ファイルシステムへ触れる前に
+    すべての検証を終えることで、「部分的なファイルを残さない」ことを
+    保証する（`write_sweep_result` はこの関数が例外を送出しないことを
+    確認してから初めて一時ファイルへ書き込む）。
+
+    以下のいずれかに該当する場合 `OutputError` を送出する:
+
+    - 最上位キーが許可リスト（`_ALLOWED_TOP_LEVEL_KEYS`）を超えている
+    - `calibration` サブ辞書のキーが許可リスト
+      （`_ALLOWED_CALIBRATION_KEYS`）を超えている
+    - 非有限の `float` が構造のどこかに含まれている
+    - 既知の enum の集合に含まれない文字列値がある
+    """
+    extra_top_level_keys = set(result_dict.keys()) - _ALLOWED_TOP_LEVEL_KEYS
+    if extra_top_level_keys:
+        raise OutputError(
+            "出力に許可されていない最上位キーが含まれている（合否・達成・"
+            f"NFR-7 相当の断定的なキーの混入防止, 要件9.5）: {sorted(extra_top_level_keys)!r}"
+        )
+
+    calibration = result_dict.get("calibration")
+    if isinstance(calibration, Mapping):
+        extra_calibration_keys = set(calibration.keys()) - _ALLOWED_CALIBRATION_KEYS
+        if extra_calibration_keys:
+            raise OutputError(
+                "calibration に許可されていないキーが含まれている（要件9.5）: "
+                f"{sorted(extra_calibration_keys)!r}"
+            )
+
+    non_finite_path = _find_non_finite(dict(result_dict))
+    if non_finite_path is not None:
+        raise OutputError(f"非有限値が {non_finite_path} に含まれている。")
+
+    unknown_enum_message = _find_unknown_enum_value(result_dict)
+    if unknown_enum_message is not None:
+        raise OutputError(unknown_enum_message)
+
+
+def write_sweep_result(result: SweepResult, path: str | Path) -> None:
+    """`SweepResult` を検証したうえで、指定パスへ UTF-8 JSON として
+    アトミックに書き出す（design.md「ResultSerializer」Batch / Job
+    Contract、要件7.4, 7.5, 8.2, 9.5, 10.5, 5.8）。
+
+    - 検証（`_validate_output_dict`）はファイルシステムへ触れる前に
+      完了させる。検証が失敗した場合は何も書き出さない
+      （「部分的なファイルを残さない」）。
+    - `json.dumps` は `ensure_ascii=False` / `sort_keys=True` / `indent=2`
+      / `allow_nan=False` で行う。
+    - 一時ファイルへ書き込んでから `os.replace` でアトミックに置き換える
+      ことで、中断時に不完全なファイルが最終パスに残らないようにする。
+      一時ファイルは最終パスと同じディレクトリに作る（同一ファイル
+      システム上でのみ `os.replace` がアトミックであるため）。
+    - 同一の `SweepResult`（内容が同一な限り、別インスタンスでもよい）を
+      書き出すと、バイト単位で同一のファイルが得られる（要件8.2）。
+    - 既存ファイルは上書きする。
+    """
+    target_path = Path(path)
+
+    result_dict = sweep_result_to_dict(result)
+    _validate_output_dict(result_dict)
+
+    json_text = json.dumps(
+        result_dict,
+        ensure_ascii=False,
+        sort_keys=True,
+        indent=2,
+        allow_nan=False,
+    )
+
+    fd, tmp_path_str = tempfile.mkstemp(
+        dir=target_path.parent,
+        prefix=f".{target_path.name}.",
+        suffix=".tmp",
+    )
+    tmp_path = Path(tmp_path_str)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as tmp_file:
+            tmp_file.write(json_text)
+        os.replace(tmp_path, target_path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise

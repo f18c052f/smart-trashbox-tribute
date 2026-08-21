@@ -216,15 +216,20 @@ def test_sweep_result_to_dict_parameters_full_recursive_dump() -> None:
     assert parameters["provenance"] == output["parameter_provenance"]
 
 
-def test_serialize_module_does_not_import_prediction_core_or_errors() -> None:
-    """本モジュールが `prediction_core` / `trajectory_sim.errors` の
-    いずれも import しないこと（design.md「Dependency Direction」境界）。
+def test_serialize_module_does_not_import_prediction_core() -> None:
+    """本モジュールが `prediction_core` を import しないこと
+    （design.md「Dependency Direction」境界）。
+
+    `trajectory_sim.errors`（`OutputError`）は、タスク4.2で本モジュール
+    自身が出力契約の検証・拒否を担うようになったため、正当に import する
+    （design.md「ResultSerializer」Batch / Job Contract）。この点は
+    `prediction_core` の禁輸とは独立した別の境界であり、
+    `test_write_sweep_result_uses_output_error` 等が
+    `trajectory_sim.errors.OutputError` の使用を別途固定する。
     """
     source = inspect.getsource(serialize)
     assert "import prediction_core" not in source
     assert "from prediction_core" not in source
-    assert "trajectory_sim.errors" not in source
-    assert "from trajectory_sim import errors" not in source
 
 
 # ---------------------------------------------------------------------------
@@ -377,3 +382,249 @@ def test_sweep_result_to_dict_catch_ratio_threshold_colocated_with_cells() -> No
 
     assert output["sweep"]["catch_ratio_threshold"] == 0.5
     assert output["cells"][0]["success_ratio"] == 0.5
+
+
+# ---------------------------------------------------------------------------
+# タスク4.2: write_sweep_result / _validate_output_dict
+# （要件7.4, 7.5, 8.2, 9.5, 10.5, 5.8）
+# ---------------------------------------------------------------------------
+
+import json
+
+from trajectory_sim.errors import OutputError
+from trajectory_sim.serialize import (
+    _validate_output_dict,
+    write_sweep_result,
+)
+
+
+def _small_throw_result() -> SweepResult:
+    """小さく決定的な THROW 掃引結果を作る（代表シナリオ保持あり）。"""
+    spec = SweepSpec(
+        kind=SweepKind.THROW,
+        axes=(AxisSpec(name="throw.speed_mm_s", unit="mm/s", values=(4000.0,)),),
+        trials_per_cell=1,
+        keep_representative_record=True,
+    )
+    return run_sweep(spec, _scenario_params())
+
+
+def _valid_result_dict() -> dict[str, object]:
+    return sweep_result_to_dict(_small_throw_result())
+
+
+# --- 完了条件1（必須）: 同一結果を2回書き出すとバイト単位で一致する ------
+
+
+def test_write_sweep_result_is_byte_identical_across_two_writes(tmp_path) -> None:
+    result = _small_throw_result()
+    path1 = tmp_path / "out1.json"
+    path2 = tmp_path / "out2.json"
+
+    write_sweep_result(result, path1)
+    write_sweep_result(result, path2)
+
+    assert path1.read_bytes() == path2.read_bytes()
+
+
+def test_write_sweep_result_is_byte_identical_for_independently_computed_results(
+    tmp_path,
+) -> None:
+    """同一の設定と同一の種で掃引を2回実行した場合の同一出力（要件8.2）。"""
+    spec = _reachability_spec()
+    base_params = _scenario_params()
+    result_a = run_sweep(spec, base_params)
+    result_b = run_sweep(spec, base_params)
+
+    path_a = tmp_path / "a.json"
+    path_b = tmp_path / "b.json"
+    write_sweep_result(result_a, path_a)
+    write_sweep_result(result_b, path_b)
+
+    assert path_a.read_bytes() == path_b.read_bytes()
+
+
+# --- 完了条件2（必須）: 断定的な最上位キーの検出と拒否（要件9.5） --------
+
+
+def test_validate_output_dict_accepts_clean_dict() -> None:
+    result_dict = _valid_result_dict()
+    _validate_output_dict(result_dict)  # 例外を送出しないことを確認する
+
+
+@pytest.mark.parametrize("assertive_key", ["nfr7_achieved", "passed", "success"])
+def test_validate_output_dict_rejects_assertive_top_level_key(assertive_key: str) -> None:
+    result_dict = _valid_result_dict()
+    result_dict[assertive_key] = True
+
+    with pytest.raises(OutputError):
+        _validate_output_dict(result_dict)
+
+
+def test_validate_output_dict_rejects_assertive_calibration_key() -> None:
+    result_dict = _valid_result_dict()
+    result_dict["calibration"]["nfr7_achieved"] = True
+
+    with pytest.raises(OutputError):
+        _validate_output_dict(result_dict)
+
+
+# --- 非有限値の拒否 --------------------------------------------------------
+
+
+def test_validate_output_dict_rejects_non_finite_value_in_parameters() -> None:
+    result_dict = _valid_result_dict()
+    result_dict["parameters"]["throw"]["speed_mm_s"] = float("nan")
+
+    with pytest.raises(OutputError):
+        _validate_output_dict(result_dict)
+
+
+def test_validate_output_dict_rejects_non_finite_value_in_cells_metrics() -> None:
+    result_dict = _valid_result_dict()
+    result_dict["cells"][0]["metrics"]["position_error_mm"] = float("inf")
+
+    with pytest.raises(OutputError):
+        _validate_output_dict(result_dict)
+
+
+def test_write_sweep_result_leaves_no_file_when_validation_fails(tmp_path) -> None:
+    """検証が失敗した場合、対象パスにファイルが一切作られないこと
+    （「部分的なファイルを残さない」、アトミック性の裏付け）。
+
+    `ThrowParams` 等は構築時点で非有限値を `ParameterError` で拒否する
+    ため、`base_params` 経由では非有限値を持つ `SweepResult` を作れない。
+    `CellResult.metrics`（`Mapping[str, float]`）は構築時点で値の中身を
+    検証しないため、ここに非有限値を混入させて検証失敗パスを再現する。
+    """
+    spec = SweepSpec(
+        kind=SweepKind.THROW,
+        axes=(AxisSpec(name="throw.speed_mm_s", unit="mm/s", values=(1000.0,)),),
+        trials_per_cell=1,
+    )
+    broken_cell = CellResult(
+        axis_values=(1000.0,),
+        status=CellStatus.CATCHABLE,
+        trials=1,
+        evaluated_trials=1,
+        success_count=1,
+        success_ratio=1.0,
+        metrics=MappingProxyType({"position_error_mm": float("nan")}),
+        not_evaluated_reason=None,
+        representative=None,
+    )
+    broken_result = SweepResult(spec=spec, base_params=_scenario_params(), cells=(broken_cell,))
+
+    target_path = tmp_path / "should_not_exist.json"
+    with pytest.raises(OutputError):
+        write_sweep_result(broken_result, target_path)
+
+    assert not target_path.exists()
+
+
+# --- 未知の enum 値の拒否 --------------------------------------------------
+
+
+def test_validate_output_dict_rejects_unknown_cell_status() -> None:
+    result_dict = _valid_result_dict()
+    result_dict["cells"][0]["status"] = "bogus_status"
+
+    with pytest.raises(OutputError):
+        _validate_output_dict(result_dict)
+
+
+def test_validate_output_dict_rejects_unknown_calibration_stage() -> None:
+    result_dict = _valid_result_dict()
+    result_dict["calibration"]["stage"] = "bogus_stage"
+
+    with pytest.raises(OutputError):
+        _validate_output_dict(result_dict)
+
+
+def test_validate_output_dict_rejects_unknown_sweep_kind() -> None:
+    result_dict = _valid_result_dict()
+    result_dict["sweep"]["kind"] = "bogus_kind"
+
+    with pytest.raises(OutputError):
+        _validate_output_dict(result_dict)
+
+
+def test_validate_output_dict_rejects_unknown_catch_policy() -> None:
+    result_dict = _valid_result_dict()
+    result_dict["parameters"]["catch"]["policy"] = "bogus_policy"
+
+    with pytest.raises(OutputError):
+        _validate_output_dict(result_dict)
+
+
+def test_validate_output_dict_rejects_unknown_provenance_value() -> None:
+    result_dict = _valid_result_dict()
+    result_dict["parameter_provenance"] = {"throw.speed_mm_s": "bogus_provenance"}
+
+    with pytest.raises(OutputError):
+        _validate_output_dict(result_dict)
+
+
+def test_validate_output_dict_rejects_unknown_not_evaluated_reason() -> None:
+    result_dict = _valid_result_dict()
+    result_dict["cells"][0]["not_evaluated_reason"] = "bogus_reason"
+
+    with pytest.raises(OutputError):
+        _validate_output_dict(result_dict)
+
+
+# --- write_sweep_result が有効な JSON を書き出す ---------------------------
+
+
+def test_write_sweep_result_writes_valid_json_that_round_trips(tmp_path) -> None:
+    result = _small_throw_result()
+    path = tmp_path / "result.json"
+
+    write_sweep_result(result, path)
+
+    loaded = json.loads(path.read_text(encoding="utf-8"))
+    assert loaded["output_schema_version"] == OUTPUT_SCHEMA_VERSION
+    assert loaded["calibration"]["stage"] == "uncalibrated"
+    assert loaded["sweep"]["kind"] == "throw"
+    assert isinstance(loaded["cells"], list)
+
+
+def test_write_sweep_result_preserves_non_ascii_literally(tmp_path) -> None:
+    """`ensure_ascii=False` により日本語がエスケープされずそのまま出る
+    こと（未較正時の `calibration.notice` を使って確認する）。
+    """
+    result = _small_throw_result()
+    path = tmp_path / "result.json"
+
+    write_sweep_result(result, path)
+
+    raw_text = path.read_text(encoding="utf-8")
+    assert "\\u" not in raw_text
+    assert "本結果は較正段階が未較正のため" in raw_text
+
+
+def test_write_sweep_result_output_is_indented_multiline(tmp_path) -> None:
+    result = _small_throw_result()
+    path = tmp_path / "result.json"
+
+    write_sweep_result(result, path)
+
+    raw_text = path.read_text(encoding="utf-8")
+    assert "\n" in raw_text
+    assert raw_text.count("\n") > 5
+
+
+# --- 既存ファイルの上書き（要件相当: design.md「既存ファイルは上書きする」）
+
+
+def test_write_sweep_result_overwrites_existing_file(tmp_path) -> None:
+    path = tmp_path / "result.json"
+    path.write_text("古い内容", encoding="utf-8")
+
+    result = _small_throw_result()
+    write_sweep_result(result, path)
+
+    new_text = path.read_text(encoding="utf-8")
+    assert new_text != "古い内容"
+    loaded = json.loads(new_text)
+    assert loaded["output_schema_version"] == OUTPUT_SCHEMA_VERSION
