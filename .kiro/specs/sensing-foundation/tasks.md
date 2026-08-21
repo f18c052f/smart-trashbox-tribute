@@ -88,7 +88,7 @@
   - _Depends: 1.5_
   - _Boundary: RuntimeSettings_
 
-- [ ] 1.7 決定的な合成フレーム生成ヘルパをテストツリーに用意する
+- [x] 1.7 決定的な合成フレーム生成ヘルパをテストツリーに用意する
   - 指定した枚数・解像度・フレーム番号列から、内容が一意に決まる Depth 配列を生成するヘルパを `tests/sensing_foundation/synthetic.py` に置く
   - フレーム番号を意図的に飛ばす供給、遅い供給、契約違反（shape / dtype 不一致）の供給を作れるようにする
   - **パッケージ本体には置かない**（投擲物理・ノイズ生成は `trajectory-simulator` の責務であり本 Spec の責務外）
