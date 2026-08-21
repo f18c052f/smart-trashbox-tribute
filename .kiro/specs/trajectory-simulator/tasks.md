@@ -66,7 +66,7 @@
 
 ## 2. コア: 物理・運動・観測・予測接続
 
-- [ ] 2. コア: 物理・運動・観測・予測接続
+- [x] 2. コア: 物理・運動・観測・予測接続
 
 - [x] 2.1 (P) 投擲物理モデルを実装する
   - リリース位置・初速・仰角・方位角・重力加速度から真の軌道を生成し、任意時刻の真の位置を算出できるようにする
@@ -109,7 +109,7 @@
   - _Depends: 2.1_
   - _Boundary: ObservationModel_
 
-- [ ] 2.5 (P) prediction-core への接続層を実装する
+- [x] 2.5 (P) prediction-core への接続層を実装する
   - 上流の逐次追跡器にサンプルを1点ずつ追加し、返る結果を走査して有効な予測のみを目標更新へ変換する
   - 目標更新の反映時刻を「予測の基準観測時刻 + サンプル遅延 + 予測遅延」として算出する
   - 無効と判定された予測は理由を保持し、成功として扱わない。有効な予測が1件も無い場合はその旨を呼び出し側へ返す
@@ -252,4 +252,5 @@
 - 1.5 で `PARAMETER_PATHS` の要素型 `ParameterPath` を design.md 未定義のまま実装した（design.md は `Mapping[str, ParameterPath]` としか書いていない）。`src/trajectory_sim/params.py` で `path: str` / `unit: str` / `component: str | None` / `field_name: str` を持つ frozen dataclass として定義済み。3.2（SweepEngine）と 4.1（ResultSerializer）はこの形に従うこと。
 - 1.5 の `replace_by_path` は enum 系パス（`catch.policy` / `calibration_stage`）へ不正な文字列を渡すと `SweepDefinitionError` ではなく素の `ValueError`（enum コンストラクタ由来）を送出する。3.2（SweepEngine / `AxisSpec` 値検証）はこの値を検証時に `SweepDefinitionError` へラップし直すこと。
 - 2.2 の `min_time_to_stop_at`（台形分岐）で、三角形/台形の境界distance付近では `v_peak_unsat` と `d1+d2` がIEEE754丸め誤差で最大機械イプシロン程度食い違い、`d_cruise` が微小負値になることがある（約0.5%のランダムパラメータで再現）。`assert d_cruise >= 0` ではなく `d_cruise = max(0.0, distance_mm - d1 - d2)` でクランプ済み。2.3（数値積分 `simulate`）・3.2（掃引の格子点が境界distanceに一致しうる）でも同種の境界丸め誤差に注意すること。
+- 2.5 の `run_prediction` は `extra` 引数を「呼び出し側が既に `{"sim": {"sim_extra_version": "1.0", "cell_index": ..., "trial_index": ...}}` の形に整えたもの」として素通しするだけで、名前空間の組み立て自体は行わない（design.md の Responsibilities 文と Precondition 文が矛盾していたため、より具体的な Precondition 側を採用）。**3.1（ScenarioEvaluator）・3.2（SweepEngine）はこの `extra` 辞書を自分で組み立ててから `run_prediction` へ渡すこと。**`final_prediction` は最後に成立した有効予測（`tracker.first_valid` ではない）。
 - 2.3 のレビューで判明: 閉形式一致テストの許容誤差を緩く取りすぎると、積分順序（速度更新→速度上限クランプ→位置更新の順）のバグを検出できないことがミューテーションテストで確認された。以降の数値積分系タスクでは、許容誤差をバイアス量から解析的に導出するか、少数ステップの厳密な手計算値（`abs=1e-9`級）で固定するテストを併用すること。
