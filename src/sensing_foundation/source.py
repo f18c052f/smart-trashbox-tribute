@@ -122,12 +122,12 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
 
-from sensing_foundation.config import CaptureConfig
-from sensing_foundation.errors import SourceUnavailableError
+from sensing_foundation.config import CaptureConfig, RuntimeSettings
+from sensing_foundation.errors import SensingConfigError, SourceUnavailableError
 from sensing_foundation.metrics import CaptureMetrics, FrameTiming
 from sensing_foundation.timebase import SessionClock
 from sensing_foundation.types import (
@@ -138,7 +138,16 @@ from sensing_foundation.types import (
     TimestampDomain,
 )
 
-__all__ = ["BaseFrameSource", "FrameSource", "RawFrame"]
+if TYPE_CHECKING:
+    # `open_source()`（本モジュール下部）の型注釈のためだけに、レイヤー6/7
+    # （`sources.simulated` / `sources.recorded`）の型を参照する。
+    # `TYPE_CHECKING` ブロックは実行時には評価されないため、これらの
+    # import は `source.py`（レイヤー5）の**実行時**依存グラフには現れない
+    # ——`open_source()` 関数docstring「レイヤー逸脱の扱い」を参照。
+    from sensing_foundation.sources.recorded import ReplaySpeed
+    from sensing_foundation.sources.simulated import FrameSupplier
+
+__all__ = ["BaseFrameSource", "FrameSource", "RawFrame", "open_source"]
 
 
 class FrameSource(Protocol):
@@ -407,3 +416,220 @@ class BaseFrameSource:
         捨てた枚数を第2要素に入れつつ最新の1枚を第1要素で返す。
         """
         raise NotImplementedError
+
+
+# ----------------------------------------------------------------------------
+# open_source(): 入力元の唯一の生成口（design.md「FrameSource / BaseFrameSource」
+# Service Interface、Components 表 `PublicApi` 行、タスク 4.6）
+# ----------------------------------------------------------------------------
+
+_SIMULATED_DEPTH_SCALE_MM = 1.0
+"""`SourceKind.SIMULATED` 用に `open_source()` が組み立てる `StreamProfile` の
+`depth_scale_mm` に使う既定値。
+
+live のような実カメラの校正値を合成入力は持たないため、既存の値を流用する
+のではなく明示的に選ぶ必要がある。本パッケージのテストフィクスチャ
+（`tests/sensing_foundation/` 配下の `StreamProfile` を組み立てる全箇所——
+`test_source.py` / `test_simulated_source.py` / `test_recorded_source.py` /
+`test_writer.py` / `test_reader.py` / `test_ringbuffer.py` / `test_metrics.py`
+など）が一貫して `depth_scale_mm=1.0` を採用しているため、その規約に合わせる。
+`tech.md` 開発標準1（未検証の数値を要件のように埋め込まない）が戒めるのは
+「根拠のない目標値」であり、ここでの `1.0` は「1生カウント=1mm」という
+既存の合成データ規約との整合を明示的に選んだ値であって、性能目標や未実測の
+主張ではない。"""
+
+
+def _build_simulated_profile(capture: CaptureConfig) -> StreamProfile:
+    """`SourceKind.SIMULATED` 用の `StreamProfile` を `CaptureConfig` から組み立てる。
+
+    `RuntimeSettings.capture`（`CaptureConfig`）が持つ `width_px` /
+    `height_px` / `fps` / `color_enabled` はそのまま使えるが、
+    `depth_scale_mm` と `intrinsics` は `CaptureConfig` に無い
+    （どちらも実カメラの校正値であり、合成入力にはそもそも存在しない）。
+    `intrinsics` は `StreamProfile` の docstring が定める正規の値
+    「入力元がカメラ内部パラメータを提供できない場合は `None`」をそのまま
+    使い、`depth_scale_mm` は `_SIMULATED_DEPTH_SCALE_MM` を使う。
+    """
+    return StreamProfile(
+        width_px=capture.width_px,
+        height_px=capture.height_px,
+        fps=capture.fps,
+        depth_scale_mm=_SIMULATED_DEPTH_SCALE_MM,
+        color_enabled=capture.color_enabled,
+        intrinsics=None,
+    )
+
+
+def open_source(
+    settings: RuntimeSettings,
+    metrics: CaptureMetrics,
+    *,
+    clock: SessionClock,
+    supplier: "FrameSupplier | None" = None,
+    speed: "ReplaySpeed" = "fast",
+) -> FrameSource:
+    """設定から適切な `FrameSource` アダプタを構築する、唯一の生成口。
+
+    design.md の Service Interface は `open_source(settings, metrics) ->
+    FrameSource` という2引数の擬似コードを示すが、実装済みの3アダプタ
+    （`SimulatedSource`（タスク 3.2）・`RecordedSource`（タスク 4.5）・
+    `BaseFrameSource`（タスク 3.1））のコンストラクタはいずれも
+    `RuntimeSettings` / `CaptureMetrics` だけからは組み立てられない追加の
+    キーワード専用引数を要求する（各アダプタのモジュール docstring
+    「実装判断2」「構築時の追加引数」参照）。本関数はその事実を踏まえ、
+    design.md の2引数シグネチャをキーワード専用引数で拡張する
+    （呼び出し側から見た「唯一の生成口」という性質そのものは変わらない
+    ——`SimulatedSource`/`RecordedSource`/`RealSenseSource` を直接構築する
+    経路をこの関数の外に作らないことが本関数の核心であり、引数の数は
+    その核心ではない）:
+
+    - **`clock: SessionClock`（必須）**: `BaseFrameSource.__init__` が要求する
+      が、`CaptureMetrics` は自分の `SessionClock` を公開しない
+      （`metrics.py` モジュール docstring 参照）。呼び出し側は `metrics` の
+      構築に使ったものと**同一インスタンス**を渡すこと（`BaseFrameSource`
+      の Precondition）。この点は本関数も検証しない
+      （`CaptureFrame`/`SessionRecorder` 同様、Precondition の検証は
+      呼び出し側の責務という本 Spec 全体の一貫した方針を踏襲する）。
+    - **`supplier: FrameSupplier | None`（`SourceKind.SIMULATED` のときのみ
+      必須）**: 合成フレームを供給する差し替え口そのものであり、
+      `open_source()` はこれを合成できない（投擲物理・ノイズ生成は本 Spec
+      の責務外。要件 4.5）。呼び出し側（テスト、または将来の
+      `trajectory-simulator`）が用意する。未指定のまま `settings.source ==
+      SourceKind.SIMULATED` を渡すと `SensingConfigError` を送出する
+      （「呼び出し方の誤り」区分。`errors.py` 参照）。
+    - **`speed: ReplaySpeed`（`SourceKind.RECORDED` のときのみ意味を持つ。
+      既定 `"fast"`）**: `RecordedSource` が既に提供する再生速度の選択
+      （要件 6.5）を、`open_source()` 経由でも選べるようにするための
+      パラメータ。これを素通しできないと、CLI（タスク 8.1）が実時間再生を
+      使いたい場合に `open_source()` を迂回して `RecordedSource` を直接
+      構築せざるを得なくなり、「唯一の生成口」の原則（design.md
+      Integration「`open_source()` が唯一の生成口。CLI も bench も直接
+      アダプタを構築しない」）が崩れる。
+
+    `SourceKind.RECORDED` の場合、`reader: SessionReader` は
+    `settings.session_path`（design.md/タスク 1.6 の定義どおり「再生対象の
+    セッションディレクトリ」そのもの。`root + session_id` の組ではない）
+    から自己完結で構築できる——`RuntimeSettings` 単独でこの分岐は完結する。
+
+    `SourceKind.LIVE` の場合、`RealSenseSource`（タスク 6.1）はまだ存在
+    しない。本関数はこの分岐の中でだけ `sensing_foundation.sources.realsense`
+    を**遅延 import**する（`sources/realsense.py` 自身が `pyrealsense2` を
+    関数内で遅延 import する設計、design.md 依存方向表の注記と同じ流儀）。
+    これにより:
+
+    1. `settings.source` が `LIVE` 以外である限り、`open_source()` を含む
+       `source.py` の import・呼び出しは SDK・実機は疎か
+       `sources/realsense.py` というファイルの存在にすら依存しない。
+    2. タスク 6.1 が `sources/realsense.py` と `RealSenseSource` を実装した
+       時点で、この分岐は `ModuleNotFoundError` ではなく実際の構築へ自然に
+       切り替わる——`open_source()` 自体を書き換える必要はない
+       （tasks.md 4.6「実機アダプタは同テストの対象に含める形にしておき、
+       実行はタスク 9.3 で行う」への対応。`RealSenseSource` の正確な
+       コンストラクタ引数はタスク 6.1 が決めるため、下記の呼び出しは
+       タスク 6.1 が実装と合わせて調整してよい暫定形である）。
+
+    **`source.py`（レイヤー5）が本来 import してよい対象（design.md
+    Dependency Direction 表: レイヤー0〜4のみ）を超えて `sources.simulated`
+    （レイヤー6）・`sources.recorded`（レイヤー7）・`recording.reader`
+    （レイヤー5、同レイヤーの兄弟モジュール）を参照する、という一見した
+    レイヤー逸脱の扱い**: design.md の Directory Structure（`source.py` の
+    行コメントが「`FrameSource` プロトコル / `BaseFrameSource` / `open_source`」
+    と明記する）・Components 表の `FrameSource / BaseFrameSource` 行の
+    Contract（Service Interface の擬似コードが `open_source` を同じコード
+    ブロックに置く）・`__init__.py` の再エクスポート方針（`open_source` は
+    `source.py` からの再エクスポートとして `__all__` に現れる）はいずれも
+    `open_source()` の定義位置を `source.py` に置くことを一貫して示す一方、
+    Dependency Direction 表はレイヤー5（`source`）の import 対象をレイヤー
+    0〜4に限定しており、両者は**文字どおりには両立しない**（`open_source()`
+    は構造上、より高いレイヤーのアダプタを構築せざるを得ないため）。
+    本実装はこの矛盾を「**モジュールの実行時 import グラフ**（レイヤー制約が
+    実際に守ろうとしているもの——ある層を import しただけで、より高い層や
+    SDK 依存が芋づる式に読み込まれないこと）と、**関数本体の中でだけ発生する
+    遅延 import**（呼ばれて初めて、必要な分岐のぶんだけ発生する）は別物」
+    という解釈で解消する: `source.py` を import した時点、または
+    `open_source()` を呼ばずに `BaseFrameSource` だけを使う時点では、
+    `sources.simulated` / `sources.recorded` / `recording.reader` のいずれも
+    実行時には一切 import されない（`TYPE_CHECKING` 配下の型限定 import を
+    除く。モジュール先頭の import 文を参照）。これは design.md がレイヤー6の
+    `realsense.py` に対して既に認めている「関数内遅延 import」という前例
+    （Dependency Direction 表の「`realsense` のみ `pyrealsense2` を関数内で
+    遅延 import」という注記）を、`open_source()` 自身にも一貫して適用した
+    ものである。
+
+    Preconditions:
+        `settings` は `RuntimeSettings.resolve()` を経て構築されたことが
+        望ましい（`session_path` 必須チェックなど）。直接構築した
+        `RuntimeSettings` を渡す場合、本関数は `SourceKind.RECORDED` かつ
+        `session_path is None` のケースのみ独自に再検証する
+        （`resolve()` の検証を経ない呼び出しを想定した安全網）。
+    Postconditions:
+        返る `FrameSource` は `start()` → `frames()` → `stop()` という
+        共通契約のみで下流から扱える（要件 4.1, 4.2）。呼び出し側は
+        `SimulatedSource` / `RecordedSource` / `RealSenseSource` という
+        具象型を一切知らずに済む。
+    Invariants:
+        `settings.source == SourceKind.SIMULATED` かつ `settings.source ==
+        SourceKind.RECORDED` が同時に成り立つことはない（`SourceKind` は
+        単一値の enum）ため、分岐は排他的である。
+
+    Raises:
+        SensingConfigError: `SourceKind.SIMULATED` なのに `supplier` が
+            `None`、または `SourceKind.RECORDED` なのに `settings.session_path`
+            が `None`（いずれも「呼び出し方の誤り」区分）。
+    """
+    if settings.source == SourceKind.SIMULATED:
+        if supplier is None:
+            raise SensingConfigError(
+                "source が SIMULATED のとき supplier は必須である。"
+                "合成フレームを供給する FrameSupplier（`index -> depth 配列"
+                "または None`）を open_source(..., supplier=...) として渡すこと。"
+                "open_source() 自身は投擲物理・ノイズ生成を持たないため、"
+                "供給関数を合成できない（要件 4.5）。"
+            )
+
+        from sensing_foundation.sources.simulated import SimulatedSource
+
+        profile = _build_simulated_profile(settings.capture)
+        return SimulatedSource(
+            supplier,
+            profile,
+            metrics,
+            settings.capture.fps,
+            clock=clock,
+            capture_config=settings.capture,
+        )
+
+    if settings.source == SourceKind.RECORDED:
+        if settings.session_path is None:
+            raise SensingConfigError(
+                "source が RECORDED（再生）のとき session_path は必須である。"
+                "再生対象のセッションディレクトリを指定せよ"
+                "（RuntimeSettings.resolve() 経由ならここに到達する前に拒否"
+                "されるはずだが、resolve() を経ずに直接構築した "
+                "RuntimeSettings はこの検証を経ないため、ここでも同じ検証を "
+                "行う）。"
+            )
+
+        from sensing_foundation.recording.reader import SessionReader
+        from sensing_foundation.sources.recorded import RecordedSource
+
+        reader = SessionReader(settings.session_path)
+        return RecordedSource(
+            reader,
+            metrics,
+            clock=clock,
+            capture_config=settings.capture,
+            speed=speed,
+        )
+
+    if settings.source == SourceKind.LIVE:
+        # タスク 6.1 未実装。遅延 import の結果、SDK・実機の無い環境では
+        # ここで ModuleNotFoundError が送出される（意図的。関数 docstring
+        # 「LIVE の場合」参照）。
+        from sensing_foundation.sources.realsense import RealSenseSource
+
+        return RealSenseSource(settings.capture, metrics, clock=clock)
+
+    raise SensingConfigError(
+        f"未知の入力元種別のため入力元を構築できない: {settings.source!r}"
+    )
