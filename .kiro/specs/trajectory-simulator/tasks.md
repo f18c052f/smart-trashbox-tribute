@@ -17,7 +17,7 @@
   - 観測可能な完了状態: ハードウェア非接続の環境で `python -m pytest` が成功終了し、新パッケージが import でき、上流 `tests/prediction_core/` の全テストが引き続き通る
   - _Requirements: 8.5, 11.3_
 
-- [ ] 1.2 (P) 単位換算モジュールを実装する
+- [x] 1.2 (P) 単位換算モジュールを実装する
   - mm/s と mm/ms、mm/s² と mm/ms²、度とラジアンの相互換算を定義する
   - 換算係数をこのモジュールにのみ置き、他モジュールが `1000` / `1e6` / `π/180` を直接書かない方針を成立させる
   - 観測可能な完了状態: 換算の往復が定義どおりであることを検証するテストが通る
@@ -245,3 +245,7 @@
   - _Requirements: 11.1_
   - _Depends: 5.1, 5.2, 5.3, 5.4_
   - _Boundary: PublicApi_
+
+## Implementation Notes
+
+- `tests/` 配下に `__init__.py` が無く pytest が prepend インポートモードのため、`tests/trajectory_sim/test_*.py` のベース名が `tests/prediction_core/test_*.py` と重複すると `import file mismatch` で収集が失敗する（1.1, 1.2 で発生・確認済み）。既知の衝突名: `test_packaging.py`（1.1 で `test_trajectory_sim_packaging.py` へ回避済み）、`test_units.py`（1.2 で `test_trajectory_sim_units.py` へ回避済み）、**`test_boundaries.py`（5.4 で衝突する見込み。着手時に `test_trajectory_sim_boundaries.py` 等へ改名すること）**。`--import-mode=importlib` への変更は `tests/prediction_core` 側の既存テスト（`test_predictor.py` 等の `import analytic`）を壊すため不採用。
