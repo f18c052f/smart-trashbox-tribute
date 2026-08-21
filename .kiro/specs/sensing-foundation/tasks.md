@@ -165,7 +165,7 @@
   - _Depends: 2.2_
   - _Boundary: FrameSource, BaseFrameSource_
 
-- [ ] 3.2 合成入力アダプタを実装する
+- [x] 3.2 合成入力アダプタを実装する
   - 外部から渡された供給関数からフレームを取り出し、共通表現へ変換する
   - 供給関数が終端を返したらイテレーションを終える
   - 供給された配列の形状・型がストリーム設定と食い違う場合は契約違反として拒否する
@@ -460,3 +460,4 @@
 - タスク1.6: `RuntimeSettings.resolve()` は design.md の Components 表が `Sysstat` を依存に挙げていないため、リングバッファの RAM 上限チェックに必要な搭載 RAM 量を `installed_ram_bytes: int | None = None`（キーワード専用・追加パラメータ）として呼び出し側から受け取る形にした。`max_ring_bytes` が未指定かつ `installed_ram_bytes` も未指定の場合、**チェックは何もエラーにせず素通りする**（ドキュメント化済み）。**タスク8.1（CLI）は `Sysstat.sample().system_total_bytes` を必ず `installed_ram_bytes` として渡すこと** — さもないと RAM 上限チェックが実運用で常に無効のままになる。また `on_acquire_error` / `recording.mode` / `recording.compression` などの `Literal` 型フィールドは、解決時に許容値集合との照合を行っていない（タイプミスの値がそのまま通る）。将来のタスクでバリデーションを足す場合はこの点を踏まえること。
 - タスク2.1: `LoggingConfig(queue_capacity=0)` を `config.py` の検証を経ずに直接構築すると、`queue.Queue(maxsize=0)` は無制限キューになり「有界キューで満杯時は破棄する」という要件8.6の前提が崩れる。`RuntimeSettings.resolve()` 経由なら 1.6 のバリデーションで弾かれるが、`LoggingConfig` を直接構築する経路（テストや将来のタスク）では弾かれない。`StructuredLogger`/`get_logger()` 自体はこれを検証しない設計とした。`close()` は初回呼び出しがタイムアウトすると `_closed` が立ったまま以後 `session_end` を二度と書けなくなる（意図的なトレードオフ、docstring に注記済み）。
 - タスク3.1: `BaseFrameSource` は `CaptureConfig.drain_enabled` フラグを見て `_drain_latest()` を呼ぶかどうか自体を制御する（一元化の解釈）。design.md の `RecordedSource` 節は「`_drain_latest()` は常に `(None, 0)` を返す」ともアダプタ側の自己防衛として明記しているため、**タスク3.2（SimulatedSource）・4.5（RecordedSource）は両方の防御線を実装すること**: (a) 自分の `super().__init__()` 呼び出しで `drain_enabled=False` を固定して渡す、**かつ** (b) `_drain_latest()` 自体も常に `(None, 0)` を返す実装にする。どちらか一方だけでは要件6.7（再生・合成では取りこぼしを新たに作らない）の防御として不十分になり得る。`RawFrame`（`source.py` で新設、`types.py` には無い）は `seq` / `depth` / `device_timestamp_ms` / `timestamp_domain` / `capture_latency_ms` の5フィールドを持つ。`_acquire()` は「取得失敗」を `None` 返却、「供給が正常終了した」を `StopIteration` 送出で区別する（design.md 未規定の拡張）。`open_source()` はタスク3.1では実装せず、タスク4.6（3アダプタが揃った後）に委ねた。
+- タスク3.2: `SimulatedSource.__init__` は design.md の4引数（`supplier, profile, metrics, fps=30`）に加え、キーワード専用の `clock: SessionClock`（必須。`BaseFrameSource.__init__` が要求するが `CaptureMetrics` は自分の clock を公開しないため回避不能）と `capture_config: CaptureConfig | None = None`（任意）を追加した。**タスク4.6（`open_source`）はこの拡張シグネチャを把握して呼び出すこと。** `RawFrame.seq` は合成入力の呼び出し通し番号（0,1,2,...）をそのまま使い、`tests/sensing_foundation/synthetic.py` の `decode_seq_from_frame()` は使わない（`src/` から `tests/` を import しない境界を守るため）。そのため `seqs` に欠番のある `synthetic.make_supplier` を `SimulatedSource` 経由で流しても、このアダプタの seq は常に連番になり欠落は起きない — 欠落検出のエンドツーエンド確認はタスク4.6の契約テストで別アダプタ（再生など）を使って行うこと。`fps` 引数は受け取るが未使用（供給間隔は呼び出し側の `synthetic.make_supplier(delay_s=...)` の責務）。
