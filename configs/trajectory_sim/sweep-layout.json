@@ -46,7 +46,7 @@
       {
         "name": "layout.home_x_mm",
         "unit": "mm",
-        "values": [-300.0, 0.0, 300.0]
+        "values": [1200.0, 1800.0, 2400.0, 3000.0]
       },
       {
         "name": "throw.azimuth_deg",
