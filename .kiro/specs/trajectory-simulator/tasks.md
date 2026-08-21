@@ -122,7 +122,7 @@
 
 ## 3. 評価と掃引
 
-- [ ] 3. 評価と掃引
+- [x] 3. 評価と掃引
 
 - [x] 3.1 シナリオ評価器を実装する
   - 全経路の評価（物理 → 観測 → 予測 → 運動 → 判定）と、運動モデルのみの到達可否評価の2つを実装し、**同じ結果型を返す**
@@ -135,7 +135,7 @@
   - _Depends: 2.3, 2.4, 2.5_
   - _Boundary: ScenarioEvaluator_
 
-- [ ] 3.2 掃引エンジンを実装する
+- [x] 3.2 掃引エンジンを実装する
   - 掃引仕様（種別・軸・試行回数・種・成立割合の閾値）を定義し、**評価を1件も行う前に**軸名・値・閾値の妥当性を一括検証する
   - 到達可否掃引の軸名を持ち時間と必要移動量に限定し、全経路掃引の軸名をパラメータパス表に載っているものに限定する
   - 試行回数が2以上のときは成立割合の閾値を必須とし、無ければ掃引定義エラーとする
@@ -255,4 +255,5 @@
 - 2.5 の `run_prediction` は `extra` 引数を「呼び出し側が既に `{"sim": {"sim_extra_version": "1.0", "cell_index": ..., "trial_index": ...}}` の形に整えたもの」として素通しするだけで、名前空間の組み立て自体は行わない（design.md の Responsibilities 文と Precondition 文が矛盾していたため、より具体的な Precondition 側を採用）。**3.1（ScenarioEvaluator）・3.2（SweepEngine）はこの `extra` 辞書を自分で組み立ててから `run_prediction` へ渡すこと。**`final_prediction` は最後に成立した有効予測（`tracker.first_valid` ではない）。
 - 3.1 で `evaluate_throw` に design.md 未記載の5番目の引数 `extra: Mapping[str, object]`（既定は空）を追加した（`record_id` から cell_index/trial_index を逆算できないため）。**3.2（SweepEngine）は `record_id` と `extra` を同じ cell_index/trial_index から組み立て、両方を `evaluate_throw` へ渡すこと。**
 - 3.1 で判明: `evaluate_reachability` の通過方針（PASS_THROUGH）判定は「持ち時間内に到達可能な累積距離」のみを見ており、「落下時刻ちょうどにその位置にいるか」は見ていない。通過方針は減速しないため、余裕のある持ち時間では目標を通り過ぎて離れてしまい、全経路評価（`evaluate_throw`）の成否と食い違うことがある（`drivetrain.py` の PASS_THROUGH 設計上の性質であり実装バグではない）。**5.1（誤差ゼロ E2E 検証）はこの不一致が停止方針（STOP_AND_WAIT）でのみ保証される前提で書くこと。** `drivetrain.align_to_control_tick_ms`（新規公開関数）は `_active_target` の切り替え境界と同じ式（ceil）を提供する。
+- 3.2 のレビューで判明: `params.replace_by_path` は enum 系パス（`catch.policy`/`calibration_stage`）へ不正な文字列を渡すと素の `ValueError` を送出する（1.5 の申し送り事項）。`sweep.py` は `_validate_spec` の時点で全軸の全値を `replace_by_path` で事前に1回ずつ検証し、この `ValueError` を `SweepDefinitionError` へ包んで「1件も評価する前に」拒否する。**4.x（設定ファイル・CLI）で軸を持たない単発のenum値検証が必要になった場合も、同じ`ValueError`→`SweepDefinitionError`変換パターンに倣うこと。**
 - 2.3 のレビューで判明: 閉形式一致テストの許容誤差を緩く取りすぎると、積分順序（速度更新→速度上限クランプ→位置更新の順）のバグを検出できないことがミューテーションテストで確認された。以降の数値積分系タスクでは、許容誤差をバイアス量から解析的に導出するか、少数ステップの厳密な手計算値（`abs=1e-9`級）で固定するテストを併用すること。
