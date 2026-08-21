@@ -224,7 +224,7 @@
   - _Depends: 4.4_
   - _Boundary: tests/trajectory_sim/test_layout_study.py_
 
-- [ ] 5.4 (P) 境界の静的検査を実装する
+- [x] 5.4 (P) 境界の静的検査を実装する
   - ソースを構文木として走査し、実行時 import が「標準ライブラリの許可リスト・自パッケージ・上流パッケージ」のみであることを検査する
   - **上流を import してよいモジュールを4つに限定**し、物理・運動・評価の各層が上流を触れないことを検査する
   - 上流のサブモジュール直接 import が無く、参照シンボルが公開 API の範囲内であることを検査する
@@ -258,3 +258,5 @@
 - 3.2 のレビューで判明: `params.replace_by_path` は enum 系パス（`catch.policy`/`calibration_stage`）へ不正な文字列を渡すと素の `ValueError` を送出する（1.5 の申し送り事項）。`sweep.py` は `_validate_spec` の時点で全軸の全値を `replace_by_path` で事前に1回ずつ検証し、この `ValueError` を `SweepDefinitionError` へ包んで「1件も評価する前に」拒否する。**4.x（設定ファイル・CLI）で軸を持たない単発のenum値検証が必要になった場合も、同じ`ValueError`→`SweepDefinitionError`変換パターンに倣うこと。**
 - 4.3 で設定JSONの形式を確定した（design.md は正確なスキーマを明記していなかったため）: トップレベルは `{"parameters": {...ScenarioParamsツリー...}, "sweep": {...SweepSpecツリー...}}` の2キーのみ。あらゆるネスト階層で未知キーは `ParameterError`。`--drivetrain <path>` は `DrivetrainParams` のフラットな辞書（ホイール径由来形式 `wheel_diameter_mm`/`motor_rpm`/`speed_efficiency`+加減速/制御周期/指令遅延、または直接指定形式 `max_speed_mm_s` 込み — 両方混在は `ParameterError`）で、指定時は設定ファイル側の `parameters.drivetrain` を常に上書きする（省略は許容、存在すれば不正でも検証だけは行い拒否する）。**4.4（設定ファイル一式）はこの形式に従って4本のJSONを作成すること。**
 - 2.3 のレビューで判明: 閉形式一致テストの許容誤差を緩く取りすぎると、積分順序（速度更新→速度上限クランプ→位置更新の順）のバグを検出できないことがミューテーションテストで確認された。以降の数値積分系タスクでは、許容誤差をバイアス量から解析的に導出するか、少数ステップの厳密な手計算値（`abs=1e-9`級）で固定するテストを併用すること。
+- 5.3 で判明: `configs/trajectory_sim/sweep-layout.json` の元の `layout.home_x_mm` 軸値（`[-300, 0, 300]`、投擲の release 原点付近）は真の落下地点（x≈2580mm、azimuth=0 のとき）から2280〜2880mm離れており、成立/不成立の境界が一切現れなかった。`[1200, 1800, 2400, 3000]`（着地点を挟む値）へ変更済み。4.4 の既存テストは変更後も全件通過することを確認済み。
+- 5.4 で判明: design.md の「Dependency Direction」層表・Mermaid図（151-194行目）は `prediction_link` の許可対象に `drivetrain` を含めていないが、同じ design.md の PredictionLink Service Interface（920-934行目）は `PredictionTimeline.updates: tuple[TargetUpdate, ...]` を要求し、`TargetUpdate` は `drivetrain.py` にしか定義されていない（design.md 自体の内部矛盾）。2.5 で実装済みの `prediction_link.py` は正しく `drivetrain.TargetUpdate` を import しており、これは変更しない。`test_trajectory_sim_boundaries.py` の `DEPENDENCY_ALLOWED_TARGETS["prediction_link"]` に `drivetrain` を追加してこの実態に合わせた。**design.md の層表・Mermaid図側を修正する別タスク（ドキュメント整合）が今後望ましい。**
