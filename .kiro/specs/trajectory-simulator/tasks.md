@@ -124,7 +124,7 @@
 
 - [ ] 3. 評価と掃引
 
-- [ ] 3.1 シナリオ評価器を実装する
+- [x] 3.1 シナリオ評価器を実装する
   - 全経路の評価（物理 → 観測 → 予測 → 運動 → 判定）と、運動モデルのみの到達可否評価の2つを実装し、**同じ結果型を返す**
   - 評価対象外を3種類の理由で区別し、不成立と混ぜない
   - 必要移動量を待機位置と真の落下地点の水平距離として、持ち時間を真の落下時刻と最初の指令反映時刻の差として算出する
@@ -253,4 +253,6 @@
 - 1.5 の `replace_by_path` は enum 系パス（`catch.policy` / `calibration_stage`）へ不正な文字列を渡すと `SweepDefinitionError` ではなく素の `ValueError`（enum コンストラクタ由来）を送出する。3.2（SweepEngine / `AxisSpec` 値検証）はこの値を検証時に `SweepDefinitionError` へラップし直すこと。
 - 2.2 の `min_time_to_stop_at`（台形分岐）で、三角形/台形の境界distance付近では `v_peak_unsat` と `d1+d2` がIEEE754丸め誤差で最大機械イプシロン程度食い違い、`d_cruise` が微小負値になることがある（約0.5%のランダムパラメータで再現）。`assert d_cruise >= 0` ではなく `d_cruise = max(0.0, distance_mm - d1 - d2)` でクランプ済み。2.3（数値積分 `simulate`）・3.2（掃引の格子点が境界distanceに一致しうる）でも同種の境界丸め誤差に注意すること。
 - 2.5 の `run_prediction` は `extra` 引数を「呼び出し側が既に `{"sim": {"sim_extra_version": "1.0", "cell_index": ..., "trial_index": ...}}` の形に整えたもの」として素通しするだけで、名前空間の組み立て自体は行わない（design.md の Responsibilities 文と Precondition 文が矛盾していたため、より具体的な Precondition 側を採用）。**3.1（ScenarioEvaluator）・3.2（SweepEngine）はこの `extra` 辞書を自分で組み立ててから `run_prediction` へ渡すこと。**`final_prediction` は最後に成立した有効予測（`tracker.first_valid` ではない）。
+- 3.1 で `evaluate_throw` に design.md 未記載の5番目の引数 `extra: Mapping[str, object]`（既定は空）を追加した（`record_id` から cell_index/trial_index を逆算できないため）。**3.2（SweepEngine）は `record_id` と `extra` を同じ cell_index/trial_index から組み立て、両方を `evaluate_throw` へ渡すこと。**
+- 3.1 で判明: `evaluate_reachability` の通過方針（PASS_THROUGH）判定は「持ち時間内に到達可能な累積距離」のみを見ており、「落下時刻ちょうどにその位置にいるか」は見ていない。通過方針は減速しないため、余裕のある持ち時間では目標を通り過ぎて離れてしまい、全経路評価（`evaluate_throw`）の成否と食い違うことがある（`drivetrain.py` の PASS_THROUGH 設計上の性質であり実装バグではない）。**5.1（誤差ゼロ E2E 検証）はこの不一致が停止方針（STOP_AND_WAIT）でのみ保証される前提で書くこと。** `drivetrain.align_to_control_tick_ms`（新規公開関数）は `_active_target` の切り替え境界と同じ式（ceil）を提供する。
 - 2.3 のレビューで判明: 閉形式一致テストの許容誤差を緩く取りすぎると、積分順序（速度更新→速度上限クランプ→位置更新の順）のバグを検出できないことがミューテーションテストで確認された。以降の数値積分系タスクでは、許容誤差をバイアス量から解析的に導出するか、少数ステップの厳密な手計算値（`abs=1e-9`級）で固定するテストを併用すること。

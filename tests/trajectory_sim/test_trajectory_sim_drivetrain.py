@@ -822,6 +822,62 @@ def test_motion_state_speed_mm_s_converts_from_internal_mm_per_ms() -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_align_to_control_tick_ms_exact_multiple_is_unchanged() -> None:
+    """`raw_time_ms` が既に制御周期の倍数なら、そのまま変化しない
+    （ceil 相当の自然な境界。タスク3.1で追加）。
+    """
+    assert drivetrain.align_to_control_tick_ms(30.0, 10.0) == pytest.approx(30.0)
+    assert drivetrain.align_to_control_tick_ms(0.0, 10.0) == pytest.approx(0.0)
+
+
+def test_align_to_control_tick_ms_rounds_up_to_next_boundary() -> None:
+    """倍数でない `raw_time_ms` は、それ以降で最初の制御周期境界へ
+    切り上げられる。
+    """
+    assert drivetrain.align_to_control_tick_ms(25.0, 10.0) == pytest.approx(30.0)
+    assert drivetrain.align_to_control_tick_ms(0.1, 10.0) == pytest.approx(10.0)
+    assert drivetrain.align_to_control_tick_ms(69.0, 1.0) == pytest.approx(69.0)
+
+
+def test_align_to_control_tick_ms_matches_simulate_switch_boundary() -> None:
+    """`align_to_control_tick_ms` が算出する境界時刻が、`simulate` が実際に
+    その目標更新を有効化する最初の時刻と一致すること（クロスチェック、
+    `_active_target` 自体は書き換えない）。
+
+    `test_simulate_switches_target_only_at_control_period_boundary` と
+    同じフィクスチャ（`control_period_ms=10.0`, `command_latency_ms=5.0`）
+    を使う。2件目の更新の「生の」反映時刻は `20+5=25ms` であり、
+    `align_to_control_tick_ms(25.0, 10.0)` は `30ms` を返す。`simulate` は
+    `end_time_ms=29.0` まででは切り替わらず、境界の `30ms` を過ぎた
+    `31.0` で初めて切り替わることを確認する。
+    """
+    params = _drivetrain()
+    update1 = drivetrain.TargetUpdate(
+        available_time_ms=0.0, x_mm=1000.0, y_mm=0.0, impact_time_ms=0.0
+    )
+    update2 = drivetrain.TargetUpdate(
+        available_time_ms=20.0, x_mm=0.0, y_mm=1000.0, impact_time_ms=0.0
+    )
+    updates = [update1, update2]
+    raw_available_time_ms = update2.available_time_ms + params.command_latency_ms
+    boundary_ms = drivetrain.align_to_control_tick_ms(
+        raw_available_time_ms, params.control_period_ms
+    )
+    assert boundary_ms == pytest.approx(30.0)
+
+    just_before_boundary = drivetrain.simulate(
+        0.0, 0.0, updates, params, CatchPolicy.PASS_THROUGH, boundary_ms - 1.0
+    )
+    just_after_boundary = drivetrain.simulate(
+        0.0, 0.0, updates, params, CatchPolicy.PASS_THROUGH, boundary_ms + 1.0
+    )
+
+    # 境界の直前までは2件目の目標(y方向)へまだ切り替わっていない。
+    assert just_before_boundary.vy_mm_ms == 0.0
+    # 境界を過ぎると2件目の目標(y方向)へ切り替わっている。
+    assert just_after_boundary.vy_mm_ms > 0.0
+
+
 def test_simulate_stop_and_wait_shows_accelerate_then_decelerate_pattern() -> None:
     """同一シナリオに対し複数の `end_time_ms` で `simulate` を呼び、
     停止方針が「加速→減速→ほぼ停止」という時間最適追従として妥当な

@@ -61,6 +61,7 @@ __all__ = [
     "TargetUpdate",
     "MotionState",
     "simulate",
+    "align_to_control_tick_ms",
 ]
 
 
@@ -283,6 +284,25 @@ def _active_target(
         else:
             break
     return active
+
+
+def align_to_control_tick_ms(raw_time_ms: float, control_period_ms: float) -> float:
+    """`raw_time_ms` 以降で最初に到来する制御周期の境界時刻を返す（ceil 相当）。
+
+    `_active_target` が内部で行っている整列判定（反映時刻が現在の制御
+    周期境界 `floor(elapsed_ms / control_period_ms) * control_period_ms`
+    以下になっているかどうか）と整合する、逆方向（ある反映時刻に対して
+    それが実際に有効になる最初の制御周期境界を求める）の計算を
+    `ScenarioEvaluator`（タスク3.1）向けに公開する、追加専用の純関数
+    である。`_active_target` / `simulate` 自体はこの関数を使わず、
+    従来どおりの実装のまま変更しない。
+
+    `evaluate.py` が「持ち時間 ＝ 真の落下時刻 − 最初の目標更新が指令へ
+    反映された時刻」（design.md「ScenarioEvaluator」）を算出する際に、
+    `simulate` が実際に採用する反映時刻と食い違わないようにするための
+    唯一の情報源として用いる。
+    """
+    return math.ceil(raw_time_ms / control_period_ms) * control_period_ms
 
 
 def simulate(
