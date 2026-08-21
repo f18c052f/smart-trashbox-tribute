@@ -170,7 +170,7 @@
   - _Depends: 4.1_
   - _Boundary: ResultSerializer_
 
-- [ ] 4.3 コマンドラインエントリポイントを実装する
+- [x] 4.3 コマンドラインエントリポイントを実装する
   - 設定ファイルと出力先を引数に取り、掃引を実行して結果ファイルを書き出す実行経路を用意する
   - 機体パラメータのみを別ファイルから取り込む指定を用意し、ホイール径の異なる構成を1オプションで差し替えられるようにする
   - 設定ファイルの未知のキーを黙って無視せず、パラメータ不正として報告する
@@ -256,4 +256,5 @@
 - 3.1 で `evaluate_throw` に design.md 未記載の5番目の引数 `extra: Mapping[str, object]`（既定は空）を追加した（`record_id` から cell_index/trial_index を逆算できないため）。**3.2（SweepEngine）は `record_id` と `extra` を同じ cell_index/trial_index から組み立て、両方を `evaluate_throw` へ渡すこと。**
 - 3.1 で判明: `evaluate_reachability` の通過方針（PASS_THROUGH）判定は「持ち時間内に到達可能な累積距離」のみを見ており、「落下時刻ちょうどにその位置にいるか」は見ていない。通過方針は減速しないため、余裕のある持ち時間では目標を通り過ぎて離れてしまい、全経路評価（`evaluate_throw`）の成否と食い違うことがある（`drivetrain.py` の PASS_THROUGH 設計上の性質であり実装バグではない）。**5.1（誤差ゼロ E2E 検証）はこの不一致が停止方針（STOP_AND_WAIT）でのみ保証される前提で書くこと。** `drivetrain.align_to_control_tick_ms`（新規公開関数）は `_active_target` の切り替え境界と同じ式（ceil）を提供する。
 - 3.2 のレビューで判明: `params.replace_by_path` は enum 系パス（`catch.policy`/`calibration_stage`）へ不正な文字列を渡すと素の `ValueError` を送出する（1.5 の申し送り事項）。`sweep.py` は `_validate_spec` の時点で全軸の全値を `replace_by_path` で事前に1回ずつ検証し、この `ValueError` を `SweepDefinitionError` へ包んで「1件も評価する前に」拒否する。**4.x（設定ファイル・CLI）で軸を持たない単発のenum値検証が必要になった場合も、同じ`ValueError`→`SweepDefinitionError`変換パターンに倣うこと。**
+- 4.3 で設定JSONの形式を確定した（design.md は正確なスキーマを明記していなかったため）: トップレベルは `{"parameters": {...ScenarioParamsツリー...}, "sweep": {...SweepSpecツリー...}}` の2キーのみ。あらゆるネスト階層で未知キーは `ParameterError`。`--drivetrain <path>` は `DrivetrainParams` のフラットな辞書（ホイール径由来形式 `wheel_diameter_mm`/`motor_rpm`/`speed_efficiency`+加減速/制御周期/指令遅延、または直接指定形式 `max_speed_mm_s` 込み — 両方混在は `ParameterError`）で、指定時は設定ファイル側の `parameters.drivetrain` を常に上書きする（省略は許容、存在すれば不正でも検証だけは行い拒否する）。**4.4（設定ファイル一式）はこの形式に従って4本のJSONを作成すること。**
 - 2.3 のレビューで判明: 閉形式一致テストの許容誤差を緩く取りすぎると、積分順序（速度更新→速度上限クランプ→位置更新の順）のバグを検出できないことがミューテーションテストで確認された。以降の数値積分系タスクでは、許容誤差をバイアス量から解析的に導出するか、少数ステップの厳密な手計算値（`abs=1e-9`級）で固定するテストを併用すること。
