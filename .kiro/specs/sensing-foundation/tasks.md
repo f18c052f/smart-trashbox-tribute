@@ -62,7 +62,7 @@
   - _Requirements: 9.3_
   - _Boundary: Sysstat_
 
-- [ ] 1.5 入力元に依存しないフレーム表現を定義する
+- [x] 1.5 入力元に依存しないフレーム表現を定義する
   - 時刻ドメイン・カメラ内部パラメータ・ストリーム設定・フレーム・取得統計を不変（frozen かつ slots）で定義する
   - Depth は 2 バイト符号なし整数の2次元配列として保持し、**読み取り専用**にして下流の破壊的変更を防ぐ
   - 距離 mm・時刻 ms・画素量 px をフィールド名に含める
@@ -456,3 +456,4 @@
 ## Implementation Notes
 
 - タスク1.4: `Sysstat.cpu_percent` は「プロセスの消費 jiffies ÷ システム全体の消費 jiffies × 100」として実装した（`/proc/self/stat` と `/proc/stat` の両方を分子・分母として使う設計）。design.md は両ソースを1つの `cpu_percent` フィールドの根拠として列挙するのみで式を明記していないため、この解釈をモジュール docstring に明記した。タスク2.2（`CaptureMetrics`）がこの値を消費する際は「システム全容量に対するプロセスの専有率（コア数に依存しない 0-100%）」という定義であることを前提にする。
+- タスク1.5: `tests/prediction_core/` 配下に `test_types.py` / `test_config.py` / `test_boundaries.py` / `test_public_api.py` が既に存在し、かつ `tests/` 配下のどのディレクトリにも `__init__.py` が無いため、pytest の既定 import mode（prepend）は**同名の test ファイルをツリー全体で一意にしか扱えない**（`import file mismatch` で collection が失敗することを実測で確認済み）。`__init__.py` を追加すると `sensing_foundation` というテストサブパッケージが実パッケージ `src/sensing_foundation` を shadow するリスクがあり、`--import-mode=importlib` へのグローバル切替は `tests/prediction_core/test_analytic.py` の `from analytic import ...` という同階層 import を壊すため、どちらも採用不可。**本 Spec のテストファイルが `prediction_core` 側と衝突する場合は、ファイル名をこの Spec 側だけ書き換えて回避する**（例: `test_types.py` → `test_core_types.py`）。design.md の File Structure Plan が挙げるファイル名と一致しない箇所が出るが、これは意図的な回避であり境界違反ではない。**タスク1.6（config）・8.1（cli）・8.2（public_api / boundaries）は同じ衝突に当たる見込みなので、着手前にこの節を確認し、同じ回避方針（`test_sensing_config.py` 等への改名）を踏襲すること。**
