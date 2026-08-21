@@ -81,6 +81,38 @@ def test_accel_round_trip_mm_ms2_to_mm_s2_to_mm_ms2(value_mm_ms2: float) -> None
 
 
 # ---------------------------------------------------------------------------
+# 距離: mm <-> m
+# ---------------------------------------------------------------------------
+
+
+def test_mm_per_m_constant_is_1000() -> None:
+    """`MM_PER_M` が唯一の距離単位換算係数として 1000 を表す。"""
+    assert units.MM_PER_M == 1000.0
+
+
+def test_mm_to_m_known_value() -> None:
+    assert units.mm_to_m(1000.0) == pytest.approx(1.0)
+
+
+def test_m_to_mm_known_value() -> None:
+    assert units.m_to_mm(1.0) == pytest.approx(1000.0)
+
+
+@pytest.mark.parametrize("value_mm", [0.0, 1.0, -500.0, 3200.0, 0.0001])
+def test_distance_round_trip_mm_to_m_to_mm(value_mm: float) -> None:
+    """mm -> m -> mm の往復が元の値に一致する。"""
+    roundtrip = units.m_to_mm(units.mm_to_m(value_mm))
+    assert roundtrip == pytest.approx(value_mm)
+
+
+@pytest.mark.parametrize("value_m", [0.0, 1.0, -0.5, 3.2, 1e-6])
+def test_distance_round_trip_m_to_mm_to_m(value_m: float) -> None:
+    """m -> mm -> m の往復が元の値に一致する。"""
+    roundtrip = units.mm_to_m(units.m_to_mm(value_m))
+    assert roundtrip == pytest.approx(value_m)
+
+
+# ---------------------------------------------------------------------------
 # 角度: 度 <-> ラジアン
 # ---------------------------------------------------------------------------
 
@@ -119,6 +151,8 @@ def test_angle_round_trip_rad_to_deg_to_rad(value_rad: float) -> None:
         units.mm_per_ms_to_mm_per_s,
         units.mm_per_s2_to_mm_per_ms2,
         units.mm_per_ms2_to_mm_per_s2,
+        units.mm_to_m,
+        units.m_to_mm,
         units.deg_to_rad,
         units.rad_to_deg,
     ],
@@ -135,6 +169,8 @@ def test_infinite_values_pass_through(func) -> None:
         units.mm_per_ms_to_mm_per_s,
         units.mm_per_s2_to_mm_per_ms2,
         units.mm_per_ms2_to_mm_per_s2,
+        units.mm_to_m,
+        units.m_to_mm,
         units.deg_to_rad,
         units.rad_to_deg,
     ],

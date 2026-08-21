@@ -1,8 +1,11 @@
 """単位換算の単一定義点（要件 2.6 / 7.7）。
 
 外部公開単位（距離 mm・時刻 ms・速度 mm/s・加速度 mm/s^2）と内部計算単位
-（mm/ms・mm/ms^2）の相互換算、および角度（度 ⇄ ラジアン）の相互換算を
-ここに集約する。
+（mm/ms・mm/ms^2）の相互換算、角度（度 ⇄ ラジアン）の相互換算、および
+距離（mm ⇄ m）の相互換算をここに集約する（mm ⇄ m は `observation`
+（タスク2.4）の距離依存ノイズ項が観測原点からの距離をメートルへ換算する
+際に用いる。design.md「ObservationModel」Implementation Notes: 「距離の
+単位換算は `Units` を経由する」）。
 
 換算係数はこのモジュールにのみ存在する。他モジュールは `1000` や `1e6`、
 `math.pi / 180` といった係数を直接書かず、本モジュールの関数を経由する
@@ -20,6 +23,9 @@ import math
 
 MS_PER_S: float = 1000.0
 """1 秒あたりのミリ秒数。本パッケージで唯一の時間単位換算係数。"""
+
+MM_PER_M: float = 1000.0
+"""1 メートルあたりのミリメートル数。本パッケージで唯一の距離単位換算係数。"""
 
 
 def mm_per_s_to_mm_per_ms(value: float) -> float:
@@ -69,6 +75,31 @@ def mm_per_ms2_to_mm_per_s2(value: float) -> float:
         外部公開フィールドで用いる加速度（mm/s^2）。
     """
     return value * MS_PER_S**2
+
+
+def mm_to_m(value: float) -> float:
+    """外部公開単位の距離 mm をメートルへ換算する。
+
+    Args:
+        value: 距離（mm）。観測モデルの距離依存ノイズ項が、観測原点からの
+            距離をメートルへ換算する際に用いる。
+
+    Returns:
+        距離（m）。
+    """
+    return value / MM_PER_M
+
+
+def m_to_mm(value: float) -> float:
+    """メートル単位の距離を外部公開単位の mm へ換算する。
+
+    Args:
+        value: 距離（m）。
+
+    Returns:
+        距離（mm）。
+    """
+    return value * MM_PER_M
 
 
 def deg_to_rad(value: float) -> float:
