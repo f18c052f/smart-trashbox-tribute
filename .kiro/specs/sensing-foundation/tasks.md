@@ -356,7 +356,7 @@
   - _Depends: 5, 6.2, 7.1, 7.2, 7.3_
   - _Boundary: CLI_
 
-- [ ] 8.2 公開 API を確定し、境界を静的に検証する
+- [x] 8.2 公開 API を確定し、境界を静的に検証する
   - `__init__` を再エクスポート専用にし、**公開シンボルを散文ではなく `__all__` のリストとして明示列挙する**
     （型・幾何の基本演算・セッション時計・資源計測・設定・ロガーと計測点・取得の契約と生成口・
     記録器・読み出し器・リングバッファ・形式版・Throw Record 保存・**ログ集計**・例外）
@@ -471,3 +471,8 @@
 - タスク7.2: `ModeSweep.run()` の戻り値は design.md の `tuple[ModeResult, ...]` から `tuple[ModeResult | None, ...]` へ拡張した。フレームを1枚も取得できずに失敗したモード（`stream_open` 失敗を含む）は `None`、部分的にでもフレームを取得した後に USB2警告等が検出された場合は `ModeResult` に追加フィールド `valid: bool` / `invalid_reason: str | None` を付けて返す（design.md の Batch/Job Contract「null」記述と Implementation Notes「無効として記録する」記述の食い違いを両方字義通り満たそうとした結果のハイブリッド）。**`stream_open` 失敗は実際には常に `None` 経路になり `valid=False` 経路には到達しない**（`BaseFrameSource.start()` が1度も `frames()` を呼ぶ前に失敗するため）— design.md の文言はこのケースも「無効として記録する」対象に含めているように読めるが、実装は `None` に倒す。`effective_samples_per_window()` は完全な窓のみを数える固定非重複窓方式（`window_ms` 未満の短い実行時のみ代数近似 `measured_fps * window_ms/1000` にフォールバック）。`run()` は design.md 未記載の `supplier`/`speed` キーワード専用引数を持つ（`open_source()` と同じ理由）。テストファイル名は `test_bench_modes.py`（design.md の `test_bench.py` ではない — タスク7.3の将来のテストファイルとの衝突を避けるため）。**タスク7.3は同様の衝突回避（例: `test_bench_logging.py`）を踏襲すること。**（7.3 は `test_bench_logging.py` として実施済み。）
 - タスク7.3: `LoggingOverheadBench` は `logging_off`/`logging_on`/`recording_on` の3条件を「1回の比較につき要因を1つだけ変える」方式で測る。**`recording_on` は意図的にロガーを `NullLogger` へ強制し、記録自体（`SessionRecorder.write()` のI/O）のオーバーヘッドのみを単離して測る** — タスク4.3で記録経路にも計測点（`logger.timed("record","write",...)`）を置いたが、この計測点自体のコストは `recording_on_vs_logging_off` の判定には含まれない。つまり実運用（記録＋その計測点のロギングが両方有効）の合算オーバーヘッドは、この判定結果よりわずかに大きくなりうる。**タスク9.5（実機でのON/OFF比較）はこの前提を踏まえ、`measurements.md` に記録する際にこの単離方針（記録のみ・ロギングは別測定）を明記すること。** 判定基準文字列は実測前に固定した定数（design.md の文言と逐語一致）。`median_delta_ms` は `abs()` を取る（ONがOFFより速くなった場合も「有意な差」として同様に検出するため）。
 - タスク8.1: `--source simulated` をCLIから直接使う場合（外部supplierの配線が無い場合）向けに、`cli.py` 内部に最小限の決定的パターン生成器 `_smoke_supplier()` を持たせた（`tests/synthetic.py` は import しない — 境界厳守）。物理演算は一切持たず、CLIレベルのスモークテスト専用であり、`trajectory-simulator` の実物理供給とは別物である旨をdocstringに明記。停止は supplier の終端ではなく CLI 自身の `--duration-s` 経過判定（`SessionClock` 基準）で行う。再生サブコマンド名は `replay-session`（`replay` ではない）— `prediction_core.replay(record)` はサンプル層の別操作であるため。`--source recorded` を指定せずとも `replay-session` は内部で `source=recorded` を強制する。argparse の各フラグの `dest` は `config.py` の `_FIELD_SPECS` の20キーと1対1で一致させた。エラーハンドリングは `SensingConfigError`（exit 2）→ `SensingFoundationError`（exit 1）の順で捕捉する。
+- タスク8.2: `sensing_foundation.__all__` は design.md 記載の43シンボルに加え、`ThrowRecordFormatError`・`ThrowRecordVersionError`（タスク5で新設、design.md未記載）・`link_to_session`（design.md未記載だが要件7.7の対応付け機構として公開判断）の3つを追加し、計46シンボル。境界テストは「レイヤ方向チェック」（モジュールレベルのimportのみを見る — `open_source()`/`sources/realsense.py` の関数内遅延importを正しく除外）と「pyrealsense2/prediction_core 排他性チェック」（関数内も含む全ASTウォーク — 例外モジュール以外での関数内違反も検出する）を明確に使い分けている。**`source.py` の `open_source()` docstring/コメントに残る「RealSenseSource（タスク6.1）はまだ存在しない」という古い記述は本タスクの境界外のため未修正のまま** — 別途のドキュメント同期タスクで直すこと。境界チェックの補助関数 `collect_module_level_internal_targets()` は `from sensing_foundation import X` のようにトップレベルパッケージへ直接importする形を正しく処理できない（現状どのモジュールもそうしていないため実害なし、将来同様のimportを書くモジュールが現れた場合は要確認）。
+
+## 全体まとめ: タスク1〜8（ハードウェア不要な全作業）が完了
+
+`.kiro/specs/sensing-foundation/measurements.md` は未作成（タスク9.1で新設予定）。タスク9（実機ブリングアップと実測）は Raspberry Pi 4 と RealSense D435 の実機が揃うまで着手不可。`uv run --extra sensing pytest -q` は822件全通過（SDK非導入・実機非接続のこの開発環境で）。
