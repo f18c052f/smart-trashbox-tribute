@@ -118,3 +118,26 @@ class RecordingWriteError(SensingFoundationError):
     例外にしないが、連続失敗が上限に達した場合に限り記録処理を
     止めるためにこの例外を送出する。**フレーム取得自体は継続する。**
     """
+
+
+class ThrowRecordFormatError(SensingFoundationError):
+    """Throw Record NDJSON の1行が壊れている（環境が要求を満たさない）。
+
+    `ThrowRecordStore.iter_records()`（破損行で停止する簡潔な経路）が、
+    JSON として解析できない行、または `prediction_core.ThrowRecord` の
+    スキーマ検証（`RecordSchemaError`）に失敗した行に到達した際に送出する。
+    `SessionReader` が索引行の破損に対して `RecordingFormatError` を送出する
+    のと対になる、Throw Record（サンプル層）側の対応物である。
+
+    頑健に読み進めたい呼び出し側は、この例外で止まる `iter_records()` では
+    なく `ThrowRecordStore.iter_with_issues()` を使い、`ThrowRecordReadIssue`
+    として行ごとに報告を受け取ること（要件 7.5）。
+    """
+
+
+class ThrowRecordVersionError(ThrowRecordFormatError):
+    """Throw Record の `schema_version` が `prediction_core.SCHEMA_VERSION` と異なる。
+
+    `ThrowRecordFormatError` の一種として捕捉できる。内容を推測して読み替える
+    ことはせず、この例外で識別可能な形に報告する（要件 7.6）。
+    """
