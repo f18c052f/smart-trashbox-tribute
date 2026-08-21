@@ -121,7 +121,7 @@
 
 - [ ] 2. 観測基盤: 構造化ロギングと計測点
 
-- [ ] 2.1 構造化ロギングを実装する
+- [x] 2.1 構造化ロギングを実装する
   - 1行1イベントの追記形式（NDJSON）で、固定キー（セッション経過時刻・セッション識別子・段階名・イベント名）と任意の付随値を書き出す
   - 送出は呼び出し側スレッドで**キューへ積むだけ**とし、書き込みは専用スレッドが行う（完了を待たない）
   - キューを有界にし、満杯時は**ログを捨てて取得を優先**し、破棄件数を数える
@@ -458,3 +458,4 @@
 - タスク1.4: `Sysstat.cpu_percent` は「プロセスの消費 jiffies ÷ システム全体の消費 jiffies × 100」として実装した（`/proc/self/stat` と `/proc/stat` の両方を分子・分母として使う設計）。design.md は両ソースを1つの `cpu_percent` フィールドの根拠として列挙するのみで式を明記していないため、この解釈をモジュール docstring に明記した。タスク2.2（`CaptureMetrics`）がこの値を消費する際は「システム全容量に対するプロセスの専有率（コア数に依存しない 0-100%）」という定義であることを前提にする。
 - タスク1.5: `tests/prediction_core/` 配下に `test_types.py` / `test_config.py` / `test_boundaries.py` / `test_public_api.py` が既に存在し、かつ `tests/` 配下のどのディレクトリにも `__init__.py` が無いため、pytest の既定 import mode（prepend）は**同名の test ファイルをツリー全体で一意にしか扱えない**（`import file mismatch` で collection が失敗することを実測で確認済み）。`__init__.py` を追加すると `sensing_foundation` というテストサブパッケージが実パッケージ `src/sensing_foundation` を shadow するリスクがあり、`--import-mode=importlib` へのグローバル切替は `tests/prediction_core/test_analytic.py` の `from analytic import ...` という同階層 import を壊すため、どちらも採用不可。**本 Spec のテストファイルが `prediction_core` 側と衝突する場合は、ファイル名をこの Spec 側だけ書き換えて回避する**（例: `test_types.py` → `test_core_types.py`）。design.md の File Structure Plan が挙げるファイル名と一致しない箇所が出るが、これは意図的な回避であり境界違反ではない。**タスク1.6（config）・8.1（cli）・8.2（public_api / boundaries）は同じ衝突に当たる見込みなので、着手前にこの節を確認し、同じ回避方針（`test_sensing_config.py` 等への改名）を踏襲すること。**（1.6 は `test_sensing_config.py` として実施済み。8.1・8.2 も同様に改名すること。）
 - タスク1.6: `RuntimeSettings.resolve()` は design.md の Components 表が `Sysstat` を依存に挙げていないため、リングバッファの RAM 上限チェックに必要な搭載 RAM 量を `installed_ram_bytes: int | None = None`（キーワード専用・追加パラメータ）として呼び出し側から受け取る形にした。`max_ring_bytes` が未指定かつ `installed_ram_bytes` も未指定の場合、**チェックは何もエラーにせず素通りする**（ドキュメント化済み）。**タスク8.1（CLI）は `Sysstat.sample().system_total_bytes` を必ず `installed_ram_bytes` として渡すこと** — さもないと RAM 上限チェックが実運用で常に無効のままになる。また `on_acquire_error` / `recording.mode` / `recording.compression` などの `Literal` 型フィールドは、解決時に許容値集合との照合を行っていない（タイプミスの値がそのまま通る）。将来のタスクでバリデーションを足す場合はこの点を踏まえること。
+- タスク2.1: `LoggingConfig(queue_capacity=0)` を `config.py` の検証を経ずに直接構築すると、`queue.Queue(maxsize=0)` は無制限キューになり「有界キューで満杯時は破棄する」という要件8.6の前提が崩れる。`RuntimeSettings.resolve()` 経由なら 1.6 のバリデーションで弾かれるが、`LoggingConfig` を直接構築する経路（テストや将来のタスク）では弾かれない。`StructuredLogger`/`get_logger()` 自体はこれを検証しない設計とした。`close()` は初回呼び出しがタイムアウトすると `_closed` が立ったまま以後 `session_end` を二度と書けなくなる（意図的なトレードオフ、docstring に注記済み）。
