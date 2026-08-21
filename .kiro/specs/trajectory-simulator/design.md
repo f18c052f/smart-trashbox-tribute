@@ -86,7 +86,7 @@
 
 | 既存の制約 | 固定している場所 | 本設計への影響 |
 |---|---|---|
-| 実行時サードパーティ依存ゼロ | `tests/prediction_core/test_packaging.py`（`dependencies == []` / `optional-dependencies == {}` を検査） | **NumPy を採用できない。** 標準ライブラリのみで実装する |
+| 実行時サードパーティ依存ゼロ | `tests/prediction_core/test_packaging.py`（`[project] dependencies == []` を検査。`optional-dependencies` は `sensing-foundation` が許可リスト方式へ緩和し、`sensing` / `tracking` / `calibration` / `m1-viz` の extras を許容する） | **NumPy を採用できない。** 標準ライブラリのみで実装する。extras は opt-in で既定インストールされないため、**`import trajectory_sim` が第三者パッケージを必要としない**という本 Spec の前提は緩和後も変わらない |
 | `prediction_core` 内の依存方向 | `tests/prediction_core/test_boundaries.py`（`src/prediction_core/*.py` のみ走査） | 本 Spec 側の境界は**本 Spec 側で用意する**必要がある |
 | 単一 `pyproject.toml` / `src` レイアウト / `requires-python >= 3.11` | `pyproject.toml`、`test_packaging.py` | 同じ構成に相乗りする。**配布名の見直しは OQ-40 の範囲であり本 Spec では行わない** |
 
@@ -354,6 +354,7 @@ sequenceDiagram
 | 3.6 | 上流へ依存を追加しない | BoundaryCheck | `pyproject.toml` 検査 | — |
 | 3.7 | 逐次更新を目標へ反映 | PredictionLink, DrivetrainModel | `TargetUpdate` | 時間軸 |
 | 3.8 | 内部モジュールへ直接依存しない | BoundaryCheck | 静的 import 検査 | — |
+| 3.9 | 拡張欄を単一の名前空間キーに収める | PredictionLink | `extra["sim"]` / `sim_extra_version` | — |
 | 4.1 | 機体性能の外部化 | Params | `DrivetrainParams` | — |
 | 4.2 | ホイール径からの導出手段 | Params | `DrivetrainParams.from_wheel` | — |
 | 4.3 | 固定値を埋め込まない | Params | 必須フィールド（既定値なし） | — |
@@ -423,7 +424,7 @@ sequenceDiagram
 | ThrowPhysics | L3 物理 | 真の軌道・真の落下点・落下時刻 | 1.1-1.3, 1.6, 1.7 | Params (P0), Units (P0) | Service |
 | DrivetrainModel | L3 運動 | 到達可否の閉形式判定と時間最適追従 | 4.4, 4.5, 4.7, 5.2 | Params (P0), Units (P0) | Service |
 | ObservationModel | L4 観測 | 標本化・遅延・ノイズ・欠測 | 2.1-2.5, 2.7 | ThrowPhysics (P0), Params (P0) | Service |
-| PredictionLink | L4 接続 | `prediction_core` への唯一の接続点 | 3.1, 3.3-3.5, 3.7, 7.4, 8.6 | prediction_core (P0), Params (P0), Results (P0) | Service |
+| PredictionLink | L4 接続 | `prediction_core` への唯一の接続点 | 3.1, 3.3-3.5, 3.7, 3.9, 7.4, 8.6 | prediction_core (P0), Params (P0), Results (P0) | Service |
 | ScenarioEvaluator | L5 評価 | 1シナリオの成否・指標の算出 | 5.3, 5.5, 6.2, 6.3, 10.2 | L3/L4 全体 (P0) | Service |
 | SweepEngine | L6 掃引 | 格子生成・試行反復・集計・種の導出 | 4.8, 5.6, 6.1, 6.4, 6.6, 8.1, 8.3, 10.3, 10.4 | ScenarioEvaluator (P0), Params (P0) | Batch |
 | ResultSerializer | L7 出力 | 出力 JSON の組み立てと書き出し | 7.1-7.7, 9.1, 9.3-9.7, 10.5 | SweepEngine (P0), Results (P0) | Batch |
@@ -888,14 +889,21 @@ def observe(
 | Field | Detail |
 |---|---|
 | Intent | `prediction_core` への唯一の接続点。予測系列と目標更新系列と Throw Record を返す |
-| Requirements | 3.1, 3.3, 3.4, 3.5, 3.7, 7.4, 8.6 |
+| Requirements | 3.1, 3.3, 3.4, 3.5, 3.7, 3.9, 7.4, 8.6 |
 
 **Responsibilities & Constraints**
 
 - `ThrowPredictionTracker` にサンプルを1点ずつ追加し、返ってきた `PredictionOutcome` を走査する
 - `Prediction` のみを目標更新へ変換する。`InvalidPrediction` は理由を保持し、成功として扱わない
 - 目標更新の**反映時刻**を `based_on_time_ms + sample_latency_ms + prediction_latency_ms` として算出する（指令遅延は `DrivetrainModel` 側で加算する）
-- `ThrowRecord` は `SourceKind.SIMULATED` で構築し、`extra` に掃引の格子点番号・試行番号を入れる。**スキーマを再定義しない**
+- `ThrowRecord` は `SourceKind.SIMULATED` で構築し、掃引の格子点番号・試行番号は `extra` の**名前空間キー `"sim"` の1キーに収める**。**スキーマを再定義しない**（要件 3.4 / 3.9）
+
+  ```python
+  extra["sim"] = {"sim_extra_version": "1.0", "cell_index": ..., "trial_index": ...}
+  ```
+
+  - `extra` のトップレベルへ項目を直接置かない。`sensing-foundation` の `extra["sensing"]` / `m1-prediction-validation` の `extra["m1"]` と同じ形（名前空間キー＋版フィールド）に揃え、同一の `ThrowRecord` が下流の記録ストアを通っても互いを壊さないようにする
+  - `sim_extra_version` は `extra["sim"]` の**形の版**であり、上流の `schema_version` とも本 Spec の `OUTPUT_SCHEMA_VERSION` とも別物である。公開シンボルとしては再エクスポートしない
 - **予測の数式に一切触れない。** フィッティング・交点算出・残差を自前で書かない
 
 **Dependencies**
@@ -925,13 +933,13 @@ def run_prediction(
 ) -> PredictionTimeline: ...
 ```
 
-- Preconditions: `samples` は時刻昇順であること（`ObservationModel` の Postconditions が保証する）
+- Preconditions: `samples` は時刻昇順であること（`ObservationModel` の Postconditions が保証する）。`extra` は `{"sim": {"sim_extra_version": "1.0", "cell_index": ..., "trial_index": ...}}` の形で渡す（名前空間キーは `"sim"` の1つのみ）
 - Postconditions: `updates` は `available_time_ms` の昇順。`valid_prediction_count == len(updates)`。`record.samples` は入力サンプル列と一致する
 - Invariants: `record` を `prediction_core.replay` へ渡した結果は、`predictions_equivalent` の意味で `record.predictions` と一致する（要件 8.6）
 
 **Implementation Notes**
 
-- Integration: `ThrowRecord` は `ThrowPredictionTracker.samples` / `.predictions` から**公開コンストラクタで直接構築**する（`to_record()` は `extra` を受け取らないため）。`record_id` は掃引の格子点番号と試行番号から決定的に組み立てる
+- Integration: `ThrowRecord` は `ThrowPredictionTracker.samples` / `.predictions` から**公開コンストラクタで直接構築**する（`to_record()` は `extra` を受け取らないため）。`record_id` は掃引の格子点番号と試行番号から決定的に組み立て、同じ2値を `extra["sim"]` にも載せる（`record_id` を解析し直さずに引けるようにする）
 - Validation: 上流の公開 API 以外を参照していないことを `BoundaryCheck` が静的に検査する。`from prediction_core.tracker import ...` のようなサブモジュール直接 import は失敗させる
 - Risks: 上流の `Prediction` にフィールドが追加された場合でも本層は壊れない（読むのは `based_on_time_ms` / `predicted_hit_x_mm` / `predicted_hit_y_mm` / `predicted_hit_time_ms` のみ）。改名・削除は Revalidation Trigger
 
@@ -1146,7 +1154,9 @@ def run_sweep(spec: SweepSpec, base_params: ScenarioParams) -> SweepResult: ...
   4. `socket` / `http` / `urllib` / `asyncio` の import が無いこと（要件 11.2 / 11.4）
   5. `units.py` 以外に裸の単位換算リテラル（`1000` / `1e6` / `57.29...`）が無いこと
   6. モジュール間の import が Dependency Direction の表に載っている辺のみであること
-- `pyproject.toml` の `[project] dependencies` が空、`optional-dependencies` が無いことを検査する（要件 3.6 / 8.4）
+- `pyproject.toml` の `[project] dependencies` が空であることを検査する（要件 3.6 / 8.4）。**`optional-dependencies` の有無は検査しない**
+  - 理由: 兄弟 Spec が `[project.optional-dependencies]` に extras（`sensing` / `tracking` / `calibration` / `m1-viz`）を追加するため、「extras が無いこと」を本 Spec が独自に固定すると、他 Spec の着地と同時に本検査だけが落ちる。extras は opt-in であり既定インストールされないので、標準ライブラリのみで実装するという本 Spec の判断（Existing Constraints 表）を実際に守っているのは `[project] dependencies == []` の側である
+  - 本 Spec 自身は extras を一切追加しない。`trajectory_sim` の実行に必要なものは標準ライブラリと `prediction_core` のみである
 - **検査ロジックを関数として切り出し、違反を含む架空のソース文字列を渡すテストも書く**（要件 11.6）。「検査が実際に落ちること」を証明する
 
 **Implementation Notes**
@@ -1182,7 +1192,7 @@ def run_sweep(spec: SweepSpec, base_params: ScenarioParams) -> SweepResult: ...
 | 入力 | `Sample`（`t_ms` / `x_mm` / `y_mm` / `z_mm`）の昇順列と `PredictionConfig` |
 | 出力 | `PredictionOutcome` の列（`Prediction` / `InvalidPrediction`） |
 | 記録 | `ThrowRecord`（`schema_version` は上流の値をそのまま使う。本 Spec は書き換えない） |
-| 拡張 | 掃引メタ情報は `ThrowRecord.extra` に載せる。**新しいトップレベル項目を追加しない** |
+| 拡張 | 掃引メタ情報は `ThrowRecord.extra["sim"]`（`sim_extra_version` / `cell_index` / `trial_index`）に載せる。`ThrowRecord` に**新しいトップレベル項目を追加しない**。`extra` のトップレベルも `"sim"` の1キーしか使わず、`extra["sensing"]` / `extra["m1"]` と衝突させない |
 
 **下流との契約（`simulator-visualization`）**
 
@@ -1267,7 +1277,7 @@ def run_sweep(spec: SweepSpec, base_params: ScenarioParams) -> SweepResult: ...
 | **OQ-33 物理モデルの詳細度** | **本 Spec で決着**。`MODEL_EXCLUSIONS` が決着内容そのものである。`docs/decisions.md` への移行は実装完了後の別作業（`prediction-core` の OQ-31 と同じ運用） |
 | **OQ-01 投擲レイアウト** | 机上検討の材料（`sweep-layout.json` とその出力）を生成する。**確定しない** |
 | OQ-04 減速方針 | 両方針を軸として比較できる形にする。決めない |
-| OQ-40 ディレクトリ構成 | 本 Spec が確定させるのは `src/trajectory_sim/` / `tests/trajectory_sim/` / `configs/trajectory_sim/` のみ。全体構成は未決のまま |
+| OQ-40 ディレクトリ構成 | 本 Spec が確定させるのは `src/trajectory_sim/` / `tests/trajectory_sim/` / `configs/trajectory_sim/` のみ。全体構成は未決のまま。**配布名 `[project].name` が `prediction-core` のまま複数パッケージを含む状態も OQ-40 の範囲として先送りし、本 Spec では蒸し返さない** |
 | OQ-41 環境構築・パッケージ管理 | 既存の `pyproject.toml` に相乗りする。**実行時依存を増やさないため、この決着を待たずに完成できる** |
 | ホイール径の未決（2026-08-21） | 60mm / 48mm の設定ファイルを両方置く。コードに径を持たせない |
 | 較正前の数値の誤用 | 出力の必須項目として較正段階・出所・除外要因を持たせる。運用ルールをファイル自身に埋め込む |

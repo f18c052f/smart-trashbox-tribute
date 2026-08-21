@@ -160,7 +160,7 @@ HTTP エンドポイントを書く用途が存在しない（`tech.md`「使い
 | **OQ-01** ★ | 投擲レイアウトの定義 | **机上検討の材料を生成する**（A-8）。**確定はしない** |
 | OQ-04 | キャッチ時の減速方針（NFR-6） | **決着させない。** 両方針を比較可能にするにとどめる（判断は M3 まで） |
 | OQ-02 | 対象とするゴミの種類・寸法 | M1 の仮値「空き缶（φ65mm 程度の剛体）」をパラメータの既定値として用いる。**最終スコープは決めない** |
-| OQ-40 | リポジトリのディレクトリ構成 | **決着させない。** 本 Spec が確定させるのは自身のパッケージ配置のみ |
+| OQ-40 | リポジトリのディレクトリ構成 | **決着させない。** 本 Spec が確定させるのは自身のパッケージ配置のみ。配布名 `[project].name` が `prediction-core` のまま複数パッケージ（`prediction_core` / `sensing_foundation` / `flying_object_tracking` / `world_frame_calibration` / `m1_validation` / `trajectory_sim`）を含む状態になる点は OQ-40 の範囲として**先送りし、Spec ごとに蒸し返さない** |
 | OQ-41 | Python の環境構築・パッケージ管理 | **決着させない。** 既存リポジトリの構成に相乗りし、実機 Pi 上の事情による判断を先取りしない |
 
 ---
@@ -289,6 +289,7 @@ _出典: A-1 / A-2 / `tech.md` 開発標準3 / `docs/decisions.md` D-8_
 6. The trajectory-simulator shall `prediction-core` に対して新たな実行時依存を発生させない
 7. The trajectory-simulator shall 予測を逐次更新として扱い、初回予測以降の更新を移動体の目標座標に反映する
 8. The trajectory-simulator shall `prediction-core` の内部モジュールへ直接依存せず、公開 API の入口からのみ参照する
+9. The trajectory-simulator shall Throw Record の拡張欄へ書き込む自身固有の情報を単一の名前空間キーの下にまとめ、その形の版を併せて記録する
 
 ### Requirement 4: 移動体の運動モデル
 
