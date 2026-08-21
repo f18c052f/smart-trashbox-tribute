@@ -89,7 +89,7 @@
   - _Depends: 1.4_
   - _Boundary: DrivetrainModel_
 
-- [ ] 2.3 時間最適追従の数値積分を実装する
+- [x] 2.3 時間最適追従の数値積分を実装する
   - 並進のみの質点として、目標方向への最大加速と最高速度の飽和を固定刻みで積分する
   - 停止方針では残距離が制動距離以下になった時点で最大減速へ切り替える。通過方針では行き過ぎを抑える制御を足さない
   - 目標の切り替えは制御周期の境界でのみ行い、指令反映遅れを経た更新だけを有効にする
@@ -252,3 +252,4 @@
 - 1.5 で `PARAMETER_PATHS` の要素型 `ParameterPath` を design.md 未定義のまま実装した（design.md は `Mapping[str, ParameterPath]` としか書いていない）。`src/trajectory_sim/params.py` で `path: str` / `unit: str` / `component: str | None` / `field_name: str` を持つ frozen dataclass として定義済み。3.2（SweepEngine）と 4.1（ResultSerializer）はこの形に従うこと。
 - 1.5 の `replace_by_path` は enum 系パス（`catch.policy` / `calibration_stage`）へ不正な文字列を渡すと `SweepDefinitionError` ではなく素の `ValueError`（enum コンストラクタ由来）を送出する。3.2（SweepEngine / `AxisSpec` 値検証）はこの値を検証時に `SweepDefinitionError` へラップし直すこと。
 - 2.2 の `min_time_to_stop_at`（台形分岐）で、三角形/台形の境界distance付近では `v_peak_unsat` と `d1+d2` がIEEE754丸め誤差で最大機械イプシロン程度食い違い、`d_cruise` が微小負値になることがある（約0.5%のランダムパラメータで再現）。`assert d_cruise >= 0` ではなく `d_cruise = max(0.0, distance_mm - d1 - d2)` でクランプ済み。2.3（数値積分 `simulate`）・3.2（掃引の格子点が境界distanceに一致しうる）でも同種の境界丸め誤差に注意すること。
+- 2.3 のレビューで判明: 閉形式一致テストの許容誤差を緩く取りすぎると、積分順序（速度更新→速度上限クランプ→位置更新の順）のバグを検出できないことがミューテーションテストで確認された。以降の数値積分系タスクでは、許容誤差をバイアス量から解析的に導出するか、少数ステップの厳密な手計算値（`abs=1e-9`級）で固定するテストを併用すること。

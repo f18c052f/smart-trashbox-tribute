@@ -1,7 +1,7 @@
-"""移動体の運動性能モデル: 到達可否の閉形式判定
-（design.md「DrivetrainModel」/ 要件 5.2, 6.2）。
+"""移動体の運動性能モデル: 到達可否の閉形式判定と実運動の数値積分
+（design.md「DrivetrainModel」/ 要件 4.4, 4.5, 4.7, 5.2, 6.2）。
 
-タスク 2.2 の範囲は以下の3関数のみである:
+タスク 2.2 の範囲（閉形式）:
 
 - `max_distance_from_rest`: 静止状態から一定時間で bang-bang 加速により
   到達できる最大距離（通過方針の到達可能距離）
@@ -10,13 +10,20 @@
 - `is_reachable`: 上記2関数を用いて、与えられた持ち時間で必要移動量に
   到達できるかを方針ごとに判定する
 
-`TargetUpdate` / `MotionState` / `simulate`（design.md「DrivetrainModel」
-Service Interface の残り）は、実運動を固定刻みの数値積分で解く後続タスク
-（2.3）の範囲であり、本タスクでは定義しない。
+タスク 2.3 の範囲（数値積分、design.md「DrivetrainModel」Service
+Interface の残り）:
 
-並進のみの質点として1次元（持ち時間・距離という2軸）の閉形式のみを扱う。
-x/y ベクトルや回転・逆運動学は持たない（design.md「DrivetrainModel」
-Responsibilities & Constraints: 「並進のみの質点」「等方」）。
+- `TargetUpdate` / `MotionState`: 目標更新1件・任意時刻の運動状態を表す
+  不変データクラス
+- `simulate`: 並進のみの質点を、目標方向への最大加速と最高速度の飽和に
+  従って固定刻みで積分し、任意の終了時刻における位置と速度を返す。
+  目標の切り替えは制御周期の境界でのみ行う（要件4.5）
+
+並進のみの質点として2軸（x, y）のベクトル運動を扱う。回転・逆運動学は
+持たない（design.md「DrivetrainModel」Responsibilities & Constraints:
+「並進のみの質点」「等方」）。閉形式3関数（2.2）は1次元（持ち時間・距離
+という2軸）のみを扱うのに対し、`simulate`（2.3）は等方な性能上限のもとで
+x/y 平面上の実際の軌道を積分する。
 
 **機体性能値を自前で持たない。** 最高速度・加速度上限・減速度上限は
 すべて引数で受け取る `DrivetrainParams` から取得し、本モジュールが
@@ -41,11 +48,20 @@ Responsibilities & Constraints）。
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
+from dataclasses import dataclass
 
 from trajectory_sim import units
 from trajectory_sim.params import CatchPolicy, DrivetrainParams
 
-__all__ = ["max_distance_from_rest", "min_time_to_stop_at", "is_reachable"]
+__all__ = [
+    "max_distance_from_rest",
+    "min_time_to_stop_at",
+    "is_reachable",
+    "TargetUpdate",
+    "MotionState",
+    "simulate",
+]
 
 
 def max_distance_from_rest(hold_time_ms: float, params: DrivetrainParams) -> float:
@@ -178,3 +194,200 @@ def is_reachable(
     if policy is CatchPolicy.PASS_THROUGH:
         return max_distance_from_rest(hold_time_ms, params) >= distance_mm
     return min_time_to_stop_at(distance_mm, params) <= hold_time_ms
+
+
+@dataclass(frozen=True, slots=True)
+class TargetUpdate:
+    """予測が更新するたびに得られる、目標座標1件分の情報（要件4.5）。
+
+    `available_time_ms` は、この予測由来の目標更新が**指令反映遅れを
+    含まずに**利用可能になる時刻である（後続タスク2.5 PredictionLink が
+    `based_on_time_ms + sample_latency_ms + prediction_latency_ms` として
+    算出する）。`simulate` はこの値に `DrivetrainParams.command_latency_ms`
+    をさらに加算し、制御周期の境界に整列させたのちに初めてこの更新を
+    目標として反映する（design.md「DrivetrainModel」Implementation
+    Notes、要件4.5）。
+
+    `impact_time_ms` はこの目標更新の元になった予測落下時刻であり、
+    `simulate` 自体は参照しない（`ScenarioEvaluator` 等、後続タスクが
+    キャッチ成立判定に用いるためにここで運ぶ）。
+
+    Attributes:
+        available_time_ms: 指令反映遅れを含まない、この目標更新が
+            利用可能になる時刻（ms）。
+        x_mm: 目標のワールド座標 x（mm）。
+        y_mm: 目標のワールド座標 y（mm）。
+        impact_time_ms: この目標更新の元になった予測落下時刻（ms）。
+    """
+
+    available_time_ms: float
+    x_mm: float
+    y_mm: float
+    impact_time_ms: float
+
+
+@dataclass(frozen=True, slots=True)
+class MotionState:
+    """任意の時刻における移動体の位置と速度（要件4.7）。
+
+    Attributes:
+        time_ms: この状態の時刻（ms）。
+        x_mm: ワールド座標 x（mm）。
+        y_mm: ワールド座標 y（mm）。
+        vx_mm_ms: x 方向の速度（内部計算単位 mm/ms）。
+        vy_mm_ms: y 方向の速度（内部計算単位 mm/ms）。
+    """
+
+    time_ms: float
+    x_mm: float
+    y_mm: float
+    vx_mm_ms: float
+    vy_mm_ms: float
+
+    @property
+    def speed_mm_s(self) -> float:
+        """速度の大きさを外部公開単位（mm/s）で返す。"""
+        speed_mm_ms = math.sqrt(self.vx_mm_ms**2 + self.vy_mm_ms**2)
+        return units.mm_per_ms_to_mm_per_s(speed_mm_ms)
+
+
+def _active_target(
+    updates: Sequence[TargetUpdate],
+    control_period_ms: float,
+    command_latency_ms: float,
+    elapsed_ms: float,
+) -> TargetUpdate | None:
+    """`elapsed_ms` の時点で有効な目標更新を返す（無ければ `None`）。
+
+    目標の切り替えは制御周期の境界でのみ行う（要件4.5、design.md
+    「DrivetrainModel」Responsibilities & Constraints）。反映時刻は
+    `update.available_time_ms + command_latency_ms`（指令反映遅れを
+    加えたもの）であり、これが現在の制御周期の境界
+    `floor(elapsed_ms / control_period_ms) * control_period_ms`
+    以下になっている更新のうち、`available_time_ms` が最大のもの
+    （＝最も新しく利用可能になったもの）を有効な目標とする。
+
+    `updates` は呼び出し側の責務として `available_time_ms` の昇順で
+    与えられる（design.md「DrivetrainModel」Preconditions）ため、
+    `command_latency_ms` という一定のオフセットを加えた反映時刻も
+    同じ順序で単調非減少になる。したがって条件を満たさない最初の
+    要素に達した時点で走査を打ち切ってよい。
+    """
+    current_tick_ms = math.floor(elapsed_ms / control_period_ms) * control_period_ms
+
+    active: TargetUpdate | None = None
+    for update in updates:
+        effective_available_time_ms = update.available_time_ms + command_latency_ms
+        if effective_available_time_ms <= current_tick_ms:
+            active = update
+        else:
+            break
+    return active
+
+
+def simulate(
+    start_x_mm: float,
+    start_y_mm: float,
+    updates: Sequence[TargetUpdate],
+    params: DrivetrainParams,
+    policy: CatchPolicy,
+    end_time_ms: float,
+) -> MotionState:
+    """並進のみの質点として、目標座標への時間最適追従を固定刻みで積分する。
+
+    （design.md「DrivetrainModel」Service Interface / 要件4.4, 4.5, 4.7）
+
+    各積分ステップの制御則:
+
+    - 有効な目標が無い場合（`_active_target` 参照）: 加速度 0（等速で
+      惰行、初期状態では速度0のため静止したまま）
+    - 通過方針（`CatchPolicy.PASS_THROUGH`）: 常に目標方向へ最大加速
+      `max_accel_mm_s2` する。行き過ぎを抑える制御は足さない
+      （design.md「DrivetrainModel」Implementation Notes / Risks）
+    - 停止方針（`CatchPolicy.STOP_AND_WAIT`）: 残距離が現在速度からの
+      制動距離 `|v|^2 / (2 * max_decel_mm_s2)` 以下になった時点で
+      現在の速度方向と逆向きに最大減速へ切り替える。それ以外は目標方向へ
+      最大加速する
+
+    速度は毎ステップ更新後に最高速度 `max_speed_mm_s` で飽和させ
+    （向きを保ったまま大きさをクランプ）、位置更新にはその
+    更新後の速度を用いる（semi-implicit / symplectic Euler）。
+
+    Preconditions:
+        `updates` は `available_time_ms` の昇順で与えられていること
+        （本関数はソートを行わず、この順序を信頼する）。
+
+    Postconditions:
+        戻り値の `time_ms` は必ず `end_time_ms` に等しい。`updates` が
+        空の場合は始点に静止したままの状態（速度0）を返す。
+    """
+    if not updates:
+        return MotionState(
+            time_ms=end_time_ms,
+            x_mm=start_x_mm,
+            y_mm=start_y_mm,
+            vx_mm_ms=0.0,
+            vy_mm_ms=0.0,
+        )
+
+    v_max = units.mm_per_s_to_mm_per_ms(params.max_speed_mm_s)
+    a_max = units.mm_per_s2_to_mm_per_ms2(params.max_accel_mm_s2)
+    a_decel = units.mm_per_s2_to_mm_per_ms2(params.max_decel_mm_s2)
+
+    x_mm, y_mm = start_x_mm, start_y_mm
+    vx_mm_ms, vy_mm_ms = 0.0, 0.0
+    elapsed_ms = 0.0
+
+    while elapsed_ms < end_time_ms:
+        dt_ms = min(params.integration_step_ms, end_time_ms - elapsed_ms)
+
+        target = _active_target(
+            updates, params.control_period_ms, params.command_latency_ms, elapsed_ms
+        )
+
+        if target is None:
+            ax, ay = 0.0, 0.0
+        else:
+            dx_mm = target.x_mm - x_mm
+            dy_mm = target.y_mm - y_mm
+            distance_mm = math.sqrt(dx_mm**2 + dy_mm**2)
+
+            if distance_mm == 0.0:
+                ax, ay = 0.0, 0.0
+            else:
+                ux, uy = dx_mm / distance_mm, dy_mm / distance_mm
+
+                if policy is CatchPolicy.PASS_THROUGH:
+                    ax, ay = a_max * ux, a_max * uy
+                else:
+                    speed_mm_ms = math.sqrt(vx_mm_ms**2 + vy_mm_ms**2)
+                    braking_distance_mm = speed_mm_ms**2 / (2.0 * a_decel)
+                    if distance_mm <= braking_distance_mm:
+                        if speed_mm_ms > 0.0:
+                            ax = -a_decel * (vx_mm_ms / speed_mm_ms)
+                            ay = -a_decel * (vy_mm_ms / speed_mm_ms)
+                        else:
+                            ax, ay = 0.0, 0.0
+                    else:
+                        ax, ay = a_max * ux, a_max * uy
+
+        vx_mm_ms += ax * dt_ms
+        vy_mm_ms += ay * dt_ms
+
+        speed_mm_ms = math.sqrt(vx_mm_ms**2 + vy_mm_ms**2)
+        if speed_mm_ms > v_max:
+            scale = v_max / speed_mm_ms
+            vx_mm_ms *= scale
+            vy_mm_ms *= scale
+
+        x_mm += vx_mm_ms * dt_ms
+        y_mm += vy_mm_ms * dt_ms
+        elapsed_ms += dt_ms
+
+    return MotionState(
+        time_ms=end_time_ms,
+        x_mm=x_mm,
+        y_mm=y_mm,
+        vx_mm_ms=vx_mm_ms,
+        vy_mm_ms=vy_mm_ms,
+    )
