@@ -193,7 +193,7 @@
 
 ## 5. 結合と検証
 
-- [ ] 5. 結合と検証
+- [x] 5. 結合と検証
 
 - [x] 5.1 (P) 誤差ゼロ条件の E2E 検証を実装する
   - 観測ノイズ・欠測・ばらつきをすべてゼロにした条件で、全経路を通した予測が解析解と一致することを検証する
@@ -237,7 +237,7 @@
   - _Depends: 4.4_
   - _Boundary: tests/trajectory_sim/test_boundaries.py_
 
-- [ ] 5.5 公開 API を確定する
+- [x] 5.5 公開 API を確定する
   - パラメータ型・掃引型・結果型・掃引実行・出力書き出し・評価関数・出力形式の版・例外階層を、パッケージ入口から再エクスポートする
   - **上流のシンボルを再エクスポートしない**（利用側が依存関係を見失わないようにする）
   - 入口モジュールにロジックを置かず、再エクスポートのみとする
@@ -260,3 +260,4 @@
 - 2.3 のレビューで判明: 閉形式一致テストの許容誤差を緩く取りすぎると、積分順序（速度更新→速度上限クランプ→位置更新の順）のバグを検出できないことがミューテーションテストで確認された。以降の数値積分系タスクでは、許容誤差をバイアス量から解析的に導出するか、少数ステップの厳密な手計算値（`abs=1e-9`級）で固定するテストを併用すること。
 - 5.3 で判明: `configs/trajectory_sim/sweep-layout.json` の元の `layout.home_x_mm` 軸値（`[-300, 0, 300]`、投擲の release 原点付近）は真の落下地点（x≈2580mm、azimuth=0 のとき）から2280〜2880mm離れており、成立/不成立の境界が一切現れなかった。`[1200, 1800, 2400, 3000]`（着地点を挟む値）へ変更済み。4.4 の既存テストは変更後も全件通過することを確認済み。
 - 5.4 で判明: design.md の「Dependency Direction」層表・Mermaid図（151-194行目）は `prediction_link` の許可対象に `drivetrain` を含めていないが、同じ design.md の PredictionLink Service Interface（920-934行目）は `PredictionTimeline.updates: tuple[TargetUpdate, ...]` を要求し、`TargetUpdate` は `drivetrain.py` にしか定義されていない（design.md 自体の内部矛盾）。2.5 で実装済みの `prediction_link.py` は正しく `drivetrain.TargetUpdate` を import しており、これは変更しない。`test_trajectory_sim_boundaries.py` の `DEPENDENCY_ALLOWED_TARGETS["prediction_link"]` に `drivetrain` を追加してこの実態に合わせた。**design.md の層表・Mermaid図側を修正する別タスク（ドキュメント整合）が今後望ましい。**
+- 5.5 で公開API（`trajectory_sim.__init__`）を33シンボルで確定した。`params.make_sample` は再エクスポートしない（`prediction_core.Sample` を内部構築するヘルパーであり、公開すると上流依存を隠すことになるため）。これで全25タスクが完了した。
