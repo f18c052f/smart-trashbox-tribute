@@ -107,7 +107,7 @@ from sensing_foundation import CaptureFrame, Logger, NullLogger
 from flying_object_tracking.config import MeasurementConfig
 from flying_object_tracking.types import TrackState, TrackUpdate
 
-__all__ = ["TrackingCounters", "TrackingMetrics"]
+__all__ = ["TrackingCounters", "TrackingMetrics", "EffectiveWindow"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,13 +149,116 @@ class TrackingCounters:
     tracks_ended: int
 
 
+class EffectiveWindow:
+    """一定時間窓内に得られた有効な3D位置サンプル数を算出する（タスク 5.2）。
+
+    design.md「L3: 計測と画像処理の基礎 → EffectiveWindow」。要件 4.5, 8.4。
+
+    比較の第一指標（`effective_points_per_window`。要件 4.5）と、`peak()`
+    が返す最密窓の値（`effective_points_peak`）を提供する。`add(t_ms)` で
+    有効な3D位置サンプルの時刻を1件ずつ記録し、`value()` / `peak()` は
+    それまでに記録された全サンプルから算出する（副作用を持つ集計オブジェクト
+    であり、`add()` を呼ぶたびに以後の `value()` / `peak()` の結果が変わる）。
+
+    名前を上流と区別する（Integration 参照。要件 4.5 の Revalidation
+    Trigger）
+    ------------------------------------------------------------------
+    `sensing_foundation.bench.modes` の `effective_samples_per_window()`
+    （自由関数）／ `ModeResult.effective_samples_per_window`（フィールド）は
+    **フレーム層**の実効サンプル数であり、`capture` 区間で得られたフレーム
+    数を数える。本クラスの `value()` が算出する `effective_points_per_window`
+    は**点層**の実効点数であり、検出・逆投影を通過して3D位置になった点の数を
+    数える（`sensing_foundation/bench/modes.py` モジュール docstring
+    「指標名の対応関係」: 「両者は層が異なるが対になる指標として比較・報告
+    される想定であり、片方だけ定義を変えると比較が成立しなくなる」）。
+    取り違えると `DetectorComparison`（要件 4.5 の判定規則）が誤った入力で
+    走ることになるため、本クラスはクラス名・メソッド名の両方で上流の語彙
+    （`effective_samples_per_window`）と衝突しない語彙
+    （`EffectiveWindow` / `add()` / `value()` / `peak()`）を使う。**上流の
+    関数・フィールドを再エクスポートやエイリアスもしない。**
+
+    窓長は固定値として埋め込まない（要件 8.4）
+    ------------------------------------------------------------------
+    `window_ms` は**コンストラクタ引数として必ず受け取る**
+    （`MeasurementConfig.window_ms` から渡される想定。既定 600.0 は初期
+    評価候補であり、本クラス自身は既定値を持たない）。内部で `window_ms`
+    の固定値リテラルを使わない。
+
+    アルゴリズム（本クラス固有の定義。上流とアルゴリズムを一致させる要求は
+    design.md のどこにも無い——「対になる指標」であって「同一アルゴリズム」
+    ではない）
+    ------------------------------------------------------------------
+    `value()`（窓あたりの平均点数）:
+        記録済み全タイムスタンプの観測区間長 `span_ms = max(t) - min(t)`
+        を `window_ms` で割った値を「窓の個数」とみなし（`span_ms <
+        window_ms` の疎な場合は1個とみなす。0除算を避けると同時に、
+        「窓0.3個」のような単位として無意味な値を作らないため）、記録済み
+        総数をその窓数で割った連続値（float）を返す。サンプルが1つも無け
+        れば `0.0`。
+
+    `peak()`（最も密な窓での点数）:
+        開始位置を任意の観測時刻に固定できる、幅 `window_ms` の半開区間
+        `[t, t+window_ms)` のうち、含まれるタイムスタンプ数が最大のものを
+        返す（**真のスライディングウィンドウ**）。原点整列した固定ビンでは
+        なく真のスライディングを採用したのは、バーストがビン境界をまたぐと
+        固定ビンでは過小評価するため（具体例: タイムスタンプが `window_ms`
+        の倍数付近をまたいで密集する場合。`tests/flying_object_tracking/
+        test_flying_object_tracking_effective_window.py`
+        `TestSlidingWindowVsFixedBinning` が、固定ビンなら 3、真のスライ
+        ディングなら 4 になる具体的な時刻列でこの差を回帰テストとして
+        固定している）。ソート済みタイムスタンプに対する二本指針
+        （尺取り法）で `O(n log n + n)` で求める（分析時にのみ呼ばれ、
+        毎フレームのホットパスではないため、この計算量で十分。design.md
+        「Contracts」: Service）。サンプルが1つも無ければ `0`。
+    """
+
+    def __init__(self, window_ms: float) -> None:
+        self._window_ms = window_ms
+        self._timestamps_ms: list[float] = []
+
+    def add(self, t_ms: float) -> None:
+        """有効な3D位置サンプルの時刻を1件記録する。"""
+        self._timestamps_ms.append(t_ms)
+
+    def value(self) -> float:
+        """窓あたりの平均点数（`effective_points_per_window`。要件 4.5）。"""
+        if not self._timestamps_ms:
+            return 0.0
+        span_ms = max(self._timestamps_ms) - min(self._timestamps_ms)
+        windows = max(1.0, span_ms / self._window_ms)
+        return len(self._timestamps_ms) / windows
+
+    def peak(self) -> int:
+        """最も密な窓での点数（`effective_points_peak`）。"""
+        if not self._timestamps_ms:
+            return 0
+        sorted_ms = sorted(self._timestamps_ms)
+        count = len(sorted_ms)
+        best = 0
+        right = 0
+        for left in range(count):
+            if right < left:
+                right = left
+            while right < count and sorted_ms[right] < sorted_ms[left] + self._window_ms:
+                right += 1
+            best = max(best, right - left)
+        return best
+
+
 class TrackingMetrics:
     """detect / track 区間の計測とカウンタを1箇所に集め、上流のロガーへ送る。
 
     design.md「TrackingMetrics」。要件 8.1, 8.2, 8.3, 8.5, 8.6, 8.7, 8.9, 9.3。
 
-    `window()`（`EffectiveWindow` を返す）はタスク 5.2 の境界であり、本タスク
-    では実装しない（モジュール docstring・タスクの CONCERNS を参照）。
+    `window()`（`EffectiveWindow` を返す）は**タスク 5.2 の境界外**であり、
+    本クラスには実装しない。タスク 5.2 の `_Boundary:` は `EffectiveWindow`
+    （同名クラス単体）に限定されており、`TrackingMetrics`（タスク 5.1で
+    既に承認済みの境界）ではない。タスク 6.1（`TrackingPipeline`）の
+    `_Depends:` もタスク 5.1 のみを挙げてタスク 5.2 を含めていないことが、
+    `window()` の配線をこの時点で行う必然性が無いことを裏付けている。
+    `window()` を必要とする側（`DetectorComparison` 等、タスク 7.1 が対象）
+    が実装される際に、あらためてこのファイルへ追記する必要がある
+    （モジュール docstring・タスク 5.2 の CONCERNS を参照）。
     """
 
     def __init__(self, logger: Logger, config: MeasurementConfig) -> None:

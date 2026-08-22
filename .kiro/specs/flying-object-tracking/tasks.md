@@ -229,7 +229,7 @@
   - _Depends: 1.4_
   - _Boundary: TrackingMetrics_
 
-- [ ] 5.2 (P) 実効サンプル数の算出を実装する
+- [x] 5.2 (P) 実効サンプル数の算出を実装する
   - 一定時間窓内に得られた**有効な3D位置サンプル数**を算出する（窓あたりの平均と、最も密な窓での値の両方）
   - **指標名を上流のフレーム層の指標と区別する**（対象が違うため。取り違えると集計側が誤る）
   - 窓長を設定値とし、**固定値として埋め込まない**
@@ -494,3 +494,12 @@
   から `mask_px` を送出できない（意図的に省略・docstring に明記）。
   **後続タスク6.1（TrackingPipeline）は `DetectResult.mask_px` を計測へ
   橋渡しする手段（`record_update()` の拡張、または別経路）を用意すること。**
+- タスク5.2: `EffectiveWindow` は `src/flying_object_tracking/metrics.py`
+  （task 5.1 の `TrackingMetrics` と同一ファイル）に追加する。
+  `TrackingMetrics.window() -> EffectiveWindow` は**本タスクでは配線しない**
+  （タスク6.1の `_Depends:_` に5.2が無く、タスク7.1 `DetectorComparison` が
+  `_Depends: 5.2, 6.2_` と5.2に直接依存しているため、`EffectiveWindow` の
+  構築・給餌は `DetectorComparison`（task 7.1）側の責務と判断した）。
+  `peak()` は真のスライディングウィンドウ（原点整列した固定ビンではない）
+  で実装すること。固定ビンだと境界をまたぐバーストを過小評価する
+  （実測: `[95,100,105,110]`, `window_ms=100` で真値4に対し固定ビン3）。
