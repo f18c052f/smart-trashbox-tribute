@@ -888,3 +888,397 @@ class TestDiagnosticReadoutRuleDocumented:
             return text.replace("\n", "").replace(" ", "")
 
         assert _normalize(expected_phrase) in _normalize(candidate_docstrings)
+
+
+# ---------------------------------------------------------------------------
+# タスク 5.3: 許容値による合否判定（design.md Verifier「Contracts」
+# `Verdict` / `VerificationReport` / `verify_calibration` / `to_summary` /
+# tasks.md タスク 5.3 / 要件 4.6, 4.7, 4.10）
+#
+# `evaluate_verification_points` の呼び出し方は
+# `TestNoDetectionTrackingPredictionDependency` が `(result, observations)`
+# の2引数のみに固定している（要件 4.1 の「検出・追跡・予測を一切呼ばない
+# 最小入力」）ため、許容値はこの関数へは足さない。代わりに、その2引数の
+# 契約の上に許容値とレポート組み立てを重ねる新関数 `verify_calibration`
+# （design.md の最終形の名）が本タスクの中心である。
+# ---------------------------------------------------------------------------
+
+
+def _tolerance(
+    *,
+    horizontal_mm: float = 10.0,
+    vertical_mm: float = 10.0,
+    provisional: bool = True,
+    source: str = "provisional target (pre-measurement)",
+):
+    from world_frame_calibration.types import ToleranceSpec
+
+    return ToleranceSpec(
+        horizontal_mm=horizontal_mm,
+        vertical_mm=vertical_mm,
+        provisional=provisional,
+        source=source,
+    )
+
+
+class TestPointVerificationCarriesObservationQuality:
+    """`PointVerification` はマーカー観測の散らばり（`spread_mm` /
+    `sample_count`）を、その点の算出元となった `AnchorObservation` から
+    転記する（design.md Verifier「Contracts」`PointError.spread_mm` /
+    `PointError.sample_count` / tasks.md タスク 5.3）。永続化される検証
+    レポートが、誤差だけでなく観測そのものの質を事後に確認できるようにする
+    ためである。
+    """
+
+    def test_spread_mm_and_sample_count_are_sourced_from_the_matching_observation(
+        self,
+    ) -> None:
+        from world_frame_calibration import verify as verify_module
+
+        result = _calibration_result()
+        # Two points with deliberately distinct, non-default spread_mm /
+        # sample_count so a coincidental match (e.g. both landing on the
+        # _anchor() helper's default 120 / 2.5) cannot hide a wiring bug
+        # (such as swapping labels or leaving a zero/placeholder value).
+        obs_vp1 = dataclasses.replace(
+            _observation("vp1", (5.0, 3.0, 1002.0)), spread_mm=0.8, sample_count=45
+        )
+        obs_vp2 = dataclasses.replace(
+            _observation("vp2", (-4.0, -2.0, 1001.0)), spread_mm=6.3, sample_count=200
+        )
+        observations = [
+            (_verification_point("vp1", (0.0, 0.0, 0.0)), obs_vp1),
+            (_verification_point("vp2", (0.0, 0.0, 0.0)), obs_vp2),
+        ]
+
+        points = verify_module.evaluate_verification_points(result, observations)
+
+        by_label = {point.label: point for point in points}
+        assert by_label["vp1"].spread_mm == pytest.approx(0.8, abs=1e-9)
+        assert by_label["vp1"].sample_count == 45
+        assert by_label["vp2"].spread_mm == pytest.approx(6.3, abs=1e-9)
+        assert by_label["vp2"].sample_count == 200
+
+    def test_verify_calibration_preserves_observation_quality_fields(self) -> None:
+        """`verify_calibration` は `verdict` を `dataclasses.replace` で
+        差し替えるが、その際 `spread_mm` / `sample_count`（`evaluate_
+        verification_points` が既に設定済み）を欠落させない。
+        """
+        from world_frame_calibration import verify as verify_module
+
+        result = _calibration_result()
+        obs_vp1 = dataclasses.replace(
+            _observation("vp1", (1.0, 1.0, 1000.0)), spread_mm=3.1, sample_count=77
+        )
+        observations = [(_verification_point("vp1", (0.0, 0.0, 0.0)), obs_vp1)]
+
+        report = verify_module.verify_calibration(result, observations, tolerance=_tolerance())
+
+        assert report.points[0].spread_mm == pytest.approx(3.1, abs=1e-9)
+        assert report.points[0].sample_count == 77
+
+
+class TestVerifyCalibrationJudgesWithTolerance:
+    """許容値が与えられた場合、点ごとと全体の合否を判定する（要件 4.6）。"""
+
+    def test_all_points_within_tolerance_pass_overall_and_per_point(self) -> None:
+        from world_frame_calibration import verify as verify_module
+
+        result = _calibration_result()
+        observations = [
+            (_verification_point("vp1", (0.0, 0.0, 0.0)), _observation("vp1", (5.0, 3.0, 1002.0))),
+            (_verification_point("vp2", (0.0, 0.0, 0.0)), _observation("vp2", (-4.0, -2.0, 1001.0))),
+        ]
+
+        report = verify_module.verify_calibration(result, observations, tolerance=_tolerance())
+
+        assert report.verdict == verify_module.Verdict.PASS
+        assert all(point.verdict == verify_module.Verdict.PASS for point in report.points)
+
+    def test_single_failing_point_among_passing_points_fails_overall_not_average(
+        self,
+    ) -> None:
+        """全体の合否は「独立点すべてが許容値を満たすこと」であり、平均では
+        判定しない（design.md Verifier「Implementation Notes」/ tasks.md
+        タスク 5.3: 「1点だけ外れる状態を見逃さないため」）。
+
+        誤差を選ぶにあたり、平均ベースの誤った実装（`mean(horizontal_error_
+        mm) <= tolerance.horizontal_mm`）と、正しい ALL ベースの実装
+        （`all(... <= tolerance ...)`）が**現実に異なる判定を出す**組み合わせ
+        にする必要がある。ここでは水平誤差 0mm・0mm・15mm（許容値 10mm）を
+        使う: 平均は (0+0+15)/3 = 5mm で許容値 10mm 以内に収まるため、
+        平均ベースの実装ならこのデータを誤って PASS と判定してしまう。
+        一方、15mm の点は単独で許容値を超えるため、正しい ALL ベースの実装は
+        FAIL と判定する。両者の判定が食い違うことで、このテストが実装の
+        ALL ベース性そのものを検出できる。
+        """
+        from world_frame_calibration import verify as verify_module
+
+        result = _calibration_result()
+        observations = [
+            # error=(0,0,0): well within a 10mm horizontal tolerance.
+            (_verification_point("vp1", (0.0, 0.0, 0.0)), _observation("vp1", (0.0, 0.0, 1000.0))),
+            # error=(0,0,0): well within a 10mm horizontal tolerance.
+            (_verification_point("vp2", (0.0, 0.0, 0.0)), _observation("vp2", (0.0, 0.0, 1000.0))),
+            # error=(15,0,0): exceeds a 10mm horizontal tolerance on its own.
+            (_verification_point("vp3", (0.0, 0.0, 0.0)), _observation("vp3", (15.0, 0.0, 1000.0))),
+        ]
+
+        report = verify_module.verify_calibration(
+            result, observations, tolerance=_tolerance(horizontal_mm=10.0, vertical_mm=10.0)
+        )
+
+        by_label = {point.label: point for point in report.points}
+        assert by_label["vp1"].verdict == verify_module.Verdict.PASS
+        assert by_label["vp2"].verdict == verify_module.Verdict.PASS
+        assert by_label["vp3"].verdict == verify_module.Verdict.FAIL
+        # mean(horizontal_error_mm) == (0 + 0 + 15) / 3 == 5mm, which is
+        # WITHIN the 10mm tolerance -- a buggy average-based implementation
+        # would incorrectly PASS this data. The overall verdict must still
+        # be FAIL because it is judged per-point (ALL), never averaged.
+        assert report.verdict == verify_module.Verdict.FAIL
+
+    def test_vertical_only_excess_fails_the_point_even_with_zero_horizontal_error(
+        self,
+    ) -> None:
+        from world_frame_calibration import verify as verify_module
+
+        result = _calibration_result()
+        # error=(0,0,50): horizontal error is exactly 0 (within tolerance),
+        # vertical error 50mm exceeds a 10mm vertical tolerance.
+        observations = [
+            (_verification_point("vp1", (0.0, 0.0, 0.0)), _observation("vp1", (0.0, 0.0, 1050.0))),
+        ]
+
+        report = verify_module.verify_calibration(
+            result, observations, tolerance=_tolerance(horizontal_mm=100.0, vertical_mm=10.0)
+        )
+
+        assert report.points[0].verdict == verify_module.Verdict.FAIL
+        assert report.verdict == verify_module.Verdict.FAIL
+
+    def test_duplicate_establishment_points_do_not_affect_overall_verdict(self) -> None:
+        """確立用マーカーと重複する点は全体判定の対象外である（要件 4.3 の
+        踏襲）。重複点にわざと巨大な誤差を持たせても、独立点がすべて合格
+        なら全体は PASS になる。
+        """
+        from world_frame_calibration import verify as verify_module
+
+        result = _calibration_result()
+        observations = [
+            (
+                _verification_point("origin", (0.0, 0.0, 0.0)),
+                _observation("origin", (99999.0, 99999.0, 1099999.0)),
+            ),
+            (_verification_point("vp1", (0.0, 0.0, 0.0)), _observation("vp1", (1.0, 1.0, 1000.0))),
+        ]
+
+        report = verify_module.verify_calibration(result, observations, tolerance=_tolerance())
+
+        assert report.verdict == verify_module.Verdict.PASS
+
+
+class TestVerifyCalibrationWithoutToleranceIsNotJudged:
+    """許容値が与えられない場合は未判定として扱い、実測値そのものは無条件に
+    出力する（要件 4.7、`tech.md` 開発標準1「未実測の数値を合否条件に
+    しない」）。
+    """
+
+    def test_no_tolerance_yields_not_judged_but_measurements_still_present(
+        self,
+    ) -> None:
+        from world_frame_calibration import verify as verify_module
+
+        result = _calibration_result()
+        observations = [
+            (_verification_point("vp1", (0.0, 0.0, 0.0)), _observation("vp1", (5.0, 3.0, 1002.0))),
+            (_verification_point("vp2", (0.0, 0.0, 0.0)), _observation("vp2", (-4.0, -2.0, 1001.0))),
+        ]
+
+        report = verify_module.verify_calibration(result, observations)
+
+        assert report.tolerance is None
+        assert report.verdict == verify_module.Verdict.NOT_JUDGED
+        assert all(
+            point.verdict == verify_module.Verdict.NOT_JUDGED for point in report.points
+        )
+
+        # The raw measured error values must still be present and correct --
+        # judgment being absent must never gate the measurements themselves.
+        by_label = {point.label: point for point in report.points}
+        assert by_label["vp1"].error_mm == pytest.approx((5.0, 3.0, 2.0), abs=1e-9)
+        assert by_label["vp2"].error_mm == pytest.approx((-4.0, -2.0, 1.0), abs=1e-9)
+        assert report.bias_mm == pytest.approx((0.5, 0.5, 1.5), abs=1e-9)
+        assert report.scatter_rms_mm == pytest.approx(
+            math.sqrt(((4.5**2 + 2.5**2 + 0.5**2) + (4.5**2 + 2.5**2 + 0.5**2)) / 2),
+            abs=1e-9,
+        )
+        assert report.max_error_norm_mm > 0.0
+
+
+class TestVerificationReportIncludesToleranceVerbatim:
+    """判定に用いた許容値と、それが暫定か実測由来かをレポートに必ず含める
+    （要件 4.6）。
+    """
+
+    def test_tolerance_and_provisional_status_appear_verbatim(self) -> None:
+        from world_frame_calibration import verify as verify_module
+
+        result = _calibration_result()
+        tolerance = _tolerance(
+            horizontal_mm=25.0,
+            vertical_mm=15.0,
+            provisional=True,
+            source="pre-measurement provisional target",
+        )
+        observations = [
+            (_verification_point("vp1", (0.0, 0.0, 0.0)), _observation("vp1", (5.0, 3.0, 1002.0))),
+        ]
+
+        report = verify_module.verify_calibration(result, observations, tolerance=tolerance)
+
+        assert report.tolerance is tolerance
+        assert report.tolerance.horizontal_mm == 25.0
+        assert report.tolerance.vertical_mm == 15.0
+        assert report.tolerance.provisional is True
+        assert report.tolerance.source == "pre-measurement provisional target"
+
+    def test_measured_derived_tolerance_provisional_flag_is_false(self) -> None:
+        from world_frame_calibration import verify as verify_module
+
+        result = _calibration_result()
+        tolerance = _tolerance(provisional=False, source="measured from 30-trial reproducibility study")
+        observations = [
+            (_verification_point("vp1", (0.0, 0.0, 0.0)), _observation("vp1", (1.0, 1.0, 1000.0))),
+        ]
+
+        report = verify_module.verify_calibration(result, observations, tolerance=tolerance)
+
+        assert report.tolerance.provisional is False
+        assert report.tolerance.source == "measured from 30-trial reproducibility study"
+
+
+class TestVerificationReportIncludesTargetIdentity:
+    """対象となる結果の識別子・形式版・ストリーム識別情報をレポートに含める
+    （要件 4.10）。
+    """
+
+    def test_report_carries_calibration_identifier_format_version_and_signature(
+        self,
+    ) -> None:
+        from world_frame_calibration import verify as verify_module
+
+        result = _calibration_result()
+        observations = [
+            (_verification_point("vp1", (0.0, 0.0, 0.0)), _observation("vp1", (5.0, 3.0, 1002.0))),
+        ]
+
+        report = verify_module.verify_calibration(result, observations)
+
+        assert report.calibration_id == result.calibration_id
+        assert report.calibration_format_version == result.calibration_format_version
+        assert report.signature == result.signature
+
+
+class TestVerificationReportExcludedLabelsAndCounts:
+    """`VerificationReport` が独立点数と重複ラベルを持つ（design.md Verifier
+    「Contracts」`VerificationReport.independent_point_count` /
+    `excluded_labels`）。
+    """
+
+    def test_excluded_labels_lists_duplicate_establishment_points(self) -> None:
+        from world_frame_calibration import verify as verify_module
+
+        result = _calibration_result()
+        observations = [
+            (
+                _verification_point("origin", (0.0, 0.0, 0.0)),
+                _observation("origin", (0.0, 0.0, 1000.0)),
+            ),
+            (_verification_point("vp1", (0.0, 0.0, 0.0)), _observation("vp1", (1.0, 1.0, 1000.0))),
+        ]
+
+        report = verify_module.verify_calibration(result, observations)
+
+        assert report.excluded_labels == ("origin",)
+        assert report.independent_point_count == 1
+
+
+class TestToSummaryProducesAttachableVerificationSummary:
+    """検証レポートから、結果へ付与するための要約を生成する（tasks.md
+    タスク 5.3）。生成した要約は `result.attach_verification` へそのまま
+    渡せる（`result.VerificationSummary` と同じ形）ことを確かめる。
+    """
+
+    def test_to_summary_maps_pass_verdict_and_carries_key_fields(self) -> None:
+        from world_frame_calibration import verify as verify_module
+        from world_frame_calibration.result import VerificationState
+
+        result = _calibration_result()
+        tolerance = _tolerance(horizontal_mm=100.0, vertical_mm=100.0)
+        observations = [
+            (_verification_point("vp1", (0.0, 0.0, 0.0)), _observation("vp1", (5.0, 3.0, 1002.0))),
+        ]
+        report = verify_module.verify_calibration(result, observations, tolerance=tolerance)
+
+        summary = verify_module.to_summary(report, Path("var/calibration/x.verification.json"))
+
+        assert summary.verdict == VerificationState.PASSED
+        assert summary.point_count == len(report.points)
+        assert summary.independent_point_count == report.independent_point_count
+        assert summary.bias_mm == report.bias_mm
+        assert summary.scatter_rms_mm == report.scatter_rms_mm
+        assert summary.max_error_norm_mm == report.max_error_norm_mm
+        assert summary.tolerance is tolerance
+        assert summary.report_path == str(Path("var/calibration/x.verification.json"))
+
+    def test_to_summary_maps_fail_and_not_judged_verdicts(self) -> None:
+        from world_frame_calibration import verify as verify_module
+        from world_frame_calibration.result import VerificationState
+
+        result = _calibration_result()
+        observations = [
+            (_verification_point("vp1", (0.0, 0.0, 0.0)), _observation("vp1", (50.0, 0.0, 1000.0))),
+        ]
+
+        failing_report = verify_module.verify_calibration(
+            result, observations, tolerance=_tolerance(horizontal_mm=1.0, vertical_mm=1.0)
+        )
+        assert verify_module.to_summary(failing_report, None).verdict == VerificationState.FAILED
+
+        not_judged_report = verify_module.verify_calibration(result, observations)
+        assert (
+            verify_module.to_summary(not_judged_report, None).verdict
+            == VerificationState.NOT_JUDGED
+        )
+
+    def test_to_summary_without_report_path_yields_none(self) -> None:
+        from world_frame_calibration import verify as verify_module
+
+        result = _calibration_result()
+        observations = [
+            (_verification_point("vp1", (0.0, 0.0, 0.0)), _observation("vp1", (5.0, 3.0, 1002.0))),
+        ]
+        report = verify_module.verify_calibration(result, observations)
+
+        summary = verify_module.to_summary(report, None)
+        assert summary.report_path is None
+
+    def test_summary_can_be_attached_to_the_calibration_result_without_mutating_original(
+        self,
+    ) -> None:
+        from world_frame_calibration import verify as verify_module
+        from world_frame_calibration.result import VerificationState, attach_verification
+
+        result = _calibration_result()
+        observations = [
+            (_verification_point("vp1", (0.0, 0.0, 0.0)), _observation("vp1", (5.0, 3.0, 1002.0))),
+        ]
+        report = verify_module.verify_calibration(result, observations)
+        summary = verify_module.to_summary(report, None)
+
+        attached = attach_verification(result, summary)
+
+        assert attached.verification_state == VerificationState.NOT_JUDGED
+        assert result.verification is None
+        assert result.verification_state == VerificationState.NOT_VERIFIED

@@ -129,8 +129,11 @@ expected_baseline_mm`（メジャー実測の基線長）は、World frame の�
 from __future__ import annotations
 
 import math
+import time
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from enum import StrEnum
+from pathlib import Path
 
 from world_frame_calibration.errors import (
     CalibrationConfigError,
@@ -138,18 +141,51 @@ from world_frame_calibration.errors import (
     FailureReason,
 )
 from world_frame_calibration.plan import VerificationPointSpec
-from world_frame_calibration.result import CalibrationResult
-from world_frame_calibration.types import AnchorObservation
+from world_frame_calibration.result import (
+    CalibrationResult,
+    VerificationState,
+    VerificationSummary,
+)
+from world_frame_calibration.types import AnchorObservation, StreamSignature, ToleranceSpec
 
 __all__ = [
     "DEFAULT_RANGE_BUCKET_EDGES_MM",
     "PointVerification",
     "RangeBucket",
     "ScaleCheck",
+    "Verdict",
+    "VerificationReport",
     "VerificationStatistics",
     "compute_verification_statistics",
     "evaluate_verification_points",
+    "to_summary",
+    "verify_calibration",
 ]
+
+
+class Verdict(StrEnum):
+    """許容値に対する合否（design.md Verifier「Contracts」`Verdict` /
+    tasks.md タスク 5.3 / 要件 4.6, 4.7）。
+
+    `result.VerificationState`（`NOT_VERIFIED` / `PASSED` / `FAILED` /
+    `NOT_JUDGED` の4状態）とは別の型である。`Verdict` は本モジュールが
+    算出する検証**結果そのもの**の合否（3値）を表し、
+    `VerificationState` は `CalibrationResult` に**付与された**検証の状態
+    （「まだ検証していない」を含む4値）を表す。`to_summary` がこの2つを
+    対応付ける（`NOT_VERIFIED` は `verification=None` によって表現され、
+    `Verdict` 側には対応する値を持たない）。
+    """
+
+    PASS = "pass"
+    """許容値を満たした（水平・垂直の双方が許容値以内）。"""
+
+    FAIL = "fail"
+    """許容値を満たさなかった（水平・垂直の少なくとも一方が許容値を超えた）。"""
+
+    NOT_JUDGED = "not_judged"
+    """許容値が与えられておらず判定していない（要件 4.7）。実測値
+    そのもの（`error_mm` 等）は、この場合も無条件に出力される
+    （`tech.md` 開発標準1: 未実測の数値を合否条件にしない）。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,11 +193,27 @@ class PointVerification:
     """1つの検証点について算出した World 座標と、既知位置との軸ごとの差分。
 
     design.md Verifier「Contracts」の `PointError` のうち、タスク 5.1 が
-    担う基本フィールドに加え、タスク 5.2 が誤差の派生量
+    担う基本フィールドに、タスク 5.2 が誤差の派生量
     （`error_norm_mm` / `horizontal_error_mm` / `vertical_error_mm` /
-    `range_from_camera_mm`）を追加したもの。合否判定（`verdict`）と
-    マーカー観測の散らばり（`spread_mm` / `sample_count`）はタスク 5.3 が
-    追加する。
+    `range_from_camera_mm`）を、タスク 5.3 が点ごとの合否判定
+    （`verdict`）とマーカー観測の散らばり（`spread_mm` / `sample_count`）を、
+    それぞれ追加したもの。`spread_mm` / `sample_count` は、この点の算出元
+    である `AnchorObservation`（`evaluate_verification_points` の
+    `observations` 引数に含まれる観測そのもの）が既に保持している値を
+    そのまま転記する。永続化される検証レポートが「キャリブレーションが
+    悪いのか、マーカー観測そのものが悪いのか」を事後に切り分けられるよう
+    （design.md Verifier「Contracts」`PointError.spread_mm` /
+    `PointError.sample_count`）、観測品質の診断値を点ごとに複製する。
+
+    **`verdict` は `evaluate_verification_points` 自身ではなく
+    `verify_calibration`（タスク 5.3）が判定する**: `evaluate_verification_
+    points` の呼び出し方は `(result, observations)` の2引数のみに固定されて
+    いる（`TestNoDetectionTrackingPredictionDependency` が固定する、要件 4.1
+    「検出・追跡・予測を一切呼ばずに完結する最小入力」）ため、許容値
+    （`ToleranceSpec`）を追加の引数として受け取らない。したがって
+    `evaluate_verification_points` が組み立てる `PointVerification` は常に
+    `verdict=Verdict.NOT_JUDGED` を持ち、`verify_calibration` が許容値を
+    与えられたときにだけ `dataclasses.replace` で正しい判定へ差し替える。
 
     Attributes:
         label: 検証点の識別ラベル（`VerificationPointSpec.label` と一致）。
@@ -191,6 +243,22 @@ class PointVerification:
             もの）。距離帯ごとの集計に用いる（design.md Verifier
             「Contracts」`PointError.range_from_camera_mm` / タスク 5.2 /
             要件 4.5, 9.3）。
+        spread_mm: この検証点の観測（`AnchorObservation.spread_mm`）を
+            そのまま転記した、代表点算出時のロバスト統計に基づく散らばり
+            （design.md Verifier「Contracts」`PointError.spread_mm` /
+            タスク 5.3）。観測そのものの質を示す診断値であり、誤差
+            （`error_mm` 等）とは独立に、後から「キャリブレーションが
+            悪いのか観測が悪いのか」を切り分けるために保持する。
+        sample_count: この検証点の観測（`AnchorObservation.sample_count`）を
+            そのまま転記した、代表点算出に用いたサンプル数（design.md
+            Verifier「Contracts」`PointError.sample_count` / タスク 5.3）。
+        verdict: この点単独の合否（design.md Verifier「Contracts」
+            `PointError.verdict` / タスク 5.3 / 要件 4.6, 4.7）。許容値が
+            与えられていれば `horizontal_error_mm` / `vertical_error_mm` の
+            双方が許容値以内のとき `Verdict.PASS`、いずれかが超えていれば
+            `Verdict.FAIL`。許容値が与えられていなければ常に
+            `Verdict.NOT_JUDGED`（`evaluate_verification_points` が組み立てる
+            時点の既定値）。
     """
 
     label: str
@@ -203,6 +271,9 @@ class PointVerification:
     horizontal_error_mm: float
     vertical_error_mm: float
     range_from_camera_mm: float
+    spread_mm: float
+    sample_count: int
+    verdict: Verdict
 
 
 def evaluate_verification_points(
@@ -252,6 +323,14 @@ def evaluate_verification_points(
     statistics`（タスク 5.2）が距離帯集計・最大誤差の内訳を算出する際の
     入力になる。
 
+    **マーカー観測の散らばりも転記する**（タスク 5.3 / design.md Verifier
+    「Contracts」`PointError.spread_mm` / `PointError.sample_count`）:
+    `observation.spread_mm` / `observation.sample_count` をそのまま
+    `PointVerification.spread_mm` / `PointVerification.sample_count` へ
+    転記する。永続化される検証レポートが、誤差の大小だけでなく「その点の
+    観測自体がどれだけ安定していたか」を事後に確認できるようにするため
+    である。
+
     Returns:
         検証点ごとの `PointVerification` のタプル。`independent=False` の
         点も含む（除外された事実そのものを呼び出し側が確認できるように、
@@ -300,6 +379,14 @@ def evaluate_verification_points(
                 horizontal_error_mm=horizontal_error_mm,
                 vertical_error_mm=vertical_error_mm,
                 range_from_camera_mm=observation.range_from_camera_mm,
+                spread_mm=observation.spread_mm,
+                sample_count=observation.sample_count,
+                # This function's signature is fixed to (result, observations)
+                # only (see TestNoDetectionTrackingPredictionDependency), so
+                # it never receives a ToleranceSpec and cannot judge a
+                # verdict itself. `verify_calibration` (task 5.3) replaces
+                # this with the real verdict once a tolerance is available.
+                verdict=Verdict.NOT_JUDGED,
             )
         )
 
@@ -619,4 +706,265 @@ def compute_verification_statistics(
         max_vertical_error_mm=max_vertical_error_mm,
         range_buckets=range_buckets,
         scale_check=scale_check,
+    )
+
+
+# ---------------------------------------------------------------------------
+# タスク 5.3: 許容値による合否判定（design.md Verifier「Contracts」
+# `VerificationReport` / `verify_calibration` / `to_summary` / 要件 4.6, 4.7,
+# 4.10）
+#
+# タスク 5.1（`evaluate_verification_points` / `PointVerification`）と
+# タスク 5.2（`compute_verification_statistics` / `VerificationStatistics`）
+# は、いずれも design.md が示す最終形 `VerificationReport` /
+# `verify_calibration` のサブセットであると明記していた（両モジュール
+# docstring 参照）。本タスクはその2つの上に許容値判定を重ね、design.md の
+# 最終形の名前どおり `verify_calibration` としてまとめて公開する。
+#
+# 本タスクはさらに、`PointVerification` に `spread_mm` / `sample_count`
+# （design.md `PointError` が定めるマーカー観測の散らばり）を追加する。
+# `evaluate_verification_points`（タスク 5.1）の時点でこの2値は既に
+# 引数の `AnchorObservation` から取れるため、両フィールドは
+# `evaluate_verification_points` 自身が組み立て時に転記する（`verdict` の
+# ように `verify_calibration` 側の `dataclasses.replace` を必要としない）。
+#
+# **許容値は `evaluate_verification_points` へは足さない。** その関数の
+# シグネチャは `(result, observations)` の2引数のみであることが
+# `TestNoDetectionTrackingPredictionDependency`
+# （要件 4.1「検出・追跡・予測を一切呼ばずに完結する最小入力」）により
+# 固定されている。したがって `verify_calibration` は
+# `evaluate_verification_points` をそのまま呼び、返ってきた
+# `PointVerification`（`verdict` は常に `Verdict.NOT_JUDGED`）を
+# `dataclasses.replace` で判定済みのものへ差し替える。
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class VerificationReport:
+    """独立検証の最終レポート（design.md Verifier「Contracts」
+    `VerificationReport` / tasks.md タスク 5.3 / 要件 4.6, 4.7, 4.10）。
+
+    `evaluate_verification_points`（タスク 5.1）と
+    `compute_verification_statistics`（タスク 5.2）の出力を束ね、許容値に
+    対する合否（`Verdict`）を加えたものである。
+
+    Attributes:
+        calibration_id: 対象となるキャリブレーション結果の一意識別子
+            （`CalibrationResult.calibration_id`。要件 4.10: 対象の識別子を
+            レポートへ含める）。
+        calibration_format_version: 対象の結果ファイル形式版
+            （`CalibrationResult.calibration_format_version`。要件 4.10）。
+        signature: 検証時のストリーム識別情報
+            （`CalibrationResult.signature`。要件 4.10）。
+        generated_at_wall_ms: 本レポートを生成した壁時計時刻（ms）。
+        points: 検証点ごとの `PointVerification`（許容値が与えられていれば
+            点ごとの `verdict` が判定済み）。`independent=False` の点も
+            含む。
+        independent_point_count: 独立点の数（`compute_verification_
+            statistics` の出力を転記）。
+        excluded_labels: 確立用マーカーと重複するとして除外された検証点の
+            ラベル（`points` のうち `independent is False` のものから
+            機械的に導出する）。
+        bias_mm: 独立点の軸ごとの平均オフセット（バイアス）。
+        scatter_rms_mm: 独立点のバイアス除去後の残差 RMS（ばらつき）。
+        max_error_norm_mm: 独立点の誤差ノルムの最大値。
+        max_horizontal_error_mm: 独立点の水平誤差の最大値。
+        max_vertical_error_mm: 独立点の鉛直誤差の最大値。
+        range_buckets: カメラからの距離帯ごとの集計。
+        scale_check: メジャー実測基線長と算出基線長の突き合わせ。
+        tolerance: 判定に用いた許容値仕様。`None` なら未判定（要件 4.7）。
+            **暫定か実測由来かを含め、判定に用いた値をそのまま保持する**
+            （要件 4.6: 「判定に用いた許容値とその出典が暫定か実測由来かを
+            併せて報告する」）。
+        verdict: 全体の合否。`tolerance is None` なら常に
+            `Verdict.NOT_JUDGED`。それ以外は「独立点すべてが水平・垂直の
+            許容値を満たすこと」で判定し、**平均では判定しない**
+            （design.md Verifier「Implementation Notes」/ tasks.md
+            タスク 5.3: 「1点だけ外れる状態を見逃さないため」）。
+    """
+
+    calibration_id: str
+    calibration_format_version: str
+    signature: StreamSignature
+    generated_at_wall_ms: float
+    points: tuple[PointVerification, ...]
+    independent_point_count: int
+    excluded_labels: tuple[str, ...]
+    bias_mm: tuple[float, float, float]
+    scatter_rms_mm: float
+    max_error_norm_mm: float
+    max_horizontal_error_mm: float
+    max_vertical_error_mm: float
+    range_buckets: tuple[RangeBucket, ...]
+    scale_check: ScaleCheck
+    tolerance: ToleranceSpec | None
+    verdict: Verdict
+
+
+def _judge_point_verdict(
+    horizontal_error_mm: float, vertical_error_mm: float, tolerance: ToleranceSpec | None
+) -> Verdict:
+    """1点の水平・鉛直誤差を `tolerance` と突き合わせ、点単独の合否を返す
+    （design.md Verifier「Contracts」`PointError.verdict` / tasks.md
+    タスク 5.3 / 要件 4.6, 4.7）。
+
+    `tolerance` が `None` なら判定せず `Verdict.NOT_JUDGED` を返す（要件
+    4.7）。それ以外は水平・鉛直の**双方**が許容値以内のときのみ
+    `Verdict.PASS`、いずれか一方でも超えれば `Verdict.FAIL` とする。
+    """
+    if tolerance is None:
+        return Verdict.NOT_JUDGED
+    if horizontal_error_mm <= tolerance.horizontal_mm and vertical_error_mm <= tolerance.vertical_mm:
+        return Verdict.PASS
+    return Verdict.FAIL
+
+
+def verify_calibration(
+    result: CalibrationResult,
+    observations: Sequence[tuple[VerificationPointSpec, AnchorObservation]],
+    *,
+    expected_baseline_mm: float | None = None,
+    tolerance: ToleranceSpec | None = None,
+    range_bucket_edges_mm: Sequence[float] = DEFAULT_RANGE_BUCKET_EDGES_MM,
+) -> VerificationReport:
+    """`result` と検証点の観測から、許容値に対する合否まで含めた最終検証
+    レポートを組み立てる（design.md Verifier「Contracts」`verify_calibration`
+    / tasks.md タスク 5.3 / 要件 4.6, 4.7, 4.10）。
+
+    `evaluate_verification_points`（タスク 5.1）で各点の World 座標と軸ごと
+    の誤差を算出し、`compute_verification_statistics`（タスク 5.2）で
+    バイアス・ばらつき・距離帯・スケール確認を求めたうえで、`tolerance` が
+    与えられていれば点ごと・全体の合否を判定する。
+
+    **許容値が与えられた場合**（要件 4.6）: 各点の `verdict` を
+    `_judge_point_verdict` で判定し直す（`evaluate_verification_points` が
+    返す時点の `verdict` は常に `Verdict.NOT_JUDGED` であるため、
+    `dataclasses.replace` で差し替える）。**全体の合否は「独立点すべてが
+    水平・垂直の許容値を満たすこと」とし、平均では判定しない**
+    （design.md Verifier「Implementation Notes」/ tasks.md タスク 5.3:
+    「1点だけ外れる状態を見逃さないため」）。確立用マーカーと重複する点
+    （`independent=False`）は個々の `verdict` こそ判定するが、全体判定には
+    加味しない（要件 4.3 の踏襲: `compute_verification_statistics` が集計
+    から除外するのと同じ理由）。
+
+    **許容値が与えられない場合**（要件 4.7）: 点ごと・全体ともに
+    `Verdict.NOT_JUDGED` を返す。**この場合でも `points` の `error_mm` /
+    `bias_mm` / `scatter_rms_mm` などの実測値は無条件に出力される**
+    （`tech.md` 開発標準1: 未実測の数値を合否条件にしない、との両立。
+    判定できないことと、測れていないことは別である）。
+
+    Args:
+        result: 検証対象の保存済みキャリブレーション結果。
+        observations: `evaluate_verification_points` と同じ形の検証点
+            仕様・観測の組。
+        expected_baseline_mm: 計画のメジャー実測基線長。`None` ならスケール
+            確認の差分は算出しない（`ScaleCheck.difference_mm` が `None`）。
+        tolerance: 判定に用いる許容値仕様。`None` なら未判定
+            （`Verdict.NOT_JUDGED`）。
+        range_bucket_edges_mm: 距離帯の境界（mm）。既定は
+            `DEFAULT_RANGE_BUCKET_EDGES_MM`。
+
+    Returns:
+        点ごとの合否・全体の合否・対象の識別情報を含む `VerificationReport`。
+
+    Raises:
+        CalibrationConfigError: `(spec, observation)` の組でラベルが
+            食い違う場合（`evaluate_verification_points` が送出する）。
+        CalibrationFailure: `reason=FailureReason.
+            VERIFICATION_NOT_INDEPENDENT`。独立な検証点が1つも無い場合
+            （`evaluate_verification_points` が送出する）。
+    """
+    raw_points = evaluate_verification_points(result, observations)
+    points = tuple(
+        replace(
+            point,
+            verdict=_judge_point_verdict(
+                point.horizontal_error_mm, point.vertical_error_mm, tolerance
+            ),
+        )
+        for point in raw_points
+    )
+
+    statistics = compute_verification_statistics(
+        result,
+        points,
+        expected_baseline_mm=expected_baseline_mm,
+        range_bucket_edges_mm=range_bucket_edges_mm,
+    )
+
+    excluded_labels = tuple(point.label for point in points if not point.independent)
+
+    if tolerance is None:
+        overall_verdict = Verdict.NOT_JUDGED
+    else:
+        independent_points = [point for point in points if point.independent]
+        overall_verdict = (
+            Verdict.PASS
+            if all(point.verdict == Verdict.PASS for point in independent_points)
+            else Verdict.FAIL
+        )
+
+    return VerificationReport(
+        calibration_id=result.calibration_id,
+        calibration_format_version=result.calibration_format_version,
+        signature=result.signature,
+        generated_at_wall_ms=time.time() * 1000.0,
+        points=points,
+        independent_point_count=statistics.independent_point_count,
+        excluded_labels=excluded_labels,
+        bias_mm=statistics.bias_mm,
+        scatter_rms_mm=statistics.scatter_rms_mm,
+        max_error_norm_mm=statistics.max_error_norm_mm,
+        max_horizontal_error_mm=statistics.max_horizontal_error_mm,
+        max_vertical_error_mm=statistics.max_vertical_error_mm,
+        range_buckets=statistics.range_buckets,
+        scale_check=statistics.scale_check,
+        tolerance=tolerance,
+        verdict=overall_verdict,
+    )
+
+
+_VERDICT_TO_VERIFICATION_STATE: dict[Verdict, VerificationState] = {
+    Verdict.PASS: VerificationState.PASSED,
+    Verdict.FAIL: VerificationState.FAILED,
+    Verdict.NOT_JUDGED: VerificationState.NOT_JUDGED,
+}
+"""`Verdict`（本モジュールの検証結果）から `VerificationState`
+（`result.py`、`CalibrationResult` に付与された検証の状態）への対応表。
+`VerificationState.NOT_VERIFIED` に対応する `Verdict` は無い
+（`NOT_VERIFIED` は「検証要約そのものを付与していない」状態であり、
+`to_summary` は検証を実施した後にのみ呼ばれるため、ここには現れない）。"""
+
+
+def to_summary(
+    report: VerificationReport, report_path: Path | None = None
+) -> VerificationSummary:
+    """`VerificationReport` から、`CalibrationResult` へ付与するための
+    `VerificationSummary`（タスク 4.1 の型）を生成する（design.md
+    Verifier「Contracts」`to_summary` / tasks.md タスク 5.3）。
+
+    生成した戻り値は `result.attach_verification(result, summary)`
+    （タスク 4.2）へそのまま渡せる。
+
+    Args:
+        report: `verify_calibration` が返した検証レポート。
+        report_path: レポートを保存した先のパス。未保存（まだファイルへ
+            書き出していない）なら `None`（`VerificationSummary.report_path`
+            も `None` になり、保存時にキーごと省かれる。`result.py`
+            「欠測はキーごと省く」の方針と同じ）。
+
+    Returns:
+        `report` の主要な集計値と `report.verdict` を `VerificationState`
+        へ写像した `VerificationSummary`。
+    """
+    return VerificationSummary(
+        verified_at_wall_ms=report.generated_at_wall_ms,
+        verdict=_VERDICT_TO_VERIFICATION_STATE[report.verdict],
+        point_count=len(report.points),
+        independent_point_count=report.independent_point_count,
+        bias_mm=report.bias_mm,
+        scatter_rms_mm=report.scatter_rms_mm,
+        max_error_norm_mm=report.max_error_norm_mm,
+        tolerance=report.tolerance,
+        report_path=str(report_path) if report_path is not None else None,
     )
