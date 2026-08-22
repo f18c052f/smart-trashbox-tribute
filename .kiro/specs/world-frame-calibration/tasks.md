@@ -27,7 +27,7 @@
 
 - [ ] 1. 基盤: パッケージ骨組みと共有型
 
-- [ ] 1.1 パッケージ骨組みとテスト実行基盤を用意する
+- [x] 1.1 パッケージ骨組みとテスト実行基盤を用意する
   - `src/world_frame_calibration/` と `tests/world_frame_calibration/` を作成し、既存の `src/` レイアウトに合わせる
   - ⚠️ **前提（着手前に確認する）**: `tests/prediction_core/test_packaging.py::test_no_third_party_runtime_dependencies` は
     当初 `[project].dependencies == []` に加えて **`[project.optional-dependencies] == {}` も表明**しており、
