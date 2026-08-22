@@ -124,7 +124,7 @@
   - _Prerequisite: `sensing-foundation` タスク 1.8（`geometry.py`）_
   - _Boundary: Deprojector_
 
-- [ ] 2.2 (P) 剛体変換の保持と適用を実装する
+- [x] 2.2 (P) 剛体変換の保持と適用を実装する
   - 回転行列と平行移動を保持し、単点と点群（N×3）の変換、逆変換、同次行列表現を提供する
   - **構築時に正規直交性と行列式 +1 を検査し、外れれば失敗させる**（拡大縮小・せん断を含まないことを型で守る）
   - 2つの変換の差分を、原点のずれ・全体の回転角・Z 軸のずれ・面内回転（ヨー）のずれに分解して返す
@@ -425,3 +425,4 @@
 - タスク1.3: `linalg.orthonormal_basis` は `x_hint` が `z_axis` とほぼ平行（縮退）な入力で呼ばれると `unit()` 内で 0/0 による NaN を静かに返す（例外を送出しない。本モジュールは numpy 以外を import せず判定を持たないため設計どおり）。**タスク3.1（WorldFrameBuilder）は `orthonormal_basis` を呼ぶ前に必ず `x_hint_degeneracy` で縮退を確認し、縮退時は `CalibrationFailure(ANCHOR_DEGENERATE)` を送出してから `orthonormal_basis` を呼ばないこと。** この呼び出し順序を守らないと縮退した基底が静かに下流へ流れる。
 - タスク1.4: `FrameGeometry.yaw_sensitivity_deg_per_mm` / `lateral_error_mm_per_mm_at_1000mm` は純粋な値オブジェクトのフィールドであり、`types.py` 自体は計算しない（生成時に検証・導出をしない設計方針どおり）。**この解析的関係を実際に計算して埋めるのはタスク3.1（WorldFrameBuilder）である。** 1.4 のテストは独立に事前計算したリテラル値でこの関係を固定しているが、実装側の計算はまだ存在しないため、3.1 で計算式を書く際に同じ式（`degrees(1/baseline_mm)`、`1000/baseline_mm`）を使うこと。
 - タスク1.6: `tests/world_frame_calibration/synthetic.py` は `tests/sensing_foundation/synthetic.py` と**裸のモジュール名が衝突する**（`tests/**` に `__init__.py` が一切無いため）。design.md がファイル名を `synthetic.py` に固定しているためリネームでは解決できない。**このモジュールを他のテストファイルから使う場合は、素の `import synthetic` / `from synthetic import ...` を使わず、`importlib.util.spec_from_file_location` によるパス指定ロードを使うこと**（`test_world_frame_calibration_synthetic.py` に実装パターンあり）。この衝突が今後関係するタスク: 2.x の `test_frame.py`、3.2、7.1 の `test_e2e_synthetic.py`、7.2 の `test_verify.py`。
+- タスク2.2: `WorldTransform` 構築時の正規直交性・行列式チェック失敗は `CalibrationFailure(reason=FailureReason.ROTATION_NOT_ORTHONORMAL, context={...})` であり、`CalibrationConfigError` ではない（design.md の Preconditions を正とする）。**形状不一致（3x3でない等）だけは `CalibrationConfigError`。** 縮退条件は `CalibrationFailure` 系、呼び出し方の誤りは `CalibrationConfigError` 系という区別を以降のタスクでも踏襲すること。`apply()` は設計どおり検証を一切行わない（tasks.mdの明示的指示がdesign.mdの矛盾する記述に優先する）。
