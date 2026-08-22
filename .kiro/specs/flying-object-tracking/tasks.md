@@ -304,7 +304,7 @@
   - _Depends: 6.2_
   - _Boundary: OverheadBench_
 
-- [ ] 7.3 コマンド入口を実装する
+- [x] 7.3 コマンド入口を実装する
   - 追跡の実行、検出方式の比較、計測の有効無効比較、点列の書き出しの各サブコマンドを用意する
   - 設定の解決順序を守り、**解決済み設定を表示できる**ようにする
   - 入力元の指定は**上流の生成口に委ね**、本パッケージでアダプタを再実装しない
@@ -596,3 +596,19 @@
   `SingleObjectTracker` の状態を壊さないため、**フレーム単位ではなく
   「入力列を1回通しで処理する」を1セグメントとして交互実行**する
   （`cycles`回の反復で順序効果を打ち消す）。
+- タスク7.3: `export` サブコマンドは argparse 面（引数・ヘルプ・起動前検証）のみを
+  本タスクで完成させ、design.md「エクスポート形式」節が要求する
+  NaN/Infinity→欠測変換規則（要件7.6）は**タスク7.4の責務として意図的に
+  残す**（tasks.mdがタスク7.4を独立タスクとして切り出しているため）。
+  本タスクの書き出しは `dataclasses.asdict()` → `json.dumps(...,
+  allow_nan=False)` の最小実装であり、通常経路ではNaN/Infinityが生じない
+  ため完走する。`allow_nan=False` は不正な値が万一混入した場合に無効な
+  JSONを黙って出すより失敗する方が安全という判断（design.md自体が
+  `allow_nan=False` を指定している）。
+  `--source simulated` は `SourceKind.SIMULATED` の `intrinsics=None` 制約
+  （task 6.2）により、本タスクのCLIテストではROI距離帯の外側の値を返す
+  smoke supplier で「検出しない」経路のみを検証し、`--source recorded`
+  を候補検出込みの主経路とした。`main()` は `TrackingError`/
+  `SensingFoundationError` を最上位で捕捉し1行のエラーメッセージで
+  終了する（レビューで実測確認: `--source simulated` で実際に候補検出が
+  起きても生のトレースバックにはならない）。
