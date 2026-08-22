@@ -91,7 +91,7 @@
   - _Depends: 1.4_
   - _Boundary: MaskOps_
 
-- [ ] 2.2 (P) 距離帯ゲート方式の前景マスクを実装する
+- [x] 2.2 (P) 距離帯ゲート方式の前景マスクを実装する
   - 処理範囲内で距離の下限・上限に収まる画素を前景とする、最軽量のベースライン方式
   - 測距できなかった画素を前景にしない
   - 観測可能な完了状態: 距離帯の内側だけが前景になり、無効画素が前景に含まれないことをテストで固定する
@@ -431,3 +431,11 @@
   `tests/flying_object_tracking/synthetic.py` / `fakes.py` を bare import せず、
   `tests/flying_object_tracking/conftest.py` の `synthetic_module` / `fakes_module`
   フィクスチャ経由でのみ参照すること。**
+- タスク2.2: `sensing_foundation.is_valid_depth` / `depth_raw_to_mm` はスカラー関数のため、
+  配列全体へ適用する際に `numpy.vectorize` を使うと実体は Python ループであり、
+  640x480 の既定 ROI で計測すると素朴な NumPy 配列演算比で約231倍遅い（実測）。
+  **後続タスク（2.3 frame_diff・2.4 background、および候補抽出・PointEstimator 等）は
+  `numpy.vectorize` で上流のスカラー関数をラップせず**、上流の公開定数
+  （`sensing_foundation.INVALID_DEPTH_RAW`）と同一の式（`raw != INVALID_DEPTH_RAW` /
+  `raw * depth_scale_mm`）を NumPy 配列演算として直接書くこと（上流の意味論を変えずに
+  ベクトル化する）。
