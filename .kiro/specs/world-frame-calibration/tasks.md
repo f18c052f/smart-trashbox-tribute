@@ -341,7 +341,7 @@
   - _Depends: 6.4_
   - _Boundary: tests/world_frame_calibration/test_e2e_synthetic.py_
 
-- [ ] 7.2 検証が不合格を出せることを確かめる
+- [x] 7.2 検証が不合格を出せることを確かめる
   - 床平面を意図的にずらす、原点マーカーの観測をずらす、といった**既知のバイアスを注入**した入力を作る
   - 検証が不合格になり、平均オフセットが注入した量を指すことを確かめる
   - ばらつきが小さいまま保たれ、**バイアスとばらつきが分離できている**ことを確かめる
@@ -430,3 +430,4 @@
 - タスク5.1: `evaluate_verification_points` は検証点の `AnchorObservation.point_camera_mm`（投影前のロバスト代表点）を使う。**`point_on_plane_mm`（床平面投影後）を使うと高さ情報が失われ、要件4.9（既知の高さを持つ検証点）が満たせなくなる。** 幾何的には、`WorldTransform` の Z 軸＝床平面法線であるため、`apply_point(point_camera_mm).z` は平面からの符号付き距離（＝真の高さ）と厳密に一致し、X/Y成分は投影の有無で変わらない（レビューで解析的に検証済み）。`PointVerification` は design.md の `PointError` の部分集合（bias/scatter/距離帯/tolerance/verdict は含まない）であり、これらはタスク5.2/5.3で追加される。関数名 `evaluate_verification_points` も design.md の最終形 `verify_calibration` とは異なる（tolerance/expected_baseline_mm を束ねるのはタスク5.3以降）。
 - タスク6.2: テストファイルは `sensing_foundation.obslog.RESERVED_STAGES`（内部モジュール、公開入口の外）を直接importして `calibrate` ステージ名が予約語と衝突しないことを確認している。**「公開入口のみ参照」制約（design.md）は本パッケージの本番コード（`src/world_frame_calibration/**`）の依存グラフに対するものであり、テストコードの内省的な参照までは禁じていない。** タスク7.3の `test_boundaries.py` を書く際、この意図的な例外を壊さないよう注意すること。またタスク6.4（CLI）が `plane_fit`/`anchor_observe`/`frame_build`/`verify` の各段階ログを、本タスクが用意した `timed`/`stage_logger` を使って追加する予定である（design.mdのUpstreamAdapter契約には段階別の専用関数は無く、`collect_depth` 以外は6.4側でこのプリミティブを使って組み立てる）。
 - タスク7.1: 許容値の「余裕が大きい／ほぼ厳密」という主張を裏付ける実測値は、**必ず実際にテストが叩く経路（今回は `cli.run_calibrate`）で測り直すこと。** 幾何コアのモジュール（`plane`/`anchors`/`frame`）を直接呼んで測ると、CLIが経由する `depth_scale_mm` 丸め込みなどの量子化が欠落し、実際より何桁も小さい誤差を「実測値」として報告してしまう（本タスクでは回転誤差が 6e-17 対 8.1e-07 と約13000倍食い違った）。許容値の非空虚性（halving）テストは、この実際に叩く経路で測った値に対して書くこと。
+- タスク7.2: タスク7.1と同種の問題が2回発生した（docstring中の実測値主張が不正確: 存在しない「7.9mm」の記載、異なる値を「同じ量」と誤記、「数mm」を実際は0.83mmの差に対して使用）。**docstring/コメント中の数値主張は、テストのassertionが依存していなくても実際にパイプラインを叩いて検証すること。** 実測値の記述はレビューの重点確認対象になるため、書いた本人が公開前に実行環境で再現確認する習慣を今後のタスク（7.4手順書・8.x実機タスク）でも徹底すること。
