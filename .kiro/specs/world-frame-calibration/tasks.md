@@ -61,7 +61,7 @@
   - _Requirements: 2.4, 3.3_
   - _Boundary: LinAlg_
 
-- [ ] 1.4 値オブジェクトを定義する
+- [x] 1.4 値オブジェクトを定義する
   - 内部パラメータ、ストリーム識別情報、画素範囲、Depth 画像、平面と推定品質、マーカー観測、frame 幾何、許容値仕様を、不変（frozen かつ slots）で定義する
   - 距離 mm・角度 deg・画素 px をフィールド名に含める
   - Depth 画像の無効画素は NaN で表し、**0 で埋めない**（欠測と実測値の 0 を区別する）
@@ -423,3 +423,4 @@
 
 - タスク1.2: `CalibrationConfigError` は `prediction_core.PredictionConfigError` / `sensing_foundation.SensingConfigError` と異なり `ValueError` を継承しない。design.md の例外契約スニペットが `ValueError` に一切触れていないため契約どおりに実装した結果であり、実装上の欠陥ではない。今後 design.md を改訂する場合は、他パッケージとの `except ValueError` 互換性を意図的に持たせるかどうかを判断すること。
 - タスク1.3: `linalg.orthonormal_basis` は `x_hint` が `z_axis` とほぼ平行（縮退）な入力で呼ばれると `unit()` 内で 0/0 による NaN を静かに返す（例外を送出しない。本モジュールは numpy 以外を import せず判定を持たないため設計どおり）。**タスク3.1（WorldFrameBuilder）は `orthonormal_basis` を呼ぶ前に必ず `x_hint_degeneracy` で縮退を確認し、縮退時は `CalibrationFailure(ANCHOR_DEGENERATE)` を送出してから `orthonormal_basis` を呼ばないこと。** この呼び出し順序を守らないと縮退した基底が静かに下流へ流れる。
+- タスク1.4: `FrameGeometry.yaw_sensitivity_deg_per_mm` / `lateral_error_mm_per_mm_at_1000mm` は純粋な値オブジェクトのフィールドであり、`types.py` 自体は計算しない（生成時に検証・導出をしない設計方針どおり）。**この解析的関係を実際に計算して埋めるのはタスク3.1（WorldFrameBuilder）である。** 1.4 のテストは独立に事前計算したリテラル値でこの関係を固定しているが、実装側の計算はまだ存在しないため、3.1 で計算式を書く際に同じ式（`degrees(1/baseline_mm)`、`1000/baseline_mm`）を使うこと。
