@@ -331,7 +331,7 @@
 
 - [ ] 8. 公開 API と境界の静的検証
 
-- [ ] 8.1 公開 API を確定する
+- [x] 8.1 公開 API を確定する
   - 再エクスポート専用の入口を用意し、ロジックを持たせない
   - 公開シンボル（座標系・受け渡し型・候補と失敗の理由・検出方式と生成口・設定・パイプラインと実行関数・計測・比較結果・例外・受け渡し形式の版番号）を確定する
   - 公開契約に含まれないものは内部実装として扱う旨を docstring に明記する
@@ -625,3 +625,15 @@
   「その項目を欠測にする」どおりに実装しており、この不一致は本タスクの
   責任範囲外）。`run_track()`/`run_export()` の共通処理は `_run_pipeline()`
   へ抽出したが、`run_track()` の戻り値の形は変更していない。
+- タスク8.1: 公開 API（`__init__.py`、44シンボル）を確定した。design.md の
+  10カテゴリ列挙に独立項目が無い内部実装（`PointEstimator`・
+  `SingleObjectTracker`・`MaskBuilder`/`create_mask_builder`/3方式の
+  マスククラス・`mask_ops.py` の関数群・`CandidateExtractor`・
+  `DefaultDetector`・bench内部の `decide()`/`compute_verdict()`等・
+  `cli.main`）は非公開のまま維持した。`CaughtExceptionCounters`
+  （task 6.1 が design.md に無く追加した型）は `TrackingPipeline
+  .caught_exceptions()` の戻り値型そのものであるため公開に含めた。
+  「生の計測値を残し、判定を後から再計算できる」（task 7.1）は
+  `DetectorRunResult`/`OverheadResult` の生フィールドが公開型として
+  残っており、再計算は `compare_detectors()`/`OverheadBench` の再実行で
+  行う設計であるため、判定規則の内部関数自体を公開する必要はないと判断した。
