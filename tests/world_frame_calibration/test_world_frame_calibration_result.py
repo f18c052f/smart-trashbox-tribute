@@ -61,6 +61,22 @@ from world_frame_calibration.types import (
 
 _DEFAULT_REGION = PixelRegion(x0_px=0, y0_px=0, x1_px=10, y1_px=10)
 
+_IDENTITY_ROTATION = (
+    (1.0, 0.0, 0.0),
+    (0.0, 1.0, 0.0),
+    (0.0, 0.0, 1.0),
+)
+
+
+def _rotation_about_z_deg(theta_deg: float) -> tuple[tuple[float, float, float], ...]:
+    theta = math.radians(theta_deg)
+    c, s = math.cos(theta), math.sin(theta)
+    return (
+        (c, -s, 0.0),
+        (s, c, 0.0),
+        (0.0, 0.0, 1.0),
+    )
+
 
 def _plane(normal: tuple[float, float, float], distance_mm: float) -> Plane:
     quality = PlaneQuality(
@@ -664,3 +680,139 @@ class TestAttachVerification:
         assert updated.transform == original.transform
         assert updated.signature == original.signature
         assert updated.intrinsics == original.intrinsics
+
+
+class TestCompareCalibrations:
+    """`compare_calibrations` は2つの結果のストリーム識別情報が一致することを
+    幾何比較の前に確認した上で、実際の分解計算は再実装せず
+    `transform.compare_transforms`（タスク 2.2、既に承認済み）へ委譲する
+    (tasks.md タスク 4.3 / 要件 7.4)。
+    """
+
+    def test_isolates_known_translation_and_yaw_delegating_to_compare_transforms(
+        self,
+    ) -> None:
+        """既知の平行移動とヨー回転だけを与えた2結果に対して、差分がその量を
+        分離して返す（tasks.md タスク 4.3「観測可能な完了状態」）。同じ入力
+        (`IDENTITY_ROTATION` vs `known_yaw_deg` 回転 + `known_translation`)
+        で `transform.compare_transforms` を直接呼んだ場合と**厳密に同じ**
+        `TransformDifference` が返ることも確認し、分解ロジックが本モジュール
+        で手書きに再実装されていない（委譲されている）ことを固定する。
+        """
+        from world_frame_calibration import result as result_module
+        from world_frame_calibration import transform as transform_module
+
+        base = _make_result(result_module)
+        known_translation = (50.0, -25.0, 0.0)
+        known_yaw_deg = 12.0
+
+        a = dataclasses.replace(
+            base,
+            transform=transform_module.WorldTransform(
+                rotation=_IDENTITY_ROTATION, translation_mm=(0.0, 0.0, 0.0)
+            ),
+        )
+        b = dataclasses.replace(
+            base,
+            transform=transform_module.WorldTransform(
+                rotation=_rotation_about_z_deg(known_yaw_deg),
+                translation_mm=known_translation,
+            ),
+        )
+
+        diff = result_module.compare_calibrations(a, b)
+
+        # Translation is isolated exactly.
+        assert diff.origin_shift_mm == pytest.approx(known_translation, abs=1e-9)
+        # Yaw is isolated exactly.
+        assert diff.yaw_angle_deg == pytest.approx(known_yaw_deg, abs=1e-6)
+        # Other components read as ~0: pure yaw does not tilt the floor
+        # normal, and for a pure yaw rotation the total axis angle equals
+        # the yaw itself (no non-yaw rotation residual).
+        assert diff.z_axis_angle_deg == pytest.approx(0.0, abs=1e-6)
+        assert diff.axis_angle_deg == pytest.approx(known_yaw_deg, abs=1e-6)
+
+        # Literally the same TransformDifference compare_transforms would
+        # produce for the same two transforms -- not a hand-rolled
+        # equivalent.
+        assert diff == transform_module.compare_transforms(a.transform, b.transform)
+
+    def test_identical_transforms_produce_zero_difference(self) -> None:
+        from world_frame_calibration import result as result_module
+
+        a = _make_result(result_module)
+        b = _make_result(result_module)  # deterministic establishment -> same transform
+
+        diff = result_module.compare_calibrations(a, b)
+
+        assert diff.origin_shift_mm == pytest.approx((0.0, 0.0, 0.0), abs=1e-9)
+        assert diff.axis_angle_deg == pytest.approx(0.0, abs=1e-9)
+        assert diff.z_axis_angle_deg == pytest.approx(0.0, abs=1e-9)
+        assert diff.yaw_angle_deg == pytest.approx(0.0, abs=1e-9)
+
+    def test_returns_a_transform_difference_instance(self) -> None:
+        from world_frame_calibration import result as result_module
+        from world_frame_calibration import transform as transform_module
+
+        a = _make_result(result_module)
+        b = _make_result(result_module)
+
+        diff = result_module.compare_calibrations(a, b)
+
+        assert isinstance(diff, transform_module.TransformDifference)
+
+    def test_signature_mismatch_raises_profile_mismatch_before_comparing(self) -> None:
+        """比較対象のストリーム識別情報が異なる場合は、幾何比較の前に不一致
+        として報告する（tasks.md タスク 4.3 / 異なるカメラ設定間の比較は
+        意味を持たない）。`check_compatibility` が「現在の入力元との不一致」
+        に用いるのと同じ `FailureReason.PROFILE_MISMATCH` を、「2つの保存済み
+        結果どうしの不一致」に転用する。
+        """
+        from world_frame_calibration import result as result_module
+
+        a = _make_result(result_module)
+        different_signature = StreamSignature(
+            width_px=1280, height_px=720, fps=30, depth_scale_mm=1.0, color_enabled=False
+        )
+        b = dataclasses.replace(_make_result(result_module), signature=different_signature)
+
+        with pytest.raises(CalibrationFailure) as excinfo:
+            result_module.compare_calibrations(a, b)
+        assert excinfo.value.reason == FailureReason.PROFILE_MISMATCH
+
+    def test_signature_mismatch_is_detected_even_when_transforms_are_identical(
+        self,
+    ) -> None:
+        """signature の不一致は、変換自体が偶然一致していても検出される
+        （＝先に signature を検査してから幾何比較へ進む、の直接確認）。
+        """
+        from world_frame_calibration import result as result_module
+
+        base = _make_result(result_module)
+        different_signature = StreamSignature(
+            width_px=1280, height_px=720, fps=30, depth_scale_mm=1.0, color_enabled=False
+        )
+        b = dataclasses.replace(base, signature=different_signature)
+
+        with pytest.raises(CalibrationFailure) as excinfo:
+            result_module.compare_calibrations(base, b)
+        assert excinfo.value.reason == FailureReason.PROFILE_MISMATCH
+
+    def test_docstring_documents_z_axis_vs_yaw_repeatability_semantics(self) -> None:
+        """docstring に「Z軸のずれは平面推定の再現性、ヨーのずれはマーカー設置の
+        再現性」を表す旨が明記されていること（tasks.md タスク 4.3 の明示的な
+        指示。タスク 4.2 `check_compatibility` の docstring 根拠必須の規約を
+        踏襲する）。
+        """
+        from world_frame_calibration import result as result_module
+
+        docstring = result_module.compare_calibrations.__doc__ or ""
+        assert "平面推定" in docstring
+        assert "再現性" in docstring
+        assert "マーカー設置" in docstring
+
+    def test_docstring_documents_delegation_to_compare_transforms(self) -> None:
+        from world_frame_calibration import result as result_module
+
+        docstring = result_module.compare_calibrations.__doc__ or ""
+        assert "compare_transforms" in docstring

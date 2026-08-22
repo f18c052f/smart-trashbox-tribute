@@ -24,13 +24,11 @@ CalibrationResultStore コンポーネント / tasks.md タスク 4.1 / 要件 6
   の主要値が現在の入力元と一致するかを検査する（タスク 4.2 / 要件 6.4）
 - `attach_verification`: 検証要約を付与した新しい `CalibrationResult` を返す
   （元は変更しない。タスク 4.2 / 要件 6.5, 6.6）
+- `compare_calibrations`: 2つの結果の変換差分を、`transform.compare_transforms`
+  （タスク 2.2、既に承認済み）へ委譲して返す（タスク 4.3 / 要件 7.4）。
+  ストリーム識別情報が異なる場合は幾何比較の前に不一致として報告する
 
-**本タスクが持たないもの**（design.md CalibrationResultStore「Contracts」に
-現れるが、後続タスクの担当）:
-
-- `compare_calibrations`（結果どうしの比較。タスク 4.3）
-
-これは本モジュールに存在しない。回転の正規直交性検査は `load_calibration`
+回転の正規直交性検査は `load_calibration`
 自身は行わない。`WorldTransform` 自体が構築時に正規直交性・行列式 +1 を
 検査するため（`transform.py` 参照）、`load_calibration` が JSON から
 `WorldTransform` を再構成する際にその検査が自然に働き、破損した回転行列は
@@ -73,7 +71,11 @@ from world_frame_calibration.errors import (
     FailureReason,
 )
 from world_frame_calibration.frame import WorldFrameEstablishment
-from world_frame_calibration.transform import WorldTransform
+from world_frame_calibration.transform import (
+    TransformDifference,
+    WorldTransform,
+    compare_transforms,
+)
 from world_frame_calibration.types import (
     AnchorObservation,
     AnchorRole,
@@ -94,6 +96,7 @@ __all__ = [
     "assemble_calibration_result",
     "attach_verification",
     "check_compatibility",
+    "compare_calibrations",
     "load_calibration",
     "save_calibration",
 ]
@@ -851,3 +854,62 @@ def attach_verification(
         同じ値を持つ新しい `CalibrationResult`。
     """
     return replace(result, verification=summary)
+
+
+def compare_calibrations(a: CalibrationResult, b: CalibrationResult) -> TransformDifference:
+    """2つのキャリブレーション結果の変換差分を返す（design.md
+    CalibrationResultStore「Contracts」/ tasks.md タスク 4.3 / 要件 7.4）。
+
+    **分解の計算は本関数で行わない。** `a.transform` / `b.transform` を
+    そのまま `transform.compare_transforms`（タスク 2.2、既に承認済み・
+    凍結済み）へ委譲する。原点のずれ・全体の回転角・Z 軸のずれ・面内回転
+    （ヨー）のずれへの分解ロジックは `transform.py` が単独で所有し、
+    本モジュールはそれを再実装しない。
+
+    **Z軸のずれは平面推定の再現性、ヨーのずれはマーカー設置の再現性を表す。**
+    同一の物理配置で複数回キャリブレーションを実施した場合（要件 7.4）、
+    Z 軸（床法線）のずれが大きければ床平面推定（`FloorPlaneEstimator`）が
+    再現していないことを、ヨーのずれが大きければ原点マーカー→方向マーカー
+    による軸方向の確立（マーカー設置そのものの再現性）が再現していないことを
+    示す。この読み分けにより、再設置のたびに何が不安定なのかを切り分けられる
+    （tasks.md タスク 8.3 の再現性見直し手順が、この読み分けを前提とする）。
+
+    比較対象のストリーム識別情報（`signature`）が異なる場合は、幾何比較を
+    試みる前に不一致として報告する。**異なるカメラ設定（解像度・fps 等）間の
+    キャリブレーション結果を比較すること自体が意味を持たない**ため
+    （原点のずれ・軸のずれという数値が、物理配置の変化なのか設定変化に
+    伴う内部パラメータの変化なのか区別できなくなる）。この検査には
+    `check_compatibility`（タスク 4.2）が「現在の入力元」との不一致検出に
+    用いるのと同じ `FailureReason.PROFILE_MISMATCH` を、「2つの保存済み結果
+    どうし」の不一致検出へ転用する（不一致の性質——設定が食い違うキャリブレー
+    ションを有効なものとして扱わない——が同一であるため）。
+
+    Args:
+        a: 比較対象の一方の結果。
+        b: 比較対象のもう一方の結果。
+
+    Returns:
+        `transform.compare_transforms(a.transform, b.transform)` がそのまま
+        返す `TransformDifference`。
+
+    Raises:
+        CalibrationFailure: `reason=FailureReason.PROFILE_MISMATCH`。
+            `a.signature != b.signature` の場合。`context` に双方の
+            `signature` を含める。
+    """
+    if a.signature != b.signature:
+        raise CalibrationFailure(
+            reason=FailureReason.PROFILE_MISMATCH,
+            detail=(
+                "cannot compare two calibration results captured under "
+                "different stream signatures; comparing calibrations from "
+                "different camera configurations is meaningless because the "
+                "resulting origin/axis offsets could reflect a configuration "
+                "change rather than a physical placement change"
+            ),
+            context={
+                "a": _signature_to_dict(a.signature),
+                "b": _signature_to_dict(b.signature),
+            },
+        )
+    return compare_transforms(a.transform, b.transform)
