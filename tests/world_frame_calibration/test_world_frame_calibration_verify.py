@@ -1,14 +1,16 @@
 """world_frame_calibration.verify（独立検証の中核: 検証点の World 座標算出と
-独立性の検査）の検証（tasks.md タスク 5.1 / 要件 4.1, 4.2, 4.3, 4.9）。
+独立性の検査、誤差の分解とスケールの独立確認）の検証（tasks.md タスク 5.1,
+5.2 / 要件 4.1, 4.2, 4.3, 4.4, 4.5, 4.9, 9.3）。
 
 design.md「L6-L9: 永続化・検証・入口」節の Verifier コンポーネント契約のうち、
 本タスクが担う部分（検証点の World 座標算出・既知位置との軸ごとの差分・
-確立用マーカーとの重複除外）を固定する。requirements.md Requirement 4
+確立用マーカーとの重複除外・誤差のバイアス/ばらつき分解・距離帯集計・
+基線長スケール確認）を固定する。requirements.md Requirement 4
 「独立検証ステップ ★」の Objective が述べるとおり、本 Spec の価値は
 「変換できること」ではなく「変換が正しいことを独立に確かめられること」に
 あり、その中心がこのモジュールである。
 
-本テストが確認すること（tasks.md タスク 5.1「観測可能な完了状態」）:
+タスク 5.1 が確認すること（tasks.md タスク 5.1「観測可能な完了状態」）:
 
 - 保存済みの `CalibrationResult` と検証点の観測から、各検証点の World 座標を
   算出し、既知の位置との差分を**軸ごとに**（スカラー距離ではなく）求めること
@@ -23,8 +25,25 @@ design.md「L6-L9: 永続化・検証・入口」節の Verifier コンポーネ
 - 床上の検証点（z=0）と既知の高さを持つ検証点（z≠0）の双方が、同じ
   計算経路で正しく軸ごとの差分を返すこと
 
+タスク 5.2 が追加で確認すること（tasks.md タスク 5.2「観測可能な完了状態」）:
+
+- 独立点のみから、軸ごとの平均オフセット（バイアス）とバイアス除去後の
+  残差 RMS（ばらつき）を算出すること。**確立用マーカーと重複する検証点は
+  この集計からも除外される**こと
+- 既知のバイアスを注入した検証点に対して、算出したバイアスがその注入量を
+  指し、ばらつきは小さいまま保たれること（バイアスとばらつきが分離できる
+  こと。tasks.md タスク 5.2 の観測可能な完了状態）
+- カメラからの距離帯ごとに点数・平均誤差・最大誤差が集計されること
+- 計画のメジャー実測基線長と算出基線長が突き合わされ、その差分が得られる
+  こと（実測値が無ければ差分は求められないこと）
+- 最大誤差が全体・水平（X/Y）・垂直（Z）に分けて算出されること
+- 読み分け規則（バイアス支配なら座標系、ばらつき支配なら観測、遠方だけ
+  大きいなら Depth の距離特性）が docstring に明記されていること
+
 このテストファイルは `world_frame_calibration.verify` がまだ存在しない時点
-では `ModuleNotFoundError` で失敗する（RED）。
+では `ModuleNotFoundError` で失敗する（RED）。タスク 5.2 が追加する API
+（`compute_verification_statistics` 等）がまだ存在しない時点では
+`AttributeError` で失敗する（RED）。
 
 ファイル名について: `tests/**` に `__init__.py` が無いため、裸の
 `test_verify.py` は使わずプレフィックス付きの
@@ -34,7 +53,9 @@ design.md「L6-L9: 永続化・検証・入口」節の Verifier コンポーネ
 from __future__ import annotations
 
 import ast
+import dataclasses
 import inspect
+import math
 from pathlib import Path
 
 import pytest
@@ -466,3 +487,404 @@ class TestNoDetectionTrackingPredictionDependency:
                         assert submodule in allowed_wfc_submodules, (
                             f"unexpected intra-package import: {alias.name!r}"
                         )
+
+
+# ---------------------------------------------------------------------------
+# タスク 5.2: 誤差の分解（バイアス/ばらつき）とスケールの独立確認
+# ---------------------------------------------------------------------------
+#
+# 以下のテストは `evaluate_verification_points` が返す `PointVerification` に
+# `error_norm_mm` / `horizontal_error_mm` / `vertical_error_mm` /
+# `range_from_camera_mm` が追加されること、および新関数
+# `compute_verification_statistics` とその戻り値の型
+# （`RangeBucket` / `ScaleCheck` / `VerificationStatistics`）を固定する。
+#
+# 変換は `_calibration_result()` フィクスチャにより恒等回転 + 平行移動
+# `(0,0,-1000)` のみ（ファイル冒頭のヘルパ docstring 参照）であるため、
+# `measured_world_mm = point_camera_mm - (0, 0, 1000)` であり、
+# `truth_world_mm=(0,0,0)` を選べば `error_mm == point_camera_mm - (0,0,1000)`
+# となって期待値を手計算できる。
+
+
+def _observation_with_range(
+    label: str,
+    point_camera_mm: tuple[float, float, float],
+    range_from_camera_mm: float,
+) -> AnchorObservation:
+    """`range_from_camera_mm` だけを独立に上書きした観測を作る。
+
+    `AnchorObservation` は構築時に何も検証しない値オブジェクト
+    （`types.py` モジュール docstring: 「検証しない」）であるため、
+    `point_camera_mm` と `range_from_camera_mm` の物理的な整合性を保つ
+    必要はない。距離帯集計のロジックだけを、誤差の計算（`point_camera_mm`
+    由来）から切り離して検証するための意図的な単純化である。
+    """
+    base = _observation(label, point_camera_mm)
+    return dataclasses.replace(base, range_from_camera_mm=range_from_camera_mm)
+
+
+class TestBiasAndScatterDecomposition:
+    """独立点のみから、軸ごとの平均オフセット（バイアス）とバイアス除去後の
+    残差 RMS（ばらつき）を算出する（design.md Verifier「Contracts」/
+    tasks.md タスク 5.2 / 要件 4.4）。
+    """
+
+    def test_bias_is_mean_error_per_axis_across_independent_points(self) -> None:
+        from world_frame_calibration import verify as verify_module
+
+        result = _calibration_result()
+        # error_mm = point_camera_mm - (0, 0, 1000) since truth=(0,0,0).
+        observations = [
+            (_verification_point("vp1", (0.0, 0.0, 0.0)), _observation("vp1", (10.0, 4.0, 1002.0))),
+            (_verification_point("vp2", (0.0, 0.0, 0.0)), _observation("vp2", (8.0, -2.0, 1004.0))),
+            (_verification_point("vp3", (0.0, 0.0, 0.0)), _observation("vp3", (6.0, 6.0, 1000.0))),
+        ]
+        points = verify_module.evaluate_verification_points(result, observations)
+
+        stats = verify_module.compute_verification_statistics(
+            result, points, expected_baseline_mm=None
+        )
+
+        # errors: (10,4,2), (8,-2,4), (6,6,0) -> mean = (8, 8/3, 2)
+        assert stats.bias_mm == pytest.approx((8.0, 8.0 / 3.0, 2.0), abs=1e-9)
+        assert stats.independent_point_count == 3
+
+    def test_duplicate_establishment_points_are_excluded_from_bias(self) -> None:
+        """確立用マーカーと重複する検証点は、バイアス集計からも除外される
+        （要件 4.3 の除外方針をタスク 5.2 の集計へも適用する）。
+        """
+        from world_frame_calibration import verify as verify_module
+
+        result = _calibration_result()
+        observations = [
+            # Duplicate of the origin establishment marker: a huge, distorting
+            # "error" that must NOT influence the bias if exclusion works.
+            (_verification_point("origin", (0.0, 0.0, 0.0)), _observation("origin", (99999.0, 99999.0, 1099999.0))),
+            (_verification_point("vp1", (0.0, 0.0, 0.0)), _observation("vp1", (10.0, 0.0, 1000.0))),
+            (_verification_point("vp2", (0.0, 0.0, 0.0)), _observation("vp2", (-10.0, 0.0, 1000.0))),
+        ]
+        points = verify_module.evaluate_verification_points(result, observations)
+
+        stats = verify_module.compute_verification_statistics(
+            result, points, expected_baseline_mm=None
+        )
+
+        assert stats.independent_point_count == 2
+        assert stats.bias_mm == pytest.approx((0.0, 0.0, 0.0), abs=1e-9)
+
+    def test_scatter_is_zero_when_all_independent_points_share_the_same_error(self) -> None:
+        from world_frame_calibration import verify as verify_module
+
+        result = _calibration_result()
+        observations = [
+            (_verification_point("vp1", (0.0, 0.0, 0.0)), _observation("vp1", (5.0, 5.0, 1005.0))),
+            (_verification_point("vp2", (0.0, 0.0, 0.0)), _observation("vp2", (5.0, 5.0, 1005.0))),
+            (_verification_point("vp3", (0.0, 0.0, 0.0)), _observation("vp3", (5.0, 5.0, 1005.0))),
+        ]
+        points = verify_module.evaluate_verification_points(result, observations)
+
+        stats = verify_module.compute_verification_statistics(
+            result, points, expected_baseline_mm=None
+        )
+
+        assert stats.bias_mm == pytest.approx((5.0, 5.0, 5.0), abs=1e-9)
+        assert stats.scatter_rms_mm == pytest.approx(0.0, abs=1e-9)
+
+    def test_scatter_matches_manual_rms_of_residual_after_bias_removal(self) -> None:
+        from world_frame_calibration import verify as verify_module
+
+        result = _calibration_result()
+        # errors (after truth=(0,0,0)): (2,-1,0), (-2,1,0), (0,0,0) -> bias=(0,0,0)
+        observations = [
+            (_verification_point("vp1", (0.0, 0.0, 0.0)), _observation("vp1", (2.0, -1.0, 1000.0))),
+            (_verification_point("vp2", (0.0, 0.0, 0.0)), _observation("vp2", (-2.0, 1.0, 1000.0))),
+            (_verification_point("vp3", (0.0, 0.0, 0.0)), _observation("vp3", (0.0, 0.0, 1000.0))),
+        ]
+        points = verify_module.evaluate_verification_points(result, observations)
+
+        stats = verify_module.compute_verification_statistics(
+            result, points, expected_baseline_mm=None
+        )
+
+        expected_scatter = math.sqrt((5.0 + 5.0 + 0.0) / 3.0)
+        assert stats.bias_mm == pytest.approx((0.0, 0.0, 0.0), abs=1e-9)
+        assert stats.scatter_rms_mm == pytest.approx(expected_scatter, abs=1e-9)
+
+
+class TestBiasScatterSeparability:
+    """既知のバイアスを注入した検証点に対して、算出したバイアスがその注入量を
+    指し、ばらつきは小さいまま保たれる（バイアスとばらつきが分離できる。
+    tasks.md タスク 5.2「観測可能な完了状態」/ 要件 4.4）。
+    """
+
+    def test_injecting_a_known_bias_moves_bias_but_not_scatter(self) -> None:
+        from world_frame_calibration import verify as verify_module
+
+        result = _calibration_result()
+
+        # Baseline (no injected bias): errors (2,-1,0), (-2,1,0), (0,0,0).
+        base_camera_points = [
+            ("vp1", (2.0, -1.0, 1000.0)),
+            ("vp2", (-2.0, 1.0, 1000.0)),
+            ("vp3", (0.0, 0.0, 1000.0)),
+        ]
+        base_observations = [
+            (_verification_point(label, (0.0, 0.0, 0.0)), _observation(label, camera_mm))
+            for label, camera_mm in base_camera_points
+        ]
+        base_points = verify_module.evaluate_verification_points(result, base_observations)
+        base_stats = verify_module.compute_verification_statistics(
+            result, base_points, expected_baseline_mm=None
+        )
+
+        assert base_stats.bias_mm == pytest.approx((0.0, 0.0, 0.0), abs=1e-9)
+
+        # Inject a known bias (10, 5, -3) mm into every observation's camera
+        # point. Since the transform is affine (identity rotation + fixed
+        # translation), this shifts every point's error by exactly that
+        # amount, and the *spread* of the errors around their new mean is
+        # unchanged.
+        injected_bias = (10.0, 5.0, -3.0)
+        biased_observations = [
+            (
+                _verification_point(label, (0.0, 0.0, 0.0)),
+                _observation(
+                    label,
+                    (
+                        camera_mm[0] + injected_bias[0],
+                        camera_mm[1] + injected_bias[1],
+                        camera_mm[2] + injected_bias[2],
+                    ),
+                ),
+            )
+            for label, camera_mm in base_camera_points
+        ]
+        biased_points = verify_module.evaluate_verification_points(result, biased_observations)
+        biased_stats = verify_module.compute_verification_statistics(
+            result, biased_points, expected_baseline_mm=None
+        )
+
+        assert biased_stats.bias_mm == pytest.approx(injected_bias, abs=1e-9)
+        # Scatter must be genuinely separable from bias: injecting a uniform
+        # bias must NOT change the scatter.
+        assert biased_stats.scatter_rms_mm == pytest.approx(base_stats.scatter_rms_mm, abs=1e-9)
+
+
+class TestRangeBuckets:
+    """カメラからの距離帯ごとに点数・平均誤差・最大誤差を集計する
+    （design.md Verifier「Contracts」`RangeBucket` / tasks.md タスク 5.2 /
+    要件 4.5, 9.3）。
+    """
+
+    def test_points_are_grouped_into_the_correct_distance_buckets(self) -> None:
+        from world_frame_calibration import verify as verify_module
+
+        result = _calibration_result()
+        # truth=(0,0,0) for all -> error_mm = point_camera_mm - (0,0,1000).
+        observations = [
+            (
+                _verification_point("near", (0.0, 0.0, 0.0)),
+                _observation_with_range("near", (3.0, 4.0, 1000.0), 500.0),  # norm=5
+            ),
+            (
+                _verification_point("mid_a", (0.0, 0.0, 0.0)),
+                _observation_with_range("mid_a", (6.0, 8.0, 1000.0), 1500.0),  # norm=10
+            ),
+            (
+                _verification_point("mid_b", (0.0, 0.0, 0.0)),
+                _observation_with_range("mid_b", (0.0, 0.0, 1005.0), 1800.0),  # norm=5
+            ),
+            (
+                _verification_point("far", (0.0, 0.0, 0.0)),
+                _observation_with_range("far", (0.0, 0.0, 1012.0), 3500.0),  # norm=12
+            ),
+        ]
+        points = verify_module.evaluate_verification_points(result, observations)
+
+        stats = verify_module.compute_verification_statistics(
+            result, points, expected_baseline_mm=None
+        )
+
+        buckets_by_range = {(b.range_lo_mm, b.range_hi_mm): b for b in stats.range_buckets}
+
+        near_bucket = buckets_by_range[(0.0, 1000.0)]
+        assert near_bucket.point_count == 1
+        assert near_bucket.mean_error_norm_mm == pytest.approx(5.0, abs=1e-9)
+        assert near_bucket.max_error_norm_mm == pytest.approx(5.0, abs=1e-9)
+
+        mid_bucket = buckets_by_range[(1000.0, 2000.0)]
+        assert mid_bucket.point_count == 2
+        assert mid_bucket.mean_error_norm_mm == pytest.approx(7.5, abs=1e-9)
+        assert mid_bucket.max_error_norm_mm == pytest.approx(10.0, abs=1e-9)
+
+        far_bucket = buckets_by_range[(3000.0, 4000.0)]
+        assert far_bucket.point_count == 1
+        assert far_bucket.mean_error_norm_mm == pytest.approx(12.0, abs=1e-9)
+
+        # Empty buckets (e.g. 2000-3000mm) are omitted, not zero-filled.
+        assert (2000.0, 3000.0) not in buckets_by_range
+
+    def test_duplicate_establishment_points_are_excluded_from_range_buckets(self) -> None:
+        from world_frame_calibration import verify as verify_module
+
+        result = _calibration_result()
+        observations = [
+            (
+                _verification_point("origin", (0.0, 0.0, 0.0)),
+                _observation_with_range("origin", (99999.0, 0.0, 1000.0), 500.0),
+            ),
+            (
+                _verification_point("vp1", (0.0, 0.0, 0.0)),
+                _observation_with_range("vp1", (3.0, 4.0, 1000.0), 500.0),
+            ),
+        ]
+        points = verify_module.evaluate_verification_points(result, observations)
+
+        stats = verify_module.compute_verification_statistics(
+            result, points, expected_baseline_mm=None
+        )
+
+        near_bucket = next(b for b in stats.range_buckets if b.range_lo_mm == 0.0)
+        assert near_bucket.point_count == 1
+        assert near_bucket.max_error_norm_mm == pytest.approx(5.0, abs=1e-9)
+
+
+class TestMaxErrorBreakdown:
+    """最大誤差を全体・水平（X/Y）・垂直（Z）に分けて算出する（design.md
+    Verifier「Contracts」`PointError.horizontal_error_mm` /
+    `vertical_error_mm` / tasks.md タスク 5.2 / 要件 4.4）。
+    """
+
+    def test_overall_horizontal_and_vertical_max_are_tracked_independently(self) -> None:
+        from world_frame_calibration import verify as verify_module
+
+        result = _calibration_result()
+        observations = [
+            # error=(30,0,0): horizontal=30, vertical=0, norm=30
+            (_verification_point("p1", (0.0, 0.0, 0.0)), _observation("p1", (30.0, 0.0, 1000.0))),
+            # error=(0,0,40): horizontal=0, vertical=40, norm=40
+            (_verification_point("p2", (0.0, 0.0, 0.0)), _observation("p2", (0.0, 0.0, 1040.0))),
+            # error=(9,12,5): horizontal=15, vertical=5, norm=sqrt(250)
+            (_verification_point("p3", (0.0, 0.0, 0.0)), _observation("p3", (9.0, 12.0, 1005.0))),
+        ]
+        points = verify_module.evaluate_verification_points(result, observations)
+
+        stats = verify_module.compute_verification_statistics(
+            result, points, expected_baseline_mm=None
+        )
+
+        # The point that drives the overall max (p2) is NOT the same point
+        # that drives the horizontal max (p1) -- proving the three maxima
+        # are tracked independently, not derived from a single "worst point".
+        assert stats.max_error_norm_mm == pytest.approx(40.0, abs=1e-9)
+        assert stats.max_horizontal_error_mm == pytest.approx(30.0, abs=1e-9)
+        assert stats.max_vertical_error_mm == pytest.approx(40.0, abs=1e-9)
+
+
+class TestScaleCheck:
+    """計画のメジャー実測基線長と算出基線長を突き合わせる（design.md
+    Verifier「Contracts」`ScaleCheck` / tasks.md タスク 5.2 / 要件 4.4, 9.3）。
+
+    `_calibration_result()` は origin=(0,0,1000), x_axis=(1000,0,1000) から
+    確立するため、算出基線長（`FrameGeometry.baseline_mm`）は 1000.0mm に
+    なる（ファイル冒頭のヘルパ docstring 参照）。
+    """
+
+    def test_matching_measured_and_expected_baseline_has_zero_difference(self) -> None:
+        from world_frame_calibration import verify as verify_module
+
+        result = _calibration_result()
+        spec = _verification_point("vp1", (400.0, 200.0, 0.0))
+        observation = _observation("vp1", (400.0, 200.0, 1000.0))
+        points = verify_module.evaluate_verification_points(result, [(spec, observation)])
+
+        stats = verify_module.compute_verification_statistics(
+            result, points, expected_baseline_mm=1000.0
+        )
+
+        assert stats.scale_check.expected_baseline_mm == pytest.approx(1000.0, abs=1e-9)
+        assert stats.scale_check.measured_baseline_mm == pytest.approx(1000.0, abs=1e-9)
+        assert stats.scale_check.difference_mm == pytest.approx(0.0, abs=1e-9)
+
+    def test_mismatching_baseline_reports_the_signed_difference(self) -> None:
+        from world_frame_calibration import verify as verify_module
+
+        result = _calibration_result()
+        spec = _verification_point("vp1", (400.0, 200.0, 0.0))
+        observation = _observation("vp1", (400.0, 200.0, 1000.0))
+        points = verify_module.evaluate_verification_points(result, [(spec, observation)])
+
+        stats = verify_module.compute_verification_statistics(
+            result, points, expected_baseline_mm=995.0
+        )
+
+        # measured(1000) - expected(995) = 5.0
+        assert stats.scale_check.difference_mm == pytest.approx(5.0, abs=1e-9)
+
+    def test_no_expected_baseline_yields_no_difference_but_still_reports_measured(
+        self,
+    ) -> None:
+        from world_frame_calibration import verify as verify_module
+
+        result = _calibration_result()
+        spec = _verification_point("vp1", (400.0, 200.0, 0.0))
+        observation = _observation("vp1", (400.0, 200.0, 1000.0))
+        points = verify_module.evaluate_verification_points(result, [(spec, observation)])
+
+        stats = verify_module.compute_verification_statistics(
+            result, points, expected_baseline_mm=None
+        )
+
+        assert stats.scale_check.expected_baseline_mm is None
+        assert stats.scale_check.difference_mm is None
+        assert stats.scale_check.measured_baseline_mm == pytest.approx(1000.0, abs=1e-9)
+
+
+class TestPointVerificationCarriesPerPointDerivedMetrics:
+    """`PointVerification` が `error_norm_mm` / `horizontal_error_mm` /
+    `vertical_error_mm` / `range_from_camera_mm` を持つ（design.md Verifier
+    「Contracts」`PointError` の対応フィールド / tasks.md タスク 5.2）。
+    """
+
+    def test_per_point_derived_error_metrics_are_computed(self) -> None:
+        from world_frame_calibration import verify as verify_module
+
+        result = _calibration_result()
+        spec = _verification_point("vp1", (0.0, 0.0, 0.0))
+        observation = _observation("vp1", (9.0, 12.0, 1005.0))  # error=(9,12,5)
+
+        points = verify_module.evaluate_verification_points(result, [(spec, observation)])
+        point = points[0]
+
+        assert point.error_norm_mm == pytest.approx(math.sqrt(9 * 9 + 12 * 12 + 5 * 5), abs=1e-9)
+        assert point.horizontal_error_mm == pytest.approx(15.0, abs=1e-9)
+        assert point.vertical_error_mm == pytest.approx(5.0, abs=1e-9)
+        assert point.range_from_camera_mm == pytest.approx(observation.range_from_camera_mm, abs=1e-9)
+
+
+class TestDiagnosticReadoutRuleDocumented:
+    """読み分け規則（バイアス支配なら座標系、ばらつき支配なら観測、遠方だけ
+    大きいなら Depth の距離特性）が docstring に明記されている（design.md
+    Verifier「Implementation Notes」/ tasks.md タスク 5.2 の明示的指示）。
+    """
+
+    def test_diagnostic_readout_rule_appears_in_module_or_function_docstrings(self) -> None:
+        from world_frame_calibration import verify as verify_module
+
+        expected_phrase = (
+            "バイアス支配なら座標系、ばらつき支配なら観測、遠方だけ大きいなら"
+            "Depth の距離特性"
+        )
+        candidate_docstrings = "".join(
+            doc or ""
+            for doc in (
+                verify_module.__doc__,
+                verify_module.compute_verification_statistics.__doc__,
+                verify_module.VerificationStatistics.__doc__,
+            )
+        )
+
+        def _normalize(text: str) -> str:
+            return text.replace("\n", "").replace(" ", "")
+
+        assert _normalize(expected_phrase) in _normalize(candidate_docstrings)
