@@ -153,7 +153,7 @@
 
 - [ ] 3. 3D位置: 逆投影と寸法の本判定
 
-- [ ] 3.1 候補からカメラ座標系の代表3D点を求める
+- [x] 3.1 候補からカメラ座標系の代表3D点を求める
   - ⚠️ **逆投影の基本演算は自前で書かない。** 無効画素の判定・距離値から mm への換算・画素からカメラ座標への逆投影は、**上流 `sensing_foundation` の公開入口が提供する3つの純関数を呼ぶ**。ピンホールの式・スケール係数の乗算・無効値の直値比較を本モジュールに書かない（`world-frame-calibration` と同一の実装に乗ることが、座標ずれと検出誤差を切り分ける前提である）
   - 本タスクが持つのは**集約方針**である: 候補領域内の**どの画素をどう代表させるか**、候補の絞り込み、内部パラメータ出所の記録、失敗理由の分類
   - 候補の外接矩形内の距離値のうち**測距できなかった画素を上流の判定関数で除外**し、**欠測を 0 や推定値で埋めない**
@@ -431,6 +431,22 @@
   `tests/flying_object_tracking/synthetic.py` / `fakes.py` を bare import せず、
   `tests/flying_object_tracking/conftest.py` の `synthetic_module` / `fakes_module`
   フィクスチャ経由でのみ参照すること。**
+- タスク3.1: design.md の `PointEstimator.estimate()` は `CameraPoint | PointFailure`
+  の2値シグネチャだが、`PointFailureReason` に `SIZE_MISMATCH` メンバーが無く、
+  同じ意味は `RejectReason.SIZE_MISMATCH`（`CandidateExtractor` と同一 enum）にしか
+  存在しない。加えて design.md の Requirements Traceability 表（要件3.3/3.4行）は
+  `PointEstimator` の Interface を `CandidateRejection` としており、2値シグネチャと
+  矛盾する（design.md 自体の記載不備）。実装は `estimate()` の返り値を
+  `CameraPoint | PointFailure | CandidateRejection` の3値に拡張することで解消した
+  （design.md 本体は未修正）。
+  **注意**: `PointEstimator.estimate()` が返す `CandidateRejection` は
+  `count=1` の単体（1候補につき1回の呼び出しに対応）であり、
+  `CandidateExtractor`（task 2.6）が返す `CandidateRejection` は
+  同一フレーム内で理由ごとに**集約済み**の件数である。**粒度が異なる。**
+  **後続タスク6.1（TrackingPipeline）は、`PointEstimator` から得た単体の
+  `CandidateRejection` を `CandidateExtractor` の集約済みリストへ理由ごとに
+  合算してから計測・出力に使うこと。** 合算せずにそのまま連結すると
+  「除外は理由ごとに件数を数える」（要件9.3）という契約が壊れる。
 - タスク2.2: `sensing_foundation.is_valid_depth` / `depth_raw_to_mm` はスカラー関数のため、
   配列全体へ適用する際に `numpy.vectorize` を使うと実体は Python ループであり、
   640x480 の既定 ROI で計測すると素朴な NumPy 配列演算比で約231倍遅い（実測）。
