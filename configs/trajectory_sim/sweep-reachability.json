@@ -1,0 +1,62 @@
+{
+  "parameters": {
+    "throw": {
+      "release_x_mm": 0.0,
+      "release_y_mm": 0.0,
+      "release_z_mm": 1500.0,
+      "speed_mm_s": 4000.0,
+      "elevation_deg": 45.0,
+      "azimuth_deg": 0.0
+    },
+    "dispersion": {},
+    "observation": {
+      "detection_start_delay_ms": 50.0,
+      "sample_period_ms": 33.0,
+      "sample_latency_ms": 10.0,
+      "prediction_latency_ms": 5.0
+    },
+    "catch": {
+      "policy": "stop_and_wait"
+    },
+    "layout": {
+      "home_x_mm": 0.0,
+      "home_y_mm": 0.0
+    },
+    "prediction": {},
+    "calibration_stage": "uncalibrated",
+    "provenance": {
+      "throw.release_x_mm": "assumed",
+      "throw.release_y_mm": "assumed",
+      "throw.release_z_mm": "assumed",
+      "throw.speed_mm_s": "assumed",
+      "throw.elevation_deg": "assumed",
+      "throw.azimuth_deg": "assumed",
+      "observation.detection_start_delay_ms": "assumed",
+      "observation.sample_period_ms": "assumed",
+      "observation.sample_latency_ms": "assumed",
+      "observation.prediction_latency_ms": "assumed",
+      "catch.policy": "assumed",
+      "layout.home_x_mm": "assumed",
+      "layout.home_y_mm": "assumed"
+    }
+  },
+  "sweep": {
+    "kind": "reachability",
+    "axes": [
+      {
+        "name": "hold_time_ms",
+        "unit": "ms",
+        "values": [300.0, 500.0, 700.0, 900.0, 1100.0, 1300.0, 1500.0, 1700.0]
+      },
+      {
+        "name": "required_distance_mm",
+        "unit": "mm",
+        "values": [0.0, 200.0, 400.0, 600.0, 800.0, 1000.0, 1200.0, 1400.0, 1600.0]
+      }
+    ],
+    "trials_per_cell": 1,
+    "seed": 0,
+    "catch_ratio_threshold": null,
+    "keep_representative_record": false
+  }
+}

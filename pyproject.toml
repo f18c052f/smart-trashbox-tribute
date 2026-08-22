@@ -19,7 +19,7 @@ sensing = ["numpy>=1.24"]
 dev = ["pytest>=8.0"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/prediction_core", "src/sensing_foundation"]
+packages = ["src/prediction_core", "src/sensing_foundation", "src/trajectory_sim"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

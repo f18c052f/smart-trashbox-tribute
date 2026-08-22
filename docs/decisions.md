@@ -115,6 +115,14 @@ NFR-1 / NFR-2 のみに適用されていた規律を **NFR-3 / NFR-4 / NFR-5 �
 | **柱3見送り（D-5）との関係** | 当初 OQ-31 は「柱3（投擲アーカイブ）を見送ったため最初から完全な形にしない」という条件付きだった。実装時点でも柱3向けの集計・検索機能は持たせておらず、`to_dict`/`from_dict`/`to_json`/`from_json`/`replay`/`predictions_equivalent` という素の構造・直列化・再生のみに留めている（方針を変更していない） |
 | **現在の扱い** | `prediction_core.ThrowRecord` として実装・テスト済み（`prediction-core` spec 全19タスク完了、263件のテストで検証）。下流 Spec（`sensing-foundation` の Record/Replay 形式＝[OQ-32](./open-questions.md#g-観測基盤独自機能)、テレオペログ＝[OQ-37](./open-questions.md#g-観測基盤独自機能)、ログ保存形式＝[OQ-35](./open-questions.md#g-観測基盤独自機能)）はこのスキーマに従う。**保存先・拡張子・NDJSON化はスキーマの範囲外**であり、これらは引き続き `sensing-foundation` 側の未決事項として残る |
 
+### D-9 シミュレータの物理モデルの詳細度を最小限で決着した（OQ-33 決着）
+
+| | |
+|---|---|
+| **決定** | `trajectory-simulator`（柱1）の初期物理モデルに含める要因・含めない要因を、投擲物理・観測・移動体・キャッチ判定の4段について確定した。含めるのは「投擲物理: 空気抵抗を無視した放物運動＋投擲条件のばらつき」「観測: 検出開始遅れ・サンプリング周期・位置ノイズ・欠測」「移動体: 加速度上限・最高速度・減速による性能上限の近似」の3点のみ。含めないのは「投擲物理: 空気抵抗・回転（マグヌス効果）・跳ね返り」「観測: センサ固有の歪み・視野外判定・遮蔽」「移動体: ホイールスリップ・方向依存の性能差・逆運動学・PID」「キャッチ: 跳ね返り（bounce_out）」 |
+| **理由** | [open-questions.md](./open-questions.md) OQ-33 が「最初は最小限とし、M1・M2 の実測で不足が分かってから足す」としていた方針をそのまま実装に落とし込んだ。要因を含めない場合は**その旨を出力に明示する**ことで、「入れていないものが入っているように見える」誤った安心を防ぐ（`trajectory-simulator` requirements.md 要件1.5 / 2.8 / 4.6 / 5.7 / 9.7） |
+| **現在の扱い** | `trajectory_sim.MODEL_EXCLUSIONS`（`src/trajectory_sim/results.py`）として実装・テスト済み。掃引結果の出力 JSON には `model_exclusions` キーとして必ず含まれ、較正段階・パラメータ出所と並んで「この結果がどこまで信用できるか」を読み手に伝える必須項目になっている。追加が必要になる契機は M1・M2 の実測であり、その時点で改めて `MODEL_EXCLUSIONS` を見直す（要因の増減は `trajectory-simulator` design.md の Revalidation Trigger に該当する） |
+
 ---
 
 ## 2. 採用しなかった案: 駆動系

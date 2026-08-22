@@ -1,0 +1,10 @@
+{
+  "wheel_diameter_mm": 48.0,
+  "motor_rpm": 530.0,
+  "speed_efficiency": 0.85,
+  "max_accel_mm_s2": 2000.0,
+  "max_decel_mm_s2": 2000.0,
+  "control_period_ms": 20.0,
+  "command_latency_ms": 30.0,
+  "integration_step_ms": 1.0
+}

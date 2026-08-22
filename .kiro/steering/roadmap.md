@@ -1,6 +1,6 @@
 # Roadmap
 
-## 現在地（最終更新: 2026-08-21）
+## 現在地（最終更新: 2026-08-22）
 
 > **セッションをまたぐ引き継ぎはこの節を正とする。** 作業が進んだら必ずここを更新する。
 
@@ -8,17 +8,19 @@
 |---|---|
 | フェーズ | **全7Specの生成が完了した。** `/kiro-spec-batch` で残り6Specを依存ウェーブ順に生成し、クロスSpecレビュー2巡で整合を取った |
 | ドキュメント | `docs/` 7ファイル、steering 4ファイル（本ファイル含む）が整備済み |
-| Spec | **実装完了は `prediction-core` のみ**（`main` へマージ済み、263テスト全通過）。残り6件は**Spec生成済み・実装未着手** |
+| Spec | **実装完了は `prediction-core`・`trajectory-simulator` の2件**（`trajectory-simulator` は `spec/trajectory-simulator` ブランチで全22サブタスク完了・725テスト全通過・`/kiro-validate-impl` GO判定済み。`main` への未マージ）。残り5件は**Spec生成済み・実装未着手** |
 | 実機 | **Raspberry Pi 4 / RealSense D435 ともに未セットアップ**（OS 未導入） |
-| ブランチ | **`spec/spec-batch` に6Spec分を作成済み**（未マージ）。実装は `main` から `spec/<feature>` を切る |
+| ブランチ | **`spec/spec-batch` に残り5Spec分を作成済み**（未マージ）。**`spec/trajectory-simulator` は実装完了・未マージ**。新規作業は `main` から `spec/<feature>` を切る |
 
 ### 次のアクション
 
-1. **`spec/spec-batch` をレビューして `main` へマージする。**
-   6Specは自動承認（`-y` 相当）で生成しているため、`spec.json` の `approved: true` は人間のレビューを経ていない
-2. **`/kiro-impl sensing-foundation`** — Wave 0 かつ他3Specの上流。
+1. **`spec/trajectory-simulator` をレビューして `main` へマージする。** 実装完了・GO判定済みだが人間のレビューは未実施
+2. **`spec/spec-batch` をレビューして `main` へマージする。**
+   残り5Specは自動承認（`-y` 相当）で生成しているため、`spec.json` の `approved: true` は人間のレビューを経ていない
+3. **`/kiro-impl sensing-foundation`** — Wave 0 かつ他3Specの上流。
    ただしタスク群9は実機必須のため、実機セットアップと並行して進める
-3. 並行して**実機セットアップ**（`development-environment.md §16` の手順。#3〜#6 を fps 計測より先に）
+4. 並行して**実機セットアップ**（`development-environment.md §16` の手順。#3〜#6 を fps 計測より先に）
+5. `simulator-visualization` は `trajectory-simulator` 完了により着手可能になったが、**急がない**（下記 Specs 一覧の注記どおり）
 
 ### 着手順序の制約（Spec生成で判明したもの）
 
@@ -30,7 +32,7 @@
   `flying-object-tracking` の前提になる。** ピンホール逆投影は上流の単独所有とし、
   下流2Specは自前実装を持たない。二重実装は `requirements.md §6.2` が警告する
   「座標系ずれが『予測が悪い』にしか見えない」事態を招くため
-- `trajectory-simulator` と `simulator-visualization` は**ハード不要**で今すぐ着手できる
+- `simulator-visualization` は**ハード不要**で今すぐ着手できる（`trajectory-simulator` 完了により前提が揃った）
 
 ### `prediction-core` 実装完了の要点（引き継ぎ用）
 
@@ -52,6 +54,16 @@
 > 逐次予測（初回予測 → 駆動開始 → 以降更新）を前提に読み替える必要があるが、
 > **M1 の実測値と合わせて `m1-prediction-validation` で更新する**（`prediction-core/requirements.md` D-1）。
 
+### `trajectory-simulator` 実装完了の要点（引き継ぎ用）
+
+- `spec/trajectory-simulator` ブランチで全22サブタスク（5セクション）完了・725テスト全通過・`/kiro-validate-impl` GO判定済み（**`main` へは未マージ**）
+- 公開API（`trajectory_sim.__init__`）は33シンボルに確定済み: パラメータ型・掃引型・結果型・`run_sweep`/`write_sweep_result`/`evaluate_throw`/`evaluate_reachability`/`OUTPUT_SCHEMA_VERSION`・例外階層。**`prediction_core` のシンボルは一切再エクスポートしない**（上流依存を隠さないため）
+- OQ-33（物理モデルの詳細度）を決着済み → [decisions.md D-9](../../docs/decisions.md#d-9-シミュレータの物理モデルの詳細度を最小限で決着した-oq-33-決着)。`trajectory_sim.MODEL_EXCLUSIONS` が決着内容そのもの
+- CLI: `python -m trajectory_sim --config <path> --output <path> [--drivetrain <path>]`。設定JSONの形式（`{"parameters":..., "sweep":...}` の2キー、あらゆるネスト階層で未知キー拒否）は design.md 未記載だったため実装時に確定（`tasks.md` Implementation Notes 参照）
+- 実行可能な設定ファイル4本を `configs/trajectory_sim/` に同梱（60mm/48mmホイール×到達可否掃引/レイアウト掃引の全組み合わせで動作確認済み）
+- 実行時のサードパーティ依存は引き続きゼロ（`test_trajectory_sim_boundaries.py` が静的に回帰検証する）
+- **design.md に2件の記載不備を発見・`tasks.md` Implementation Notes に記録済み（design.md 本体は未修正）**: (1) 依存方向表・Mermaid図が `prediction_link → drivetrain` の辺を欠いている（Service Interface とは矛盾。実装済みコードが正しく、境界検査側の許可リストで実態に合わせた）、(2) CLI設定JSONのスキーマが未記載だった（上記の通り実装時に確定）
+
 ### ブランチ運用
 
 - **トランクは `main`。** 新しい作業は main から `spec/<feature>` 形式で切る
@@ -62,7 +74,7 @@
   ```
 
 - ただし**実機を要する Spec はハード待ちで並列化できない**。
-  現時点でハード不要なのは `prediction-core` と `trajectory-simulator` のみ
+  ハード不要なのは `prediction-core`（実装完了）・`trajectory-simulator`（実装完了）・`simulator-visualization`（未着手、`trajectory-simulator` 完了により着手可能）のみ
 - **Spec 生成（`/kiro-spec-batch`）に worktree は不要**。1ツリー内でサブエージェントが並列化する
 
 ### 引き継ぎ時の読み込み順
@@ -153,7 +165,7 @@ M1 は「飛来するゴミを検出・追跡し、落下地点を予測して�
 - [x] simulator-visualization -- ブラウザでの軌跡アニメーションとキャッチ可能領域の表示。**先送り可**。Dependencies: trajectory-simulator
 
 > **`[x]` は Spec が生成済み（requirements / design / tasks の3フェーズ完了）であることを示す。実装完了ではない。**
-> 実装が完了しているのは `prediction-core` のみ。
+> 実装が完了しているのは `prediction-core` と `trajectory-simulator` の2件（いずれも `main` 未マージ）。
 
 ### 着手ウェーブ
 
@@ -170,7 +182,7 @@ M1 は「飛来するゴミを検出・追跡し、落下地点を予測して�
 |---|---|
 | `prediction-core` | OQ-31（Throw Record 最小スキーマ） |
 | `sensing-foundation` | OQ-23 / 24 / 25 / 28（OS・RAM・解像度fps・セットアップ成立性）、OQ-32（Record/Replay 形式）、OQ-35（ログ形式） |
-| `trajectory-simulator` | OQ-33（物理モデルの詳細度）、OQ-01 の机上検討 |
+| `trajectory-simulator` | ~~OQ-33~~（物理モデルの詳細度、**決着済み → decisions.md D-9**）、OQ-01 の机上検討 |
 | `world-frame-calibration` | **OQ-03**（World frame とキャリブレーション手順）★ |
 | `flying-object-tracking` | OQ-26（物体検出方式） |
 | `m1-prediction-validation` | OQ-27（Pi 4 継続可否）★、OQ-05 の判断材料 |
