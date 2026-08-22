@@ -52,7 +52,7 @@
   - _Requirements: 5.5, 5.6_
   - _Boundary: Errors_
 
-- [ ] 1.3 (P) 線形代数とロバスト統計のユーティリティを実装する
+- [x] 1.3 (P) 線形代数とロバスト統計のユーティリティを実装する
   - 正規化、Z 軸と X 方向ヒントからの右手系正規直交基底の構成、正規直交性の検査、2つの回転の全体角を実装する
   - 各軸の中央値と中央絶対偏差ベースの散らばりを返すロバスト代表値を実装する
   - X 方向ヒントの Z 直交成分がほぼ消える場合を、真偽と大きさとして返す（判定自体は上位が行う）
@@ -422,3 +422,4 @@
 ## Implementation Notes
 
 - タスク1.2: `CalibrationConfigError` は `prediction_core.PredictionConfigError` / `sensing_foundation.SensingConfigError` と異なり `ValueError` を継承しない。design.md の例外契約スニペットが `ValueError` に一切触れていないため契約どおりに実装した結果であり、実装上の欠陥ではない。今後 design.md を改訂する場合は、他パッケージとの `except ValueError` 互換性を意図的に持たせるかどうかを判断すること。
+- タスク1.3: `linalg.orthonormal_basis` は `x_hint` が `z_axis` とほぼ平行（縮退）な入力で呼ばれると `unit()` 内で 0/0 による NaN を静かに返す（例外を送出しない。本モジュールは numpy 以外を import せず判定を持たないため設計どおり）。**タスク3.1（WorldFrameBuilder）は `orthonormal_basis` を呼ぶ前に必ず `x_hint_degeneracy` で縮退を確認し、縮退時は `CalibrationFailure(ANCHOR_DEGENERATE)` を送出してから `orthonormal_basis` を呼ばないこと。** この呼び出し順序を守らないと縮退した基底が静かに下流へ流れる。
