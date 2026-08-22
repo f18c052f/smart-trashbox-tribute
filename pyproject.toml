@@ -14,12 +14,13 @@ dependencies = []
 
 [project.optional-dependencies]
 sensing = ["numpy>=1.24"]
+tracking = ["numpy>=1.24", "opencv-python-headless>=4.8"]
 
 [dependency-groups]
 dev = ["pytest>=8.0"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/prediction_core", "src/sensing_foundation", "src/trajectory_sim"]
+packages = ["src/prediction_core", "src/sensing_foundation", "src/trajectory_sim", "src/flying_object_tracking"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
