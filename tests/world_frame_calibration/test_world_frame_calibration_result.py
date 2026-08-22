@@ -41,7 +41,11 @@ from pathlib import Path
 
 import pytest
 
-from world_frame_calibration.errors import CalibrationConfigError
+from world_frame_calibration.errors import (
+    CalibrationConfigError,
+    CalibrationFailure,
+    FailureReason,
+)
 from world_frame_calibration.frame import build_world_frame
 from world_frame_calibration.plan import PlanLimits
 from world_frame_calibration.types import (
@@ -484,3 +488,179 @@ class TestLoadCalibrationRejectsMalformedFiles:
 
         with pytest.raises(CalibrationConfigError):
             result_module.load_calibration(path)
+
+
+class TestLoadCalibrationRejectsUnknownFormatVersion(object):
+    """形式版が未知なら読み込みを失敗させる（tasks.md タスク 4.2 / 要件 6.3）。
+
+    タスク 4.1 時点では `load_calibration` はこの検査を行っていなかった
+    （`calibration_format_version` は転記されるだけだった）。本タスクが
+    新たに追加する検査であり、`WorldTransform` の正規直交性検査（既存、
+    構築時に自然に働く）とは別物である。
+    """
+
+    def test_unknown_format_version_raises_calibration_failure(
+        self, tmp_path: Path
+    ) -> None:
+        from world_frame_calibration import result as result_module
+
+        original = _make_result(result_module)
+        path = tmp_path / "calib.json"
+        result_module.save_calibration(original, path)
+
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw["calibration_format_version"] = "999.0"
+        path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+
+        with pytest.raises(CalibrationFailure) as excinfo:
+            result_module.load_calibration(path)
+        assert excinfo.value.reason == FailureReason.UNKNOWN_FORMAT_VERSION
+
+    def test_matching_format_version_loads_without_error(self, tmp_path: Path) -> None:
+        from world_frame_calibration import result as result_module
+
+        original = _make_result(result_module)
+        path = tmp_path / "calib.json"
+        result_module.save_calibration(original, path)
+
+        loaded = result_module.load_calibration(path)
+        assert loaded.calibration_format_version == result_module.CALIBRATION_FORMAT_VERSION
+
+
+class TestCheckCompatibility:
+    """`check_compatibility` は保存済み結果のストリーム設定・カメラ内部
+    パラメータの主要値が現在の入力元と一致するかを検査する
+    （tasks.md タスク 4.2 / 要件 6.4）。
+    """
+
+    def test_matching_signature_and_intrinsics_does_not_raise(self) -> None:
+        from world_frame_calibration import result as result_module
+
+        original = _make_result(result_module)
+
+        # 一致していれば例外を送出せず、戻り値は None（design.md Contracts）。
+        assert result_module.check_compatibility(original, _signature(), _intrinsics()) is None
+
+    def test_different_resolution_raises_profile_mismatch(self) -> None:
+        """解像度が変われば内部パラメータも変わるため、古い結果の使い回しが
+        静かにずれる、という本テストが固定したい観測可能な完了状態
+        （tasks.md タスク 4.2「観測可能な完了状態」）。
+        """
+        from world_frame_calibration import result as result_module
+
+        original = _make_result(result_module)
+        different_resolution_signature = StreamSignature(
+            width_px=1280, height_px=720, fps=30, depth_scale_mm=1.0, color_enabled=False
+        )
+
+        with pytest.raises(CalibrationFailure) as excinfo:
+            result_module.check_compatibility(
+                original, different_resolution_signature, _intrinsics()
+            )
+        assert excinfo.value.reason == FailureReason.PROFILE_MISMATCH
+
+    def test_different_intrinsics_focal_length_raises_profile_mismatch(self) -> None:
+        from world_frame_calibration import result as result_module
+
+        original = _make_result(result_module)
+        different_intrinsics = dataclasses.replace(_intrinsics(), fx_px=900.0)
+
+        with pytest.raises(CalibrationFailure) as excinfo:
+            result_module.check_compatibility(original, _signature(), different_intrinsics)
+        assert excinfo.value.reason == FailureReason.PROFILE_MISMATCH
+
+    def test_different_fps_raises_profile_mismatch(self) -> None:
+        from world_frame_calibration import result as result_module
+
+        original = _make_result(result_module)
+        different_fps_signature = dataclasses.replace(_signature(), fps=60)
+
+        with pytest.raises(CalibrationFailure) as excinfo:
+            result_module.check_compatibility(original, different_fps_signature, _intrinsics())
+        assert excinfo.value.reason == FailureReason.PROFILE_MISMATCH
+
+    def test_docstring_documents_resolution_intrinsics_drift_rationale(self) -> None:
+        """`check_compatibility` の docstring に「解像度が変われば内部パラメータも
+        変わるため、古い結果の使い回しが静かにずれる」旨の記載があること
+        （tasks.md タスク 4.2 の明示的な指示）。
+        """
+        from world_frame_calibration import result as result_module
+
+        docstring = result_module.check_compatibility.__doc__ or ""
+        assert "解像度" in docstring
+        assert "内部パラメータ" in docstring
+        assert "ずれる" in docstring or "ずれ" in docstring
+
+
+class TestAttachVerification:
+    """`attach_verification` は元の結果を変更せず、検証要約を付与した新しい
+    結果を返す（tasks.md タスク 4.2 / 要件 6.5, 6.6）。
+    """
+
+    def _summary(self, result_module, verdict) -> object:
+        return result_module.VerificationSummary(
+            verified_at_wall_ms=1_700_000_000_000.0,
+            verdict=verdict,
+            point_count=5,
+            independent_point_count=3,
+            bias_mm=(1.0, -1.0, 0.5),
+            scatter_rms_mm=2.0,
+            max_error_norm_mm=4.0,
+            tolerance=None,
+            report_path=None,
+        )
+
+    def test_returns_new_result_with_verification_attached(self) -> None:
+        from world_frame_calibration import result as result_module
+
+        original = _make_result(result_module)
+        summary = self._summary(result_module, result_module.VerificationState.PASSED)
+
+        updated = result_module.attach_verification(original, summary)
+
+        assert updated.verification == summary
+        assert updated.verification_state == result_module.VerificationState.PASSED
+
+    def test_does_not_mutate_original_result(self) -> None:
+        from world_frame_calibration import result as result_module
+
+        original = _make_result(result_module)
+        summary = self._summary(result_module, result_module.VerificationState.FAILED)
+
+        result_module.attach_verification(original, summary)
+
+        # 元のオブジェクトは変更されていない（frozen dataclass の性質を確認する
+        # だけでなく、attach_verification が dataclasses.replace 等で新しい
+        # オブジェクトを返し、元を書き換えていないことを直接固定する）。
+        assert original.verification is None
+        assert original.verification_state == result_module.VerificationState.NOT_VERIFIED
+
+    def test_verification_state_transitions_from_not_verified(self) -> None:
+        from world_frame_calibration import result as result_module
+
+        original = _make_result(result_module)
+        assert original.verification_state == result_module.VerificationState.NOT_VERIFIED
+
+        for verdict in (
+            result_module.VerificationState.PASSED,
+            result_module.VerificationState.FAILED,
+            result_module.VerificationState.NOT_JUDGED,
+        ):
+            summary = self._summary(result_module, verdict)
+            updated = result_module.attach_verification(original, summary)
+            assert updated.verification_state == verdict
+            # 毎回、元の結果は未検証のまま。
+            assert original.verification_state == result_module.VerificationState.NOT_VERIFIED
+
+    def test_other_fields_are_preserved_unchanged(self) -> None:
+        from world_frame_calibration import result as result_module
+
+        original = _make_result(result_module)
+        summary = self._summary(result_module, result_module.VerificationState.PASSED)
+
+        updated = result_module.attach_verification(original, summary)
+
+        assert updated.calibration_id == original.calibration_id
+        assert updated.transform == original.transform
+        assert updated.signature == original.signature
+        assert updated.intrinsics == original.intrinsics

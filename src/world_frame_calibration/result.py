@@ -17,21 +17,25 @@ CalibrationResultStore コンポーネント / tasks.md タスク 4.1 / 要件 6
   を組み立てる。組み立て直後は `verification=None`
   （＝ `VerificationState.NOT_VERIFIED`）で返す
 - `save_calibration` / `load_calibration`: JSON への保存・読み込み。
-  保存 → 読み込みで**同一の変換が再現される**（要件 6.1）
+  保存 → 読み込みで**同一の変換が再現される**（要件 6.1）。`load_calibration`
+  は形式版が未知なら `CalibrationFailure(UNKNOWN_FORMAT_VERSION)` を送出する
+  （タスク 4.2 / 要件 6.3）
+- `check_compatibility`: 読み込んだ結果のストリーム設定・カメラ内部パラメータ
+  の主要値が現在の入力元と一致するかを検査する（タスク 4.2 / 要件 6.4）
+- `attach_verification`: 検証要約を付与した新しい `CalibrationResult` を返す
+  （元は変更しない。タスク 4.2 / 要件 6.5, 6.6）
 
 **本タスクが持たないもの**（design.md CalibrationResultStore「Contracts」に
 現れるが、後続タスクの担当）:
 
-- `check_compatibility`（読み込み時のストリーム設定・内部パラメータ整合性
-  検査。タスク 4.2）
-- `attach_verification`（検証要約の付与。タスク 4.2 / 5.x）
 - `compare_calibrations`（結果どうしの比較。タスク 4.3）
 
-これらは本モジュールに存在しない。`load_calibration` は形式版の未知判定・
-回転の正規直交性以外の整合性検査（ストリーム設定・内部パラメータの一致）を
-一切行わない（タスク 4.2 の責務）。`WorldTransform` 自体が構築時に正規直交性・
-行列式 +1 を検査するため（`transform.py` 参照）、読み込んだ回転が不正なら
-その検査は自然に働く。
+これは本モジュールに存在しない。回転の正規直交性検査は `load_calibration`
+自身は行わない。`WorldTransform` 自体が構築時に正規直交性・行列式 +1 を
+検査するため（`transform.py` 参照）、`load_calibration` が JSON から
+`WorldTransform` を再構成する際にその検査が自然に働き、破損した回転行列は
+`CalibrationFailure(ROTATION_NOT_ORTHONORMAL)` として検出される
+（タスク 4.2 は既存のこの挙動を再実装しない）。
 
 **直列化の方針**（`plan.py` と同じ規約。design.md「Existing Architecture
 Analysis」/ tasks.md タスク 4.1）:
@@ -59,11 +63,15 @@ import json
 import time
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 
-from world_frame_calibration.errors import CalibrationConfigError
+from world_frame_calibration.errors import (
+    CalibrationConfigError,
+    CalibrationFailure,
+    FailureReason,
+)
 from world_frame_calibration.frame import WorldFrameEstablishment
 from world_frame_calibration.transform import WorldTransform
 from world_frame_calibration.types import (
@@ -84,6 +92,8 @@ __all__ = [
     "VerificationState",
     "VerificationSummary",
     "assemble_calibration_result",
+    "attach_verification",
+    "check_compatibility",
     "load_calibration",
     "save_calibration",
 ]
@@ -573,7 +583,36 @@ def _result_to_dict(result: CalibrationResult) -> dict[str, object]:
     return _drop_none(data)
 
 
+def _check_format_version(data: Mapping[str, object]) -> None:
+    """`data` の `calibration_format_version` が既知の版か検査する
+    （tasks.md タスク 4.2 / 要件 6.3）。
+
+    未知の版を読み込むと、以降のフィールド解釈が現在の形式の前提と食い違う
+    可能性があり、`CalibrationConfigError`（キー欠落・型不正）とは異なる
+    種類の失敗である。座標系そのものを誤って再構成しうるため
+    `CalibrationConfigError` ではなく `CalibrationFailure` として送出する。
+    """
+    # キー欠落は `CalibrationConfigError`（呼び出し元の `load_calibration` が
+    # `KeyError` を捕捉して変換する）に任せる。ここで判定するのは既知の版か
+    # どうかのみ。
+    found_version = str(data["calibration_format_version"])
+    if found_version != CALIBRATION_FORMAT_VERSION:
+        raise CalibrationFailure(
+            reason=FailureReason.UNKNOWN_FORMAT_VERSION,
+            detail=(
+                f"unknown calibration_format_version={found_version!r}; "
+                f"this build only supports calibration_format_version="
+                f"{CALIBRATION_FORMAT_VERSION!r}"
+            ),
+            context={
+                "found_format_version": found_version,
+                "supported_format_version": CALIBRATION_FORMAT_VERSION,
+            },
+        )
+
+
 def _result_from_dict(data: Mapping[str, object]) -> CalibrationResult:
+    _check_format_version(data)
     verification_raw = data.get("verification")
     verification = (
         _verification_summary_from_dict(verification_raw)
@@ -644,12 +683,15 @@ def load_calibration(path: Path) -> CalibrationResult:
     """`path` の JSON ファイルからキャリブレーション結果を読み込む
     （design.md CalibrationResultStore「Contracts」/ 要件 6.1）。
 
-    本関数が行うのは組み立てた JSON の再構成のみである。形式版の未知判定・
-    ストリーム設定やカメラ内部パラメータの整合性検査は行わない
-    （タスク 4.2 `check_compatibility` の責務）。ただし `WorldTransform` は
-    構築時に自身で正規直交性・行列式 +1 を検査するため（`transform.py`
-    参照）、破損した回転行列は `CalibrationFailure(ROTATION_NOT_ORTHONORMAL)`
-    として自然に検出される。
+    形式版が未知（`CALIBRATION_FORMAT_VERSION` と一致しない）なら
+    `CalibrationFailure(reason=FailureReason.UNKNOWN_FORMAT_VERSION)` を
+    送出する（タスク 4.2 / 要件 6.3）。ストリーム設定やカメラ内部パラメータ
+    が現在の入力元と一致するかどうかの整合性検査は本関数の責務ではなく、
+    `check_compatibility`（タスク 4.2）を呼び出し側が別途呼ぶ。`WorldTransform`
+    は構築時に自身で正規直交性・行列式 +1 を検査するため（`transform.py`
+    参照）、破損した回転行列は本関数が JSON から `WorldTransform` を
+    再構成する過程で `CalibrationFailure(ROTATION_NOT_ORTHONORMAL)` として
+    自然に検出される。
 
     Args:
         path: 読み込むファイルのパス。
@@ -660,6 +702,11 @@ def load_calibration(path: Path) -> CalibrationResult:
     Raises:
         CalibrationConfigError: ファイルが読み込めない、正しい JSON でない、
             または必須キーが欠けている・形式が不正な場合。
+        CalibrationFailure: `reason=FailureReason.UNKNOWN_FORMAT_VERSION`。
+            `calibration_format_version` が既知の版と一致しない場合。
+        CalibrationFailure: `reason=FailureReason.ROTATION_NOT_ORTHONORMAL`。
+            読み込んだ回転行列が正規直交でない、または行列式が +1 でない場合
+            （`WorldTransform` の構築時検査、`transform.py` 参照）。
     """
     target_path = Path(path)
     try:
@@ -687,3 +734,120 @@ def load_calibration(path: Path) -> CalibrationResult:
         raise CalibrationConfigError(
             f"キャリブレーション結果の形式が不正: {target_path}"
         ) from exc
+
+
+_INTRINSICS_COMPATIBILITY_KEYS = (
+    "width_px",
+    "height_px",
+    "fx_px",
+    "fy_px",
+    "ppx_px",
+    "ppy_px",
+)
+"""`check_compatibility` が比較する内部パラメータの主要値（design.md
+CalibrationResultStore「Implementation Notes」: 「`intrinsics` の主要値
+（`fx_px` / `fy_px` / `ppx_px` / `ppy_px` / 解像度）を比較」）。`model` /
+`coeffs`（歪み係数）は比較対象に含めない。"""
+
+
+def check_compatibility(
+    result: CalibrationResult,
+    signature: StreamSignature,
+    intrinsics: Intrinsics,
+) -> None:
+    """読み込んだ `result` のストリーム設定・カメラ内部パラメータの主要値が、
+    現在の入力元の `signature` / `intrinsics` と一致するか検査する
+    （design.md CalibrationResultStore「Contracts」/ tasks.md タスク 4.2 /
+    要件 6.4）。
+
+    **なぜこの検査が必要か**: 解像度が変われば内部パラメータ（`fx_px` 等）も
+    変わるため、古い結果の使い回しが静かにずれる。設置形態やストリーム設定を
+    変えたのに、以前保存したキャリブレーション結果をそのまま読み込んで
+    使い続けると、座標系がわずかにずれたまま検出も予測も経由せず
+    下流へ静かに流れ込む（A-9、`errors.py` 冒頭の docstring が警告する
+    「間違った変換が検出も予測も経由せずそのまま下流へ静かに流れ込む」事故
+    そのもの）。この検査は、その事故を読み込み時点で必ず止める。
+
+    `signature` は全フィールド（解像度・fps・Depth スケール・Color 有無）を
+    比較する。`intrinsics` は解像度と `fx_px` / `fy_px` / `ppx_px` / `ppy_px`
+    のみを比較し、歪みモデル・係数（`model` / `coeffs`）は比較対象に含めない
+    （design.md CalibrationResultStore「Implementation Notes」）。
+
+    不一致があれば、変換をそのまま有効なものとして扱わせないため
+    `CalibrationFailure(reason=FailureReason.PROFILE_MISMATCH)` を送出する。
+    呼び出し側が戻り値の確認を怠っても、処理そのものが止まる
+    （`errors.py` の方針: 縮退条件は必ず例外として送出する）。
+
+    Args:
+        result: 読み込んだキャリブレーション結果。
+        signature: 現在の入力元のストリーム識別情報。
+        intrinsics: 現在の入力元のカメラ内部パラメータ。
+
+    Raises:
+        CalibrationFailure: `reason=FailureReason.PROFILE_MISMATCH`。
+            `result.signature` が `signature` と一致しない、または
+            `result.intrinsics` の主要値が `intrinsics` のそれと一致しない
+            場合。`context` に保存値・現在値の双方を含める。
+    """
+    mismatches: dict[str, object] = {}
+
+    if result.signature != signature:
+        mismatches["signature"] = {
+            "saved": _signature_to_dict(result.signature),
+            "current": _signature_to_dict(signature),
+        }
+
+    saved_intrinsics_subset = {
+        key: getattr(result.intrinsics, key) for key in _INTRINSICS_COMPATIBILITY_KEYS
+    }
+    current_intrinsics_subset = {
+        key: getattr(intrinsics, key) for key in _INTRINSICS_COMPATIBILITY_KEYS
+    }
+    if saved_intrinsics_subset != current_intrinsics_subset:
+        mismatches["intrinsics"] = {
+            "saved": saved_intrinsics_subset,
+            "current": current_intrinsics_subset,
+        }
+
+    if mismatches:
+        raise CalibrationFailure(
+            reason=FailureReason.PROFILE_MISMATCH,
+            detail=(
+                "loaded calibration result's stream signature or camera "
+                "intrinsics do not match the current input source; reusing "
+                "this result would silently apply a transform computed for "
+                "a different resolution/profile (resolution changes imply "
+                "intrinsics changes, so reuse drifts silently)"
+            ),
+            context=mismatches,
+        )
+
+
+def attach_verification(
+    result: CalibrationResult, summary: VerificationSummary
+) -> CalibrationResult:
+    """検証要約 `summary` を付与した**新しい** `CalibrationResult` を返す
+    （design.md CalibrationResultStore「Contracts」/ tasks.md タスク 4.2 /
+    要件 6.5, 6.6）。
+
+    `CalibrationResult` は不変（`frozen=True`）であるため、本関数は
+    `dataclasses.replace` により `verification` フィールドだけを差し替えた
+    新しいオブジェクトを返す。**`result` 自身は変更しない**
+    （design.md「Idempotency & recovery」: 「`attach_verification` は
+    新しい値を返す（不変）」）。
+
+    付与後は `verification_state` が `NOT_VERIFIED` から `summary.verdict`
+    （`PASSED` / `FAILED` / `NOT_JUDGED`）へ遷移した値として読み取れる
+    （要件 6.6）。検証を経ていない結果を運用に用いてよい状態として
+    扱わないという手順上の規則（要件 7.3）は、この状態遷移を呼び出し側が
+    確認することで担保される。
+
+    Args:
+        result: 検証要約を付与する元の結果。この引数自体は変更されない。
+        summary: 付与する検証要約。
+
+    Returns:
+        `verification=summary` を持ち、それ以外のフィールドは `result` と
+        同じ値を持つ新しい `CalibrationResult`。
+    """
+    return replace(result, verification=summary)
