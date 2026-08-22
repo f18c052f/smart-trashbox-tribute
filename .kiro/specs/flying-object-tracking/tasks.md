@@ -15,9 +15,9 @@
 
 ## 1. 基盤: パッケージ骨組み・型・設定・検証の足場
 
-- [ ] 1. 基盤: パッケージ骨組み・型・設定・検証の足場
+- [x] 1. 基盤: パッケージ骨組み・型・設定・検証の足場
 
-- [ ] 1.1 パッケージ骨組みと依存宣言を用意する
+- [x] 1.1 パッケージ骨組みと依存宣言を用意する
   - `src/flying_object_tracking/` と `tests/flying_object_tracking/` を作成し、`src/` レイアウトの既存慣行に合わせる
   - ルートの `pyproject.toml` に**追記のみ**を行う: wheel の対象パッケージに本パッケージを足し、任意依存グループ `tracking` に配列ライブラリと **GUI 無しの画像処理ライブラリ**を宣言する
   - **基本の依存一覧は空のまま変更しない**（既存の予測コアの実行時依存ゼロを壊さないため。既存テストが静的に検証している）
@@ -28,7 +28,7 @@
   - 観測可能な完了状態: `import flying_object_tracking` が成功し、テスト一式が既存の予測コアのテストとあわせて成功終了する
   - _Requirements: 11.4, 12.6, 13.1, 13.2, 13.3, 13.5_
 
-- [ ] 1.2 (P) 例外階層を定義する
+- [x] 1.2 (P) 例外階層を定義する
   - 基底例外と、設定不正・カメラ内部パラメータ欠落・検出手段の前提欠落を定義する
   - **「正常系の無効（候補ゼロ・有効画素不足・寸法不一致・ゲート外）は例外にしない」**という区分を docstring で明文化する
   - 設定不正は `ValueError` としても捕捉できる形にし、既存の予測コアの慣行に揃える
@@ -37,7 +37,7 @@
   - _Requirements: 10.4, 10.5_
   - _Boundary: errors_
 
-- [ ] 1.3 受け渡し型と座標系の表明を定義する
+- [x] 1.3 受け渡し型と座標系の表明を定義する
   - 検出候補・除外理由・カメラ座標系の3D点・3D化の失敗理由・追跡点・点列・逐次更新結果を、不変（frozen かつ slots）で定義する
   - **座標系を型で表明する。** 3D点と点列は座標系フィールドを持ち、本 Spec が生成する値は常にカメラ座標系である
   - 距離 mm・時刻 ms・画素量 px をフィールド名に含める
@@ -51,7 +51,7 @@
   - _Depends: 1.2_
   - _Boundary: CoreTypes_
 
-- [ ] 1.4 設定の解決と起動時検証を実装する
+- [x] 1.4 設定の解決と起動時検証を実装する
   - 処理範囲（画素矩形と距離方向の下限・上限）、対象物モデル（想定直径と許容倍率、粗いふるいの画素数）、検出方式と方式別パラメータ、逆投影パラメータ、追跡閾値、計測の有効無効と評価窓長、出力先を定義する
   - 解決順序を **CLI 引数 > 環境変数 > 設定ファイル > 既定値**とし、解決結果を不変にする
   - 処理範囲が未指定のときはフレーム全体を対象とする既定挙動にする
@@ -64,7 +64,7 @@
   - _Depends: 1.3_
   - _Boundary: TrackingSettings_
 
-- [ ] 1.5 合成入力とテスト用フレーム供給を用意する
+- [x] 1.5 合成入力とテスト用フレーム供給を用意する
   - **既知の3D軌道から Depth フレーム列を生成する合成器**をテストツリーに置く（本体には置かない）
   - 合成器は逆投影の逆演算として動き、指定した内部パラメータ・距離・対象物直径から所定の画素位置と画素サイズの塊を描く
   - 静止背景・無効画素（測距できない画素）・フレーム欠落を差し込めるようにする
@@ -77,9 +77,9 @@
 
 ## 2. 検出
 
-- [ ] 2. 検出: 前景マスク・候補抽出・方式の差し替え
+- [x] 2. 検出: 前景マスク・候補抽出・方式の差し替え
 
-- [ ] 2.1 画像処理の窓口を実装する
+- [x] 2.1 画像処理の窓口を実装する
   - 処理範囲の切り出し・形態処理（開閉）・連結成分ラベリングを提供する
   - **画像処理ライブラリを import する唯一のモジュールにする**（実機導入が難航した場合の退避範囲をここに限定するため）
   - 切り出しは**コピーせずビューを返し**、入力配列を変更しない
@@ -91,7 +91,7 @@
   - _Depends: 1.4_
   - _Boundary: MaskOps_
 
-- [ ] 2.2 (P) 距離帯ゲート方式の前景マスクを実装する
+- [x] 2.2 (P) 距離帯ゲート方式の前景マスクを実装する
   - 処理範囲内で距離の下限・上限に収まる画素を前景とする、最軽量のベースライン方式
   - 測距できなかった画素を前景にしない
   - 観測可能な完了状態: 距離帯の内側だけが前景になり、無効画素が前景に含まれないことをテストで固定する
@@ -99,7 +99,7 @@
   - _Depends: 2.1_
   - _Boundary: detection/masks/depth_band_
 
-- [ ] 2.3 (P) フレーム間差分方式の前景マスクを実装する
+- [x] 2.3 (P) フレーム間差分方式の前景マスクを実装する
   - 直前フレームとの距離差が閾値を超えた画素を前景とする
   - 直前フレームを1枚だけ保持し、初回フレームでは前景なしを返す
   - **無効画素との差分を変化として扱わない**（有効↔無効の遷移を前景にしない）
@@ -108,7 +108,7 @@
   - _Depends: 2.1_
   - _Boundary: detection/masks/frame_diff_
 
-- [ ] 2.4 (P) 背景差分方式の前景マスクを実装する
+- [x] 2.4 (P) 背景差分方式の前景マスクを実装する
   - 初期の一定枚数から静止背景の距離モデルを作り、それとの差が閾値を超えた画素を前景とする
   - 初期化中は**前景なしを返す**（例外にしない）ことと、初期化完了を問い合わせられることを契約にする
   - 背景の更新率を設定可能にし、**既定は更新しない**（飛翔体を背景へ取り込まないため）
@@ -118,7 +118,7 @@
   - _Depends: 2.1_
   - _Boundary: detection/masks/background_
 
-- [ ] 2.5 3方式の共通契約と生成口を確定する
+- [x] 2.5 3方式の共通契約と生成口を確定する
   - 方式を表す列挙と、設定から方式を生成する唯一の生成口を用意する
   - **3方式が同一入力に対し同形状・同型のマスクを返すこと**を契約テストとして固定する
   - 方式の切り替えがコード変更なしに設定だけで行えることを確認する
@@ -128,7 +128,7 @@
   - _Depends: 2.2, 2.3, 2.4_
   - _Boundary: detection/masks_
 
-- [ ] 2.6 候補抽出と距離非依存の絞り込みを実装する
+- [x] 2.6 候補抽出と距離非依存の絞り込みを実装する
   - 連結成分を候補（重心・外接矩形・前景画素数・外接矩形内の有効距離画素数・前景らしさ）へ変換する
   - 座標は**全画面座標**で表す（処理範囲の指定が出力座標の基準を変えないようにするため）
   - 距離が求まる前にかけられる粗いふるい（最小画素数・最大画素数・処理範囲の端に接している候補）だけをここで行う
@@ -139,7 +139,7 @@
   - _Depends: 2.1_
   - _Boundary: CandidateExtractor_
 
-- [ ] 2.7 検出器の契約と既定実装を組み立てる
+- [x] 2.7 検出器の契約と既定実装を組み立てる
   - 「フレーム → 候補集合 ＋ 除外内訳 ＋ 前景画素数」という1段の契約を定義する
   - 既定実装を「方式ごとの前景マスク生成 ＋ 共通の後段」として構成し、**方式間で後段が共有されることを構造で保証する**
   - 設定から検出器を生成する唯一の生成口を用意する（比較も入口も直接実装クラスを構築しない）
@@ -151,9 +151,9 @@
 
 ## 3. カメラ座標系での3D位置
 
-- [ ] 3. 3D位置: 逆投影と寸法の本判定
+- [x] 3. 3D位置: 逆投影と寸法の本判定
 
-- [ ] 3.1 候補からカメラ座標系の代表3D点を求める
+- [x] 3.1 候補からカメラ座標系の代表3D点を求める
   - ⚠️ **逆投影の基本演算は自前で書かない。** 無効画素の判定・距離値から mm への換算・画素からカメラ座標への逆投影は、**上流 `sensing_foundation` の公開入口が提供する3つの純関数を呼ぶ**。ピンホールの式・スケール係数の乗算・無効値の直値比較を本モジュールに書かない（`world-frame-calibration` と同一の実装に乗ることが、座標ずれと検出誤差を切り分ける前提である）
   - 本タスクが持つのは**集約方針**である: 候補領域内の**どの画素をどう代表させるか**、候補の絞り込み、内部パラメータ出所の記録、失敗理由の分類
   - 候補の外接矩形内の距離値のうち**測距できなかった画素を上流の判定関数で除外**し、**欠測を 0 や推定値で埋めない**
@@ -171,7 +171,7 @@
   - _Depends: 1.4, 1.5_
   - _Boundary: PointEstimator_
 
-- [ ] 3.2 逆投影の往復を合成入力で検証する
+- [x] 3.2 逆投影の往復を合成入力で検証する
   - 合成器が描いた既知の3D位置を、検出を経由せず候補を直接与えて逆投影し、投入値と一致することを確認する
   - 距離・画像上の位置・対象物直径を変えた複数条件で往復を確認する
   - 処理範囲を変えても復元される3D位置が変わらないことを確認する
@@ -184,9 +184,9 @@
 
 ## 4. 追跡
 
-- [ ] 4. 追跡: 対応付けとライフサイクル
+- [x] 4. 追跡: 対応付けとライフサイクル
 
-- [ ] 4.1 単一物体の追跡を実装する
+- [x] 4.1 単一物体の追跡を実装する
   - **1投擲 = 1物体**を前提とし、複数物体の同時追跡を持たない
   - 追跡開始時にそのフレーム時刻を**追跡開始時刻**として記録する
   - 追跡中の点が2点以上あれば直近2点の等速外挿で予測位置を作り、1点なら直前点を予測位置とする
@@ -202,7 +202,7 @@
   - _Depends: 1.4_
   - _Boundary: SingleObjectTracker_
 
-- [ ] 4.2 追跡の境界条件と決定性を検証する
+- [x] 4.2 追跡の境界条件と決定性を検証する
   - 許容フレーム数ちょうどで継続し、1つ超えると終了することを境界値で確認する
   - 許容移動量の内外で対応付けの採否が切り替わることを確認する
   - 同一の点列を2回処理して同一の点列と同一の終了理由が得られることを確認する
@@ -214,9 +214,9 @@
 
 ## 5. 計測
 
-- [ ] 5. 計測: 区間レイテンシと実効サンプル数
+- [x] 5. 計測: 区間レイテンシと実効サンプル数
 
-- [ ] 5.1 検出区間・追跡区間の計測を実装する
+- [x] 5.1 検出区間・追跡区間の計測を実装する
   - **上流の構造化ロギング基盤に乗せ、独自のログ形式を定義しない**
   - 上流の予約段階名と衝突しない段階名として、検出と追跡の2つを足す
   - 区間ごとの処理時間を独立した計測値として送り、フレームの時刻と識別情報に突き合わせられる形にする
@@ -229,7 +229,7 @@
   - _Depends: 1.4_
   - _Boundary: TrackingMetrics_
 
-- [ ] 5.2 (P) 実効サンプル数の算出を実装する
+- [x] 5.2 (P) 実効サンプル数の算出を実装する
   - 一定時間窓内に得られた**有効な3D位置サンプル数**を算出する（窓あたりの平均と、最も密な窓での値の両方）
   - **指標名を上流のフレーム層の指標と区別する**（対象が違うため。取り違えると集計側が誤る）
   - 窓長を設定値とし、**固定値として埋め込まない**
@@ -240,9 +240,9 @@
 
 ## 6. 統合
 
-- [ ] 6. 統合: 検出 → 逆投影 → 追跡の結線
+- [x] 6. 統合: 検出 → 逆投影 → 追跡の結線
 
-- [ ] 6.1 処理パイプラインを組み立てる
+- [x] 6.1 処理パイプラインを組み立てる
   - 1フレームを受け取り、検出 → 逆投影 → 追跡を順に実行し、逐次結果を返す
   - 検出区間と追跡区間の計測をそれぞれ該当区間だけに掛ける
   - 上流が検出したフレーム欠落を点へ引き継ぎ、**欠落をエラーとして扱わない**
@@ -254,7 +254,7 @@
   - _Depends: 2.7, 3.1, 4.1, 5.1_
   - _Boundary: TrackingPipeline_
 
-- [ ] 6.2 上流のフレーム供給と結線する
+- [x] 6.2 上流のフレーム供給と結線する
   - 上流のフレーム反復を唯一の入力経路とし、**入力元の種別で処理を分岐させない**
   - 上流の**公開された入口からのみ**参照する（内部モジュールへ直接触れない）
   - 反復を途中で捨てられても上流の停止処理が呼ばれるようにする
@@ -264,7 +264,7 @@
   - _Depends: 6.1_
   - _Boundary: TrackingPipeline_
 
-- [ ] 6.3 既知軌道の往復・非破壊・決定性を結合テストで固定する
+- [x] 6.3 既知軌道の往復・非破壊・決定性を結合テストで固定する
   - **既知の3D軌道 → 合成フレーム列 → パイプライン → 点列**の往復を行い、投入した軌道が許容誤差内で復元されることを確認する
   - 3方式すべてで同一の合成軌道が復元できることを確認する（方式ごとの実装差を検出する）
   - **読み取り専用の距離配列**を流し、全経路が例外なく完走することを確認する（破壊的変更が混入すれば書き込み時例外で落ちる）
@@ -277,9 +277,9 @@
 
 ## 7. 比較・ベンチ・入口
 
-- [ ] 7. 比較と入口: OQ-26 を決められる状態にする
+- [x] 7. 比較と入口: OQ-26 を決められる状態にする
 
-- [ ] 7.1 検出方式の比較と判定規則を実装する
+- [x] 7.1 検出方式の比較と判定規則を実装する
   - 同一の記録済みセッション（合成セッションを含む）に対して3方式を実行し、方式ごとの結果を**同一の指標**で出す
   - 結果に、実効サンプル数（窓あたりと最密窓）・取りこぼしフレーム数・3D化失敗数・検出区間と追跡区間の処理時間の代表値とばらつきを含める
   - **後段設定が全方式で同一であることを実行前に検証**し、不一致なら拒否する。用いた後段設定の指紋を結果に含める
@@ -294,7 +294,7 @@
   - _Depends: 5.2, 6.2_
   - _Boundary: DetectorComparison_
 
-- [ ] 7.2 (P) 計測の有効・無効による影響を比較する手段を実装する
+- [x] 7.2 (P) 計測の有効・無効による影響を比較する手段を実装する
   - 同一入力・同一設定・同一時間で、計測の有効・無効だけを変えて**交互に**実行する（順序効果を打ち消すため）
   - **判定基準を実測前に確定させる**: 有効条件の1フレームあたり総処理時間の中央値と無効条件の中央値の差が、無効条件の四分位範囲以内であるとき「有意に変化しない」と判定する
   - 判定基準の形を上流の同種の比較と揃える（同じ問いに違う基準を使わない）
@@ -304,7 +304,7 @@
   - _Depends: 6.2_
   - _Boundary: OverheadBench_
 
-- [ ] 7.3 コマンド入口を実装する
+- [x] 7.3 コマンド入口を実装する
   - 追跡の実行、検出方式の比較、計測の有効無効比較、点列の書き出しの各サブコマンドを用意する
   - 設定の解決順序を守り、**解決済み設定を表示できる**ようにする
   - 入力元の指定は**上流の生成口に委ね**、本パッケージでアダプタを再実装しない
@@ -316,7 +316,7 @@
   - _Depends: 7.1, 7.2_
   - _Boundary: CLI_
 
-- [ ] 7.4 点列の書き出しを実装する
+- [x] 7.4 点列の書き出しを実装する
   - 1投擲の点列を、受け渡し形式の版番号・座標系・追跡開始時刻・入力元種別・検出方式・終了理由・各点の値と判断材料を含む形で書き出す
   - 非数・無限大は値として書かず、**その項目を欠測にする**（上流と予測コアの方針に揃える）
   - **投擲記録のスキーマを新たに定義せず**、本 Spec は投擲記録を読み書きしない旨を docstring に明記する
@@ -329,9 +329,9 @@
 
 ## 8. 公開 API と境界の回帰
 
-- [ ] 8. 公開 API と境界の静的検証
+- [x] 8. 公開 API と境界の静的検証
 
-- [ ] 8.1 公開 API を確定する
+- [x] 8.1 公開 API を確定する
   - 再エクスポート専用の入口を用意し、ロジックを持たせない
   - 公開シンボル（座標系・受け渡し型・候補と失敗の理由・検出方式と生成口・設定・パイプラインと実行関数・計測・比較結果・例外・受け渡し形式の版番号）を確定する
   - 公開契約に含まれないものは内部実装として扱う旨を docstring に明記する
@@ -341,7 +341,7 @@
   - _Depends: 7.4_
   - _Boundary: PublicApi_
 
-- [ ] 8.2 境界を静的テストで回帰検証する
+- [x] 8.2 境界を静的テストで回帰検証する
   - **予測コアを import しているモジュールが1つも無い**ことを検証する（World 変換を書きようがない状態の担保）
   - 上流の**内部モジュールへの直接 import が無い**ことを検証する
   - **画像処理ライブラリを import しているモジュールが1つだけ**であることを検証する
@@ -407,3 +407,246 @@
   - 観測可能な完了状態: 未決事項一覧に検出方式の行が残っておらず、決定記録に結論と根拠が記載され、本文側に決着済み項目への未決参照が残っていない
   - _Requirements: 4.8, 13.7_
   - _Depends: 9.3, 9.4_
+
+## Implementation Notes
+
+- タスク1.3: `tests/` 配下に `__init__.py` が無く pytest の import mode 上、design.md
+  Directory Structure が示す短いテストファイル名（`test_types.py` / `test_config.py` 等）は
+  他 Spec の同名ファイル（例: `tests/prediction_core/test_types.py`）と basename が衝突し
+  収集エラーになる。`sensing_foundation` / `trajectory_sim` に倣い、
+  `test_flying_object_tracking_<name>.py` のようにフィーチャ名を含むフルプレフィックスで
+  命名する（以後の全タスクで踏襲すること）。
+- タスク1.4: design.md に記載不備がある。`DetectorKind` を L4-L5「MaskBuilder」節で
+  定義しつつ、L1-L2 の `DetectorConfig`（`config.py`）がその既定値として同 enum を
+  要求しており、Dependency Direction 表（`config` は `detection/masks` を import 禁止）
+  と矛盾する。実装は `DetectorKind` を両層の共通祖先である `types.py`（L1）に置くことで
+  解消した（design.md 本体は未修正。`trajectory-simulator` の前例に倣い、ここに記録する）。
+- タスク1.5: `tests/` 配下に `__init__.py` が無いため、モジュール basename は
+  セッション全体で `sys.modules` を共有する。`tests/sensing_foundation/synthetic.py`
+  が既に存在し13ファイルが `from synthetic import ...`（bare import）で依存しているため、
+  `tests/flying_object_tracking/synthetic.py` / `fakes.py` を同じ流儀で bare import すると
+  コレクション順序次第でどちらが `sys.modules["synthetic"]` に入るか変わり、
+  **無警告で**片方の Spec のテストが他方のモジュールを掴む（実際に踏んだ）。
+  **後続タスク（3.1 test_projection.py・3.2・6.3 test_pipeline.py 等）は
+  `tests/flying_object_tracking/synthetic.py` / `fakes.py` を bare import せず、
+  `tests/flying_object_tracking/conftest.py` の `synthetic_module` / `fakes_module`
+  フィクスチャ経由でのみ参照すること。**
+- タスク3.1: design.md の `PointEstimator.estimate()` は `CameraPoint | PointFailure`
+  の2値シグネチャだが、`PointFailureReason` に `SIZE_MISMATCH` メンバーが無く、
+  同じ意味は `RejectReason.SIZE_MISMATCH`（`CandidateExtractor` と同一 enum）にしか
+  存在しない。加えて design.md の Requirements Traceability 表（要件3.3/3.4行）は
+  `PointEstimator` の Interface を `CandidateRejection` としており、2値シグネチャと
+  矛盾する（design.md 自体の記載不備）。実装は `estimate()` の返り値を
+  `CameraPoint | PointFailure | CandidateRejection` の3値に拡張することで解消した
+  （design.md 本体は未修正）。
+  **注意**: `PointEstimator.estimate()` が返す `CandidateRejection` は
+  `count=1` の単体（1候補につき1回の呼び出しに対応）であり、
+  `CandidateExtractor`（task 2.6）が返す `CandidateRejection` は
+  同一フレーム内で理由ごとに**集約済み**の件数である。**粒度が異なる。**
+  **後続タスク6.1（TrackingPipeline）は、`PointEstimator` から得た単体の
+  `CandidateRejection` を `CandidateExtractor` の集約済みリストへ理由ごとに
+  合算してから計測・出力に使うこと。** 合算せずにそのまま連結すると
+  「除外は理由ごとに件数を数える」（要件9.3）という契約が壊れる。
+- タスク4.1: `SingleObjectTracker` は `gate_rejected`（ゲートで落ちた累計件数）を
+  専用フィールドとして持たない。`sum(TrackPoint.rivals)` という事後合計では
+  **真値を再現できない**（候補全滅で `appended is None` のフレームは
+  `rivals` に一切残らず過小評価する。レビューで実証済み）。
+  **正しい算出は、`TRACKING` 状態で対応付けを試みた `update()` 呼び出し
+  ごとに、`appended is not None` なら `candidates - 1`、`appended is None`
+  なら `candidates` を累積することによる。** `TrackingMetrics`（task 5.1）は
+  この累積方式を実装すること。`track.points` を後から辿って `rivals` を
+  合計する実装は要件6.6/9.3を満たさない。
+- タスク4.1: `min_points_to_start` の意味論は design.md に明記が無い
+  （「N点が同一フレームに揃うまで待つ」か「複数フレームにまたがって
+  累積N点で開始」かが読み取れない）。実装は前者（同一 `update()` 呼び出しの
+  `points` に `min_points_to_start` 個そろって初めて開始し、その集合内で
+  `(z_mm, y_mm, x_mm)` 最小のものを選ぶ）を採用した。既定値1では
+  「最初の1点で即開始」に一致し state diagram と厳密に整合するため
+  実害は無いが、**`min_points_to_start` を1以外に設定する場合はこの解釈を
+  前提にする**（design.md 本体は未修正）。
+- タスク2.2: `sensing_foundation.is_valid_depth` / `depth_raw_to_mm` はスカラー関数のため、
+  配列全体へ適用する際に `numpy.vectorize` を使うと実体は Python ループであり、
+  640x480 の既定 ROI で計測すると素朴な NumPy 配列演算比で約231倍遅い（実測）。
+  **後続タスク（2.3 frame_diff・2.4 background、および候補抽出・PointEstimator 等）は
+  `numpy.vectorize` で上流のスカラー関数をラップせず**、上流の公開定数
+  （`sensing_foundation.INVALID_DEPTH_RAW`）と同一の式（`raw != INVALID_DEPTH_RAW` /
+  `raw * depth_scale_mm`）を NumPy 配列演算として直接書くこと（上流の意味論を変えずに
+  ベクトル化する）。
+- タスク5.1: `TrackingMetrics.detect()`/`track()` は `frame_index` のみを受け取る
+  固定シグネチャ（design.md）のため、単独ではドメインデータ（`candidates`/
+  `rejected`/`appended`/`points`/`rivals`/`gate_rejected`）を送出できない。
+  **区間所要時間は内部の pending バッファ（`_pending_detect_ms`/
+  `_pending_track_ms`）に一時保持するだけとし、`record_update()` が
+  1フレームにつき `stage="detect"/event="frame"` と `stage="track"/
+  event="frame"` をそれぞれちょうど1回だけ、時間とドメインデータを
+  まとめて送出する。** 素朴に「detect()/track() が即座に部分イベントを
+  送出し、record_update() が別イベントで残りを送出する」実装にすると、
+  1フレームにつき同一 (stage, event) が2回出力され、
+  `sensing_foundation.logsummary.summarize_log()` の `count` が実フレーム数の
+  2倍になり全フィールドが見かけ上50%欠測になることを実測で確認済み
+  （レビューで実証）。**後続タスク（6.1 TrackingPipeline 等）がこのクラスを
+  使う際は、detect()/track() を呼んだ直後に必ず record_update() を呼ぶこと
+  （pending バッファは record_update() で消費・クリアされ、次フレームへ
+  持ち越さない）。**
+- タスク5.1: `record_update(update: TrackUpdate, frame: CaptureFrame)` は
+  design.md のシグネチャどおりだが、`TrackUpdate` に `mask_px`
+  （前景画素数）を運ぶフィールドが無いため、`stage="detect"/event="frame"`
+  から `mask_px` を送出できない（意図的に省略・docstring に明記）。
+  **後続タスク6.1（TrackingPipeline）は `DetectResult.mask_px` を計測へ
+  橋渡しする手段（`record_update()` の拡張、または別経路）を用意すること。**
+- タスク5.2: `EffectiveWindow` は `src/flying_object_tracking/metrics.py`
+  （task 5.1 の `TrackingMetrics` と同一ファイル）に追加する。
+  `TrackingMetrics.window() -> EffectiveWindow` は**本タスクでは配線しない**
+  （タスク6.1の `_Depends:_` に5.2が無く、タスク7.1 `DetectorComparison` が
+  `_Depends: 5.2, 6.2_` と5.2に直接依存しているため、`EffectiveWindow` の
+  構築・給餌は `DetectorComparison`（task 7.1）側の責務と判断した）。
+  `peak()` は真のスライディングウィンドウ（原点整列した固定ビンではない）
+  で実装すること。固定ビンだと境界をまたぐバーストを過小評価する
+  （実測: `[95,100,105,110]`, `window_ms=100` で真値4に対し固定ビン3）。
+- タスク6.1: `TrackingPipeline` は design.md の複数の記載不備を解消した。
+  1. **除外理由の合算**: `PointEstimator.estimate()` が返す `count=1` の単体
+     `CandidateRejection`（task 3.1）と `Detector.detect()` が返す集約済み
+     `DetectResult.rejections` を `_merge_rejections()` で理由ごとに合算する
+     （同一理由が2エントリに分裂しないようにする）。`SingleObjectTracker` は
+     常に `rejections=()`/`point_failures=()` を返すため、`dataclasses.replace()`
+     でこれらのフィールドだけを合算済みの値に差し替えて返す。
+  2. **`mask_px` の橋渡し**: `TrackingMetrics.record_update()` に
+     `mask_px: int = 0` というキーワード専用引数を**追記のみ**で足した
+     （task 5.1 の既存ロジック・テストは無変更・無リグレッション）。
+  3. **`counters()`/`caught_exceptions()` の API分割**: design.md の
+     `TrackingPipeline.counters() -> TrackingCounters` という型注釈は
+     `TrackingMetrics.counters()` への単純委譲のまま維持し、捕捉例外の
+     種別・件数は新設の `caught_exceptions() -> CaughtExceptionCounters`
+     （`total`/`by_type`）から取り出す形にした（`TrackingCounters` 自体
+     ＝task 5.1 の境界を拡張しないため）。
+  4. **例外捕捉の範囲は検出・逆投影・追跡の全段**。`SingleObjectTracker.update()`
+     は状態を持つ副作用ありの呼び出しのため、単純な catch-and-retry-same-args
+     は安全でない。実装は3段構え（実引数で呼ぶ→失敗したら候補ゼロで1回だけ
+     再試行し tracker 自身の欠測ロジックを機能させる→それも失敗したら
+     直前の `CameraTrack` スナップショットを使い回した合成 `TrackUpdate` を
+     返し、以後そのフレームでは tracker を呼ばない）を採用し、捕捉件数の
+     二重計上を避ける。`TrackingConfigError`/`IntrinsicsUnavailableError`/
+     `DetectorUnavailableError` は非捕捉のまま伝播させる。
+  詳細な根拠は `src/flying_object_tracking/pipeline.py` のモジュール docstring
+  を参照。
+- タスク6.2: `sensing_foundation.source._build_simulated_profile()` は
+  `SourceKind.SIMULATED` の `StreamProfile.intrinsics` を**常に `None`**
+  にする（`open_source(..., supplier=...)` の `supplier` は Depth 配列のみを
+  供給し、内因パラメータを注入する経路が無い）。そのため `open_source(
+  SourceKind.SIMULATED)` から得たフレームで候補が1つでも検出されると、
+  `PointEstimator.estimate()` が `IntrinsicsUnavailableError` を送出し
+  （`TrackingPipeline` の非捕捉例外）、**`open_source(SIMULATED)` と
+  `open_source(RECORDED)` を実際に比較する意味のある点列テストは書けない**。
+  タスク6.2はこれを踏まえ、「テスト用のフレーム供給」を task 1.5 の
+  `SyntheticFrameSource`（内因パラメータを持てる）、「上流の記録再生に
+  相当する供給」を `SessionRecorder` → `open_source(RECORDED)` と読み替えて
+  クロスソース等価性を検証した（タスク文言「テスト用の…」「上流の記録
+  再生に相当する…」という原文に照らして妥当な読み替え）。**後続タスク
+  （6.3 の入力元種別比較、7.x の compare-detectors 等）が `open_source(
+  SIMULATED)` を経由する場合、この制約に注意すること。**
+- タスク6.3: `frame_diff` 方式には**実装のバグではない固有の系統的位置
+  バイアス**がある。移動する円形の物体を直前フレームとの Depth 差分で
+  検出すると、物体と背景が重なる領域は差分が小さく前景にならず、
+  移動方向の前後の三日月状の領域だけが前景になる（オーバーラップが
+  残る限り、検出される塊の重心が真の物体中心からずれる）。合成軌道の
+  往復テストは1点目（直前フレームが背景と同一距離のため三日月効果が
+  出ない）は正確に復元されるが、2点目以降は一定のオフセットを持つ。
+  **後続タスク（7.1 `DetectorComparison`、OQ-26 の実測比較）はこの
+  frame_diff 固有の位置バイアスを承知の上で判定すること**（実効サンプル数
+  やレイテンシでは frame_diff が有利に見えても、位置精度では depth_band /
+  background に劣る可能性がある）。
+- タスク7.1: `DetectorComparison` は design.md の複数の記載不備を解消した。
+  1. **`DetectorComparisonResult.runs` の型**: design.md は `tuple[DetectorRunResult, ...]`
+     だが、Batch/Job Contract は「失敗した方式は null 相当で残す」と
+     「他方式の結果を捨てない」の両方を要求し矛盾する。実装は
+     `runs: tuple[DetectorRunResult | None, ...]`（失敗スロットは位置対応の
+     `None`）と `failures: Mapping[str, str]`（理由）の両方を採用した。
+  2. **`parameter_count()`（判定規則3の「設定パラメータが少ない方」の定義）**:
+     `DetectorConfig` は3方式共通の単一データクラスのため素朴な
+     `dataclasses.fields()` では機能しない。方式固有のマスクコンストラクタ
+     引数から共通後段パラメータ（open_kernel_px/close_kernel_px/
+     max_candidates）を除いて数える（depth_band=0, frame_diff=1,
+     background=3、共通3を含め各3/4/6）。
+  3. **判定規則2のIQR閾値**: `max(leader.detect_ms_iqr, run.detect_ms_iqr)`
+     を使う（比較対象2方式のどちらか片側だけだと「AからはBと区別つかないが
+     BからはAと区別つく」という非対称な矛盾が起きるため）。**この
+     `max()` という選択自体が判定結果を左右する**（片側基準だと同じ入力で
+     別の方式が選ばれる）ことを非対称IQRの人工データで固定済み。
+  4. **`detect_ms_p50`/`p95`/`iqr` の集計元**: `sensing_foundation.logsummary
+     .FieldStats` は p50/p95/mean/min/max のみで Q1/Q3/IQR を持たない
+     （上流の改修は本タスクの境界外）。`DetectorComparison` は `Logger`
+     プロトコルの `enabled`/`emit()` だけを実装する最小限のインメモリ
+     `_CapturingLogger` で生の `detect_ms` を捕捉し、比較実行後（フレーム
+     処理中ではない）に自分で分位点を計算する。
+  5. `compare_detectors()` は単一セッションのみを対象とする。複数セッション
+     の集約はCLI（task 7.3）の責務。`measurements.md` への書き込みは
+     行わない（実機実測が絡む task 9.x の責務）。
+- タスク7.2: `OverheadBench` は上流 `sensing_foundation.bench.logging_overhead`
+  の判定式（`median_delta_ms = abs(on.p50 - off.p50)`、
+  `baseline_iqr_ms = off.total_ms_iqr`、`passed = median_delta_ms <=
+  baseline_iqr_ms`）を実測クロスチェックテストで確認の上、そのまま踏襲する。
+  上流の `frames_dropped` 追加条件は capture 層固有の概念（`TrackingCounters`
+  に対応する概念が無い）であり design.md の判定基準文にも言及が無いため
+  意図的に含めない。1フレームあたり総処理時間は `detect_ms`/`track_ms` の
+  ログ集計ではなく `TrackingPipeline.process()` を外側から wall-clock
+  （`time.perf_counter()`）で計測する（計測OFF条件ではログ自体が出ない
+  ため、ログ経由の値ではOFF側の比較対象が存在しない。上流の
+  `LoggingOverheadBench` も同じ理由で同じ手法を取る）。A/B/A/B交互実行は
+  `TrackingMetrics.enabled` がパイプライン構築時に固定される制約と
+  `SingleObjectTracker` の状態を壊さないため、**フレーム単位ではなく
+  「入力列を1回通しで処理する」を1セグメントとして交互実行**する
+  （`cycles`回の反復で順序効果を打ち消す）。
+- タスク7.3: `export` サブコマンドは argparse 面（引数・ヘルプ・起動前検証）のみを
+  本タスクで完成させ、design.md「エクスポート形式」節が要求する
+  NaN/Infinity→欠測変換規則（要件7.6）は**タスク7.4の責務として意図的に
+  残す**（tasks.mdがタスク7.4を独立タスクとして切り出しているため）。
+  本タスクの書き出しは `dataclasses.asdict()` → `json.dumps(...,
+  allow_nan=False)` の最小実装であり、通常経路ではNaN/Infinityが生じない
+  ため完走する。`allow_nan=False` は不正な値が万一混入した場合に無効な
+  JSONを黙って出すより失敗する方が安全という判断（design.md自体が
+  `allow_nan=False` を指定している）。
+  `--source simulated` は `SourceKind.SIMULATED` の `intrinsics=None` 制約
+  （task 6.2）により、本タスクのCLIテストではROI距離帯の外側の値を返す
+  smoke supplier で「検出しない」経路のみを検証し、`--source recorded`
+  を候補検出込みの主経路とした。`main()` は `TrackingError`/
+  `SensingFoundationError` を最上位で捕捉し1行のエラーメッセージで
+  終了する（レビューで実測確認: `--source simulated` で実際に候補検出が
+  起きても生のトレースバックにはならない）。
+- タスク7.4: 点列の書き出し本体（`serialize_camera_track()`）は `cli.py`
+  内に実装した（design.md がこのロジックに独立コンポーネント名を与えて
+  おらず、task 7.4 自身の `Boundary:` が task 7.3 と同一 `CLI` のため）。
+  非数・無限大は上流 `sensing_foundation.obslog` の `_sanitize_value`/
+  `_DROP` と同一方針（項目ごとに欠測＝キー省略）で実装した。design.md
+  「上流と `prediction_core` の方針に揃える」という記述のうち
+  `prediction_core` 側は実際には**項目ごとの欠測ではなくレコード全体を
+  `RecordSerializationError` で拒否する**方式であり、design.md の記述と
+  実際の `prediction_core.record.ThrowRecord.to_json()` の挙動は厳密には
+  一致しない（design.md 側の記載不備。本タスクは design.md の表の指示
+  「その項目を欠測にする」どおりに実装しており、この不一致は本タスクの
+  責任範囲外）。`run_track()`/`run_export()` の共通処理は `_run_pipeline()`
+  へ抽出したが、`run_track()` の戻り値の形は変更していない。
+- タスク8.1: 公開 API（`__init__.py`、44シンボル）を確定した。design.md の
+  10カテゴリ列挙に独立項目が無い内部実装（`PointEstimator`・
+  `SingleObjectTracker`・`MaskBuilder`/`create_mask_builder`/3方式の
+  マスククラス・`mask_ops.py` の関数群・`CandidateExtractor`・
+  `DefaultDetector`・bench内部の `decide()`/`compute_verdict()`等・
+  `cli.main`）は非公開のまま維持した。`CaughtExceptionCounters`
+  （task 6.1 が design.md に無く追加した型）は `TrackingPipeline
+  .caught_exceptions()` の戻り値型そのものであるため公開に含めた。
+  「生の計測値を残し、判定を後から再計算できる」（task 7.1）は
+  `DetectorRunResult`/`OverheadResult` の生フィールドが公開型として
+  残っており、再計算は `compare_detectors()`/`OverheadBench` の再実行で
+  行う設計であるため、判定規則の内部関数自体を公開する必要はないと判断した。
+- タスク8.2: `test_boundaries.py` という平文名は `tests/prediction_core/
+  test_boundaries.py` と衝突するため `test_flying_object_tracking_boundaries.py`
+  へ改名した（task 1.3 の慣行を踏襲）。**最も安全性が重要なチェック
+  「`projection.py` が逆投影の基本演算を自前で持たない」**の検出器
+  （`find_bypassed_depth_scale_conversions`）は、レビューで3ラウンドに
+  わたり以下の回避手法を発見・修正した: 中間変数1段、位置引数、
+  `depth_scale_mm` の別名抽出、多段代入連鎖、タプルアンパック代入、
+  累算代入（`*=`）。**ヘルパー関数への委譲（別関数内でのスケール乗算）と
+  `**kwargs`/属性ターゲット代入は意図的に対象外**とした（単一関数内の
+  AST解析では追跡不能、または `projection.py` の実際のスタイルから
+  乖離した非現実的なパターンと判断）。この境界は検出器自身の docstring
+  にも明記済み。**後続でこのチェックを拡張する場合、上記の既知の限界
+  （ヘルパー関数委譲・kwargs・属性代入は検出できない）を踏まえること。**
