@@ -294,7 +294,7 @@
   - _Depends: 5.2, 6.2_
   - _Boundary: DetectorComparison_
 
-- [ ] 7.2 (P) 計測の有効・無効による影響を比較する手段を実装する
+- [x] 7.2 (P) 計測の有効・無効による影響を比較する手段を実装する
   - 同一入力・同一設定・同一時間で、計測の有効・無効だけを変えて**交互に**実行する（順序効果を打ち消すため）
   - **判定基準を実測前に確定させる**: 有効条件の1フレームあたり総処理時間の中央値と無効条件の中央値の差が、無効条件の四分位範囲以内であるとき「有意に変化しない」と判定する
   - 判定基準の形を上流の同種の比較と揃える（同じ問いに違う基準を使わない）
@@ -581,3 +581,18 @@
   5. `compare_detectors()` は単一セッションのみを対象とする。複数セッション
      の集約はCLI（task 7.3）の責務。`measurements.md` への書き込みは
      行わない（実機実測が絡む task 9.x の責務）。
+- タスク7.2: `OverheadBench` は上流 `sensing_foundation.bench.logging_overhead`
+  の判定式（`median_delta_ms = abs(on.p50 - off.p50)`、
+  `baseline_iqr_ms = off.total_ms_iqr`、`passed = median_delta_ms <=
+  baseline_iqr_ms`）を実測クロスチェックテストで確認の上、そのまま踏襲する。
+  上流の `frames_dropped` 追加条件は capture 層固有の概念（`TrackingCounters`
+  に対応する概念が無い）であり design.md の判定基準文にも言及が無いため
+  意図的に含めない。1フレームあたり総処理時間は `detect_ms`/`track_ms` の
+  ログ集計ではなく `TrackingPipeline.process()` を外側から wall-clock
+  （`time.perf_counter()`）で計測する（計測OFF条件ではログ自体が出ない
+  ため、ログ経由の値ではOFF側の比較対象が存在しない。上流の
+  `LoggingOverheadBench` も同じ理由で同じ手法を取る）。A/B/A/B交互実行は
+  `TrackingMetrics.enabled` がパイプライン構築時に固定される制約と
+  `SingleObjectTracker` の状態を壊さないため、**フレーム単位ではなく
+  「入力列を1回通しで処理する」を1セグメントとして交互実行**する
+  （`cycles`回の反復で順序効果を打ち消す）。
