@@ -165,6 +165,7 @@ graph LR
     Params --> Observation
     Params --> PredictionLink
     Results --> PredictionLink
+    Drivetrain --> PredictionLink
     Observation --> Evaluate
     PredictionLink --> Evaluate
     Drivetrain --> Evaluate
@@ -186,7 +187,7 @@ graph LR
 | 2 | `results` | `units`, `errors`, `params` | **可**（`ThrowRecord` / `Prediction` / `InvalidReason`） |
 | 3 | `physics` / `drivetrain` | `units`, `errors`, `params` | 不可 |
 | 4 | `observation` | 0〜3（`physics` を含む） | **不可**。ただし戻り値の型として `Sample` を使うため `params` 経由で型を受け取る |
-| 4 | `prediction_link` | `units`, `errors`, `params`, `results` | **可**（`ThrowPredictionTracker` / `SourceKind` / `Prediction` / `ThrowRecord`） |
+| 4 | `prediction_link` | `units`, `errors`, `params`, `results`, `drivetrain` | **可**（`ThrowPredictionTracker` / `SourceKind` / `Prediction` / `ThrowRecord`） |
 | 5 | `evaluate` | 0〜4 | 不可 |
 | 6 | `sweep` | 0〜5 | 不可 |
 | 7 | `serialize` | 0〜6 | 不可 |
@@ -199,6 +200,11 @@ graph LR
 >
 > `observation` は `Sample` を生成するが、これは `params` が再公開する型注釈として受け取る。
 > 上流の import 箇所を増やさないための措置であり、`Sample` の構築自体は `params` が公開する構築関数を通す。
+>
+> **`prediction_link` が `drivetrain` を import してよい**のは、`PredictionTimeline.updates` の要素型
+> `TargetUpdate` が `drivetrain.py` の単独所有だからである（実装時に判明・追記。旧版の本表は
+> この辺を欠いており Service Interface の要求と矛盾していた）。`prediction_link` は `TargetUpdate`
+> の**型としてのみ**参照し、`drivetrain` の他のシンボル（`simulate` / `is_reachable` 等）には触れない。
 
 ### Technology Stack
 
@@ -1124,6 +1130,27 @@ def run_sweep(spec: SweepSpec, base_params: ScenarioParams) -> SweepResult: ...
 - Integration: `configs/trajectory_sim/*.json` の 4 ファイルが、そのまま実行可能な入力の実例になる
 - Validation: `sweep-layout.json` を実行すると、レイアウト候補ごとの必要移動量と成立性が格子として出ることを `test_layout_study.py` で固定する（要件 10.3 / 10.4）
 - Risks: 設定ファイルの構造は出力の `parameters` と対称にする。片方だけ改名すると混乱するため、変換は1箇所（`cli`）に閉じる
+
+##### 設定 JSON のスキーマ（実装時に確定。本節は当初未記載だった）
+
+`--config` が指す JSON はトップレベルに `parameters` と `sweep` の2キーのみを持つ。
+
+```json
+{
+  "parameters": { "throw": {...}, "dispersion": {...}, "observation": {...},
+                  "drivetrain": {...}, "catch": {...}, "layout": {...},
+                  "prediction": {...}, "calibration_stage": "uncalibrated",
+                  "provenance": { "throw.speed_mm_s": "assumed", ... } },
+  "sweep": { "kind": "throw", "axes": [{"name": "...", "unit": "...", "values": [...]}],
+             "trials_per_cell": 1, "seed": 0, "catch_ratio_threshold": null,
+             "keep_representative_record": false }
+}
+```
+
+- `parameters` は `ScenarioParams` の全フィールドを再帰的に反映する。**あらゆるネスト階層で未知のキーは `ParameterError`**（省略は許容、値が存在すれば妥当性を検証する）
+- `--drivetrain <path>` はこの `parameters.drivetrain` を丸ごと差し替えるための別ファイルで、`DrivetrainParams` のフラットな辞書を直接指定する形（`max_speed_mm_s` 等）と、ホイール径から導出する形（`wheel_diameter_mm` / `motor_rpm` / `speed_efficiency` + 加減速・制御周期・指令遅延）の両方を受け付ける。**両形式の混在は `ParameterError`**。指定時は `parameters.drivetrain` の省略を許すが、存在すれば（使われなくても）妥当性は検証する
+- `sweep.axes[].values` の要素型は `float | str`（enum 値を持つ軸では文字列を渡す）
+- 詳細な変換規則（型解決・enum 変換・`Mapping[str, Provenance]` の扱い）は `cli.py` の実装コメントを正とする
 
 #### PublicApi
 

@@ -448,7 +448,7 @@ Replay を「重要な開発方針」としているが、**Replay できるだ�
 | ID | 事項 |
 |---|---|
 | [OQ-32](./open-questions.md#g-観測基盤独自機能) | Record / Replay のデータ形式（Throw Record 最小スキーマ自体は `prediction-core` が確定済み。→ [decisions.md D-8](./decisions.md#d-8-throw-record-最小スキーマを-prediction-core-で確定した-oq-31-決着)） |
-| [OQ-33](./open-questions.md#g-観測基盤独自機能) | シミュレータの物理モデルの詳細度（空気抵抗・スリップ） |
+| ~~OQ-33~~ | シミュレータの物理モデルの詳細度（空気抵抗・スリップ）。**決着済み** → [decisions.md D-9](./decisions.md#d-9-シミュレータの物理モデルの詳細度を最小限で決着した-oq-33-決着) |
 | [OQ-34](./open-questions.md#g-観測基盤独自機能) | ブラウザ可視化の実装手段（**2D で足りる可能性が高い**） |
 | [OQ-35](./open-questions.md#g-観測基盤独自機能) | ログの保存形式（NDJSON / CSV / その他） |
 | [OQ-36](./open-questions.md#g-観測基盤独自機能) | ESP32 のログバッファ容量と吸い出し方法 |
