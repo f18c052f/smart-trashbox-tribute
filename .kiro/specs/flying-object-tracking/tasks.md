@@ -216,7 +216,7 @@
 
 - [ ] 5. 計測: 区間レイテンシと実効サンプル数
 
-- [ ] 5.1 検出区間・追跡区間の計測を実装する
+- [x] 5.1 検出区間・追跡区間の計測を実装する
   - **上流の構造化ロギング基盤に乗せ、独自のログ形式を定義しない**
   - 上流の予約段階名と衝突しない段階名として、検出と追跡の2つを足す
   - 区間ごとの処理時間を独立した計測値として送り、フレームの時刻と識別情報に突き合わせられる形にする
@@ -472,3 +472,25 @@
   （`sensing_foundation.INVALID_DEPTH_RAW`）と同一の式（`raw != INVALID_DEPTH_RAW` /
   `raw * depth_scale_mm`）を NumPy 配列演算として直接書くこと（上流の意味論を変えずに
   ベクトル化する）。
+- タスク5.1: `TrackingMetrics.detect()`/`track()` は `frame_index` のみを受け取る
+  固定シグネチャ（design.md）のため、単独ではドメインデータ（`candidates`/
+  `rejected`/`appended`/`points`/`rivals`/`gate_rejected`）を送出できない。
+  **区間所要時間は内部の pending バッファ（`_pending_detect_ms`/
+  `_pending_track_ms`）に一時保持するだけとし、`record_update()` が
+  1フレームにつき `stage="detect"/event="frame"` と `stage="track"/
+  event="frame"` をそれぞれちょうど1回だけ、時間とドメインデータを
+  まとめて送出する。** 素朴に「detect()/track() が即座に部分イベントを
+  送出し、record_update() が別イベントで残りを送出する」実装にすると、
+  1フレームにつき同一 (stage, event) が2回出力され、
+  `sensing_foundation.logsummary.summarize_log()` の `count` が実フレーム数の
+  2倍になり全フィールドが見かけ上50%欠測になることを実測で確認済み
+  （レビューで実証）。**後続タスク（6.1 TrackingPipeline 等）がこのクラスを
+  使う際は、detect()/track() を呼んだ直後に必ず record_update() を呼ぶこと
+  （pending バッファは record_update() で消費・クリアされ、次フレームへ
+  持ち越さない）。**
+- タスク5.1: `record_update(update: TrackUpdate, frame: CaptureFrame)` は
+  design.md のシグネチャどおりだが、`TrackUpdate` に `mask_px`
+  （前景画素数）を運ぶフィールドが無いため、`stage="detect"/event="frame"`
+  から `mask_px` を送出できない（意図的に省略・docstring に明記）。
+  **後続タスク6.1（TrackingPipeline）は `DetectResult.mask_px` を計測へ
+  橋渡しする手段（`record_update()` の拡張、または別経路）を用意すること。**
