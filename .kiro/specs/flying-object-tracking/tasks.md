@@ -186,7 +186,7 @@
 
 - [ ] 4. 追跡: 対応付けとライフサイクル
 
-- [ ] 4.1 単一物体の追跡を実装する
+- [x] 4.1 単一物体の追跡を実装する
   - **1投擲 = 1物体**を前提とし、複数物体の同時追跡を持たない
   - 追跡開始時にそのフレーム時刻を**追跡開始時刻**として記録する
   - 追跡中の点が2点以上あれば直近2点の等速外挿で予測位置を作り、1点なら直前点を予測位置とする
@@ -447,6 +447,23 @@
   `CandidateRejection` を `CandidateExtractor` の集約済みリストへ理由ごとに
   合算してから計測・出力に使うこと。** 合算せずにそのまま連結すると
   「除外は理由ごとに件数を数える」（要件9.3）という契約が壊れる。
+- タスク4.1: `SingleObjectTracker` は `gate_rejected`（ゲートで落ちた累計件数）を
+  専用フィールドとして持たない。`sum(TrackPoint.rivals)` という事後合計では
+  **真値を再現できない**（候補全滅で `appended is None` のフレームは
+  `rivals` に一切残らず過小評価する。レビューで実証済み）。
+  **正しい算出は、`TRACKING` 状態で対応付けを試みた `update()` 呼び出し
+  ごとに、`appended is not None` なら `candidates - 1`、`appended is None`
+  なら `candidates` を累積することによる。** `TrackingMetrics`（task 5.1）は
+  この累積方式を実装すること。`track.points` を後から辿って `rivals` を
+  合計する実装は要件6.6/9.3を満たさない。
+- タスク4.1: `min_points_to_start` の意味論は design.md に明記が無い
+  （「N点が同一フレームに揃うまで待つ」か「複数フレームにまたがって
+  累積N点で開始」かが読み取れない）。実装は前者（同一 `update()` 呼び出しの
+  `points` に `min_points_to_start` 個そろって初めて開始し、その集合内で
+  `(z_mm, y_mm, x_mm)` 最小のものを選ぶ）を採用した。既定値1では
+  「最初の1点で即開始」に一致し state diagram と厳密に整合するため
+  実害は無いが、**`min_points_to_start` を1以外に設定する場合はこの解釈を
+  前提にする**（design.md 本体は未修正）。
 - タスク2.2: `sensing_foundation.is_valid_depth` / `depth_raw_to_mm` はスカラー関数のため、
   配列全体へ適用する際に `numpy.vectorize` を使うと実体は Python ループであり、
   640x480 の既定 ROI で計測すると素朴な NumPy 配列演算比で約231倍遅い（実測）。
