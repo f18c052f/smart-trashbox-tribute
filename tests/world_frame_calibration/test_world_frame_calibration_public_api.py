@@ -117,6 +117,12 @@ INTERNAL_SUBMODULE_NAMES: frozenset[str] = frozenset(
         "verify",
         "report",
         "upstream",
+        # cli.py（タスク 6.4）。CLI の入口 `main` はパッケージの公開 API
+        # （`__init__.py` の8シンボル）には含まれない（design.md PublicApi
+        # は下流ライブラリ利用者向けの契約であり、CLI はエンドユーザー向けの
+        # 別の入口であるため）。したがってサブモジュール名としてのみここへ
+        # 列挙し、`EXPECTED_PUBLIC_SYMBOLS` には追加しない。
+        "cli",
         # `from __future__ import annotations` により `dir()` に現れる
         # 言語機能オブジェクト。公開シンボルではない。
         "annotations",
