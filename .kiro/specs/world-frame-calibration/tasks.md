@@ -352,7 +352,7 @@
   - _Depends: 7.1_
   - _Boundary: tests/world_frame_calibration/test_verify.py_
 
-- [ ] 7.3 境界テストで依存方向と禁止 import を静的に固定する
+- [x] 7.3 境界テストで依存方向と禁止 import を静的に固定する
   - 上流アダプタ・逆投影モジュール・CLI 以外のモジュールが `sensing_foundation` を import していないことを静的に検証する
   - **逆投影モジュールが上流から参照するシンボルが `deproject_pixel` と `CameraIntrinsics` の2つだけである**ことを列挙で固定する（要件 3.8）
   - **本パッケージのどこにもピンホールの式が再実装されていない**ことを静的に検証する（`ppx_px` / `fx_px` を用いた除算がソースに現れない）
