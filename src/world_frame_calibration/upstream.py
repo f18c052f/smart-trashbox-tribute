@@ -1,6 +1,7 @@
-"""上流の副作用に触れる唯一の接点：フレーム収集・平均化・型写像
+"""上流の副作用に触れる唯一の接点：フレーム収集・平均化・型写像・ロギング委譲
 (design.md「L0-L2〜L8: 上流接続」節の UpstreamAdapter コンポーネント /
-tasks.md タスク 6.1 / 要件 1.3, 1.6, 1.7, 3.8, 8.1, 8.3, 8.4, 8.5)。
+tasks.md タスク 6.1, 6.2 / 要件 1.3, 1.6, 1.7, 3.8, 8.1, 8.3, 8.4, 8.5,
+10.1, 10.2, 10.3, 10.4, 10.5)。
 
 **上流の副作用を伴う機能（取得・ロギング・設定解決）を使うのは本モジュール
 だけである。** 幾何コアからの上流参照は `deproject.py` の2シンボル
@@ -42,12 +43,24 @@ types` のような内部モジュールへ直接 import しない（要件 8.2�
 （内部パラメータを提供できない入力元）の場合もキャリブレーションを続行
 できないため `CalibrationConfigError` とする。
 
-**本タスク（6.1）のスコープ外**: 構造化ロギングへの計測値送出
-（`CALIBRATE_STAGE` / `stage_logger` / `timed` / `timed_apply`）はタスク 6.2
-が持つ（要件 10.x）。`RuntimeSettings` から入力元を開いて本モジュールへ
-橋渡しする CLI 向けの入口（`open_depth_image`）はタスク 6.4 の CLI 実装と
-合わせて追加する。本モジュールは「既に得られた `FrameSource` からフレーム
-列を集めて平均化し、自 Spec の値オブジェクトへ写像する」ことだけを行う。
+**タスク 6.2（本ファイルの下半分）が追加するもの**: 構造化ロギングへの
+計測値送出（`CALIBRATE_STAGE` / `stage_logger` / `timed` / `timed_apply`、
+要件 10.1〜10.5）。`collect_depth` はロギングが有効なら `collect` イベント
+（`frames_requested` / `frames_used` / `valid_ratio` / `duration_ms`）を、
+失敗時は `failure` イベントを送出してから例外を送出する（**成功時しか
+ログが残らない状態を作らない**）。ロギングが無効（`logger` が `None`
+または上流の無効な `NullLogger`）なら、`valid_ratio` の算出という計測値の
+生成そのものを行わない（要件 10.5。`_valid_ratio` を呼ばない——出力の
+抑制ではなく計算自体のスキップ。`tech.md` 開発標準5「計測が計測対象を
+歪めないこと」）。`timed_apply` は `WorldTransform.apply` の適用区間を
+外部から計測する薄い委譲であり、**`transform.py` 自体は変更しない**
+（タスク 2.2 の Critical constraint）。
+
+**引き続きスコープ外（タスク 6.4）**: `RuntimeSettings` から入力元を開いて
+本モジュールへ橋渡しする CLI 向けの入口（`open_depth_image`）はタスク 6.4
+の CLI 実装と合わせて追加する。本モジュールは「既に得られた `FrameSource`
+からフレーム列を集めて平均化し、自 Spec の値オブジェクトへ写像する」
+ことと、その計測値をロギングへ委譲することだけを行う。
 
 **`source` のライフサイクル管理は呼び出し側の責務**である。
 `sensing_foundation.FrameSource` の契約は `start()` を `frames()` の前に
@@ -60,22 +73,104 @@ types` のような内部モジュールへ直接 import しない（要件 8.2�
 
 from __future__ import annotations
 
+import time
+
 import numpy as np
 from sensing_foundation import (
     FrameSource,
+    Logger,
+    NullLogger,
     StreamProfile,
     depth_raw_to_mm,
     is_valid_depth,
 )
 
 from world_frame_calibration.errors import CalibrationConfigError
+from world_frame_calibration.transform import WorldTransform
 from world_frame_calibration.types import DepthImage, Intrinsics, StreamSignature
 
 __all__ = [
+    "CALIBRATE_STAGE",
     "collect_depth",
+    "stage_logger",
+    "timed",
+    "timed_apply",
     "to_intrinsics",
     "to_signature",
 ]
+
+#: 本 Spec の構造化ログ段階名（design.md UpstreamAdapter 契約 / 要件 10.1）。
+#: 上流の予約段階名（`sensing_foundation.obslog.RESERVED_STAGES` ==
+#: `{"system", "capture", "record"}`）と衝突しないことを
+#: `tests/world_frame_calibration/test_world_frame_calibration_upstream.py`
+#: が実際の定数に対して固定する。
+CALIBRATE_STAGE = "calibrate"
+
+
+def stage_logger(logger: "Logger | None"):
+    """`CALIBRATE_STAGE` に束縛した `StageLogger` を返す薄い委譲
+    （design.md UpstreamAdapter 契約 `logger.stage(CALIBRATE_STAGE)` /
+    要件 10.1, 10.2）。
+
+    基盤・形式・送出機構は一切再実装せず、上流 `Logger.stage()` へ
+    そのまま委譲するだけである。`logger` が `None` の場合は上流の
+    `NullLogger` を束縛するため、呼び出し側は `None` 分岐を書かずに
+    常に同じ形（`stage_logger(logger).emit(...)`）で使える。
+
+    戻り値の型は上流 `Logger.stage()` の戻り値
+    （`sensing_foundation.obslog.StageLogger`）そのものだが、その型は
+    上流の公開入口（`sensing_foundation.__all__`）に含まれないため、本
+    モジュールは型としては import しない（要件 8.2 と同じ理由。
+    `sensing_foundation/__init__.py` docstring「含めなかったもの」参照）。
+    """
+    effective_logger: Logger = logger if logger is not None else NullLogger()
+    return effective_logger.stage(CALIBRATE_STAGE)
+
+
+def timed(logger: "Logger | None", event: str, /, **data: object):
+    """`logger.timed(CALIBRATE_STAGE, event, **data)` への薄い委譲
+    （design.md UpstreamAdapter 契約 / 要件 10.1, 10.2）。
+
+    `logger` が `None` の場合は上流の `NullLogger` へ委譲する
+    （`NullLogger.timed()` は共有された no-op コンテキストマネージャを
+    返すため、ロギング無効時の追加コストはほぼ無い）。
+    """
+    effective_logger: Logger = logger if logger is not None else NullLogger()
+    return effective_logger.timed(CALIBRATE_STAGE, event, **data)
+
+
+def timed_apply(
+    logger: "Logger | None", transform: WorldTransform, points_camera_mm: "np.ndarray"
+) -> "np.ndarray":
+    """`WorldTransform.apply` の適用区間を外部から計測する薄い委譲
+    （design.md UpstreamAdapter 契約 `timed_apply` / 要件 10.4）。
+
+    `transform.py` はログ送出・確保・検証を一切行わない——`apply` は
+    飛翔物追跡が毎フレーム呼ぶ唯一の経路であり、行列積と平行移動の加算
+    だけの最小実装にとどめる設計方針である（`transform.py` モジュール
+    docstring / tasks.md タスク 2.2 Critical constraint）。下流が変換
+    適用の所要時間を自区間として計測したい場合は `transform.apply` を
+    直接呼ばず、本関数を経由する。
+
+    計測対象（`apply` 自体の実装）を歪めないよう、`transform.apply` を
+    呼ぶだけであり、行列演算を自前で書き直さない（`tech.md` 開発標準5）。
+    """
+    with timed(logger, "apply"):
+        return transform.apply(points_camera_mm)
+
+
+def _valid_ratio(valid_count: "np.ndarray") -> float:
+    """有効画素の割合を求める（`collect` イベント専用の計測値）。
+
+    幾何コアの出力そのものには使わない、ロギング専用の付随値である。
+    ロギングが無効な場合はこの関数自体を呼ばない——`collect_depth` 側で
+    呼び出し自体を分岐する（要件 10.5: 計測値の生成そのものを行わない。
+    出力の抑制ではなく計算のスキップ）。
+    """
+    total = int(valid_count.size)
+    if total == 0:
+        return 0.0
+    return float(np.count_nonzero(valid_count > 0)) / float(total)
 
 
 def to_intrinsics(profile: StreamProfile) -> Intrinsics:
@@ -126,7 +221,9 @@ def to_signature(profile: StreamProfile) -> StreamSignature:
     )
 
 
-def collect_depth(source: FrameSource, *, frame_count: int) -> DepthImage:
+def collect_depth(
+    source: FrameSource, *, frame_count: int, logger: "Logger | None" = None
+) -> DepthImage:
     """`source.frames()` から `frame_count` 枚を取り、平均化した `DepthImage`
     を返す（design.md UpstreamAdapter 契約 / 要件 1.3, 1.6, 1.7, 3.8, 8.1,
     8.3, 8.4）。
@@ -136,6 +233,16 @@ def collect_depth(source: FrameSource, *, frame_count: int) -> DepthImage:
     `float64` 配列へ確保し、`frame.depth`（上流の読み取り専用 Depth）を
     一切書き換えない（要件 1.7）。寄与した枚数がゼロの画素は `NaN`
     （欠測）のまま残す（0 で埋めない）。
+
+    ロギング（design.md UpstreamAdapter 契約 / 要件 10.1〜10.5）: `logger`
+    が指定され有効であれば、段階名 `CALIBRATE_STAGE`（`"calibrate"`）で
+    `collect` イベント（`frames_requested` / `frames_used` /
+    `valid_ratio` / `duration_ms`）を送出する。収集が失敗した場合も
+    `failure` イベント（`detail`）を送出してから例外を re-raise する
+    （成功時しかログが残らない状態を作らない）。`logger` が `None`
+    または上流の無効な `NullLogger`（`enabled=False`）であれば、
+    `valid_ratio` の算出そのものを行わない（要件 10.5。計測が計測対象を
+    歪めないよう、出力の抑制ではなく計算自体をスキップする）。
 
     Preconditions:
         `frame_count >= 1`。`source` は既に `start()` されており、
@@ -160,6 +267,37 @@ def collect_depth(source: FrameSource, *, frame_count: int) -> DepthImage:
               定まらない `CalibrationFailure` ではない）。
             - いずれかのフレームで `StreamProfile.intrinsics` が `None`
               の場合（`to_intrinsics` が送出する）。
+    """
+    stage = stage_logger(logger)
+    measuring = logger is not None and logger.enabled
+    start = time.perf_counter() if measuring else None
+
+    try:
+        result = _collect_depth_impl(source, frame_count=frame_count)
+    except CalibrationConfigError as exc:
+        stage.emit("failure", detail=str(exc))
+        raise
+
+    if measuring:
+        assert start is not None
+        duration_ms = (time.perf_counter() - start) * 1000.0
+        valid_ratio = _valid_ratio(result.valid_count)
+        stage.emit(
+            "collect",
+            frames_requested=frame_count,
+            frames_used=result.frames_used,
+            valid_ratio=valid_ratio,
+            duration_ms=duration_ms,
+        )
+    return result
+
+
+def _collect_depth_impl(source: FrameSource, *, frame_count: int) -> DepthImage:
+    """`collect_depth` の実装本体（フレーム収集・平均化・型写像）。
+
+    ロギング（`collect_depth` が担う）から独立させ、計測の有無が収集
+    ロジックそのものに影響しないようにする。docstring・契約は
+    `collect_depth` を正とする。
     """
     if frame_count < 1:
         raise CalibrationConfigError(f"frame_count must be >= 1: {frame_count!r}")

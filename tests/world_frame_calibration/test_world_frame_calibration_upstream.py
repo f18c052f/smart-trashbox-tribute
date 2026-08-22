@@ -29,14 +29,15 @@ design.md「L0-L2〜L8: 上流接続」節の UpstreamAdapter コンポーネン
 `test_world_frame_calibration_upstream.py` とする（既存タスクの命名規約。
 tasks.md 実装ノート・タスク1.6参照）。
 
-本タスク（6.1）のスコープ外: 構造化ロギングへの委譲（`stage_logger` /
-`timed` / `timed_apply` / `CALIBRATE_STAGE`）はタスク 6.2 で別ファイルへ
-追加されるため、ここでは検証しない（`upstream.py` モジュール docstring
-「本タスク（6.1）のスコープ外」を参照）。
+タスク 6.2（本ファイルの下半分）で、構造化ロギングへの委譲
+（`stage_logger` / `timed` / `timed_apply` / `CALIBRATE_STAGE`）と、
+`collect_depth` への `collect` / `failure` イベント送出を追加で検証する
+（要件 10.1〜10.5）。
 """
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import replace
 
 import numpy as np
@@ -44,6 +45,7 @@ import pytest
 from sensing_foundation import (
     CameraIntrinsics,
     CaptureFrame,
+    NullLogger,
     SourceKind,
     StreamProfile,
     TimestampDomain,
@@ -51,6 +53,7 @@ from sensing_foundation import (
 
 from world_frame_calibration import upstream
 from world_frame_calibration.errors import CalibrationConfigError
+from world_frame_calibration.transform import WorldTransform
 from world_frame_calibration.types import DepthImage, Intrinsics, StreamSignature
 
 # ---------------------------------------------------------------------------
@@ -422,3 +425,357 @@ def test_collect_depth_rejects_stream_configuration_change_in_intrinsics() -> No
 
     with pytest.raises(CalibrationConfigError):
         upstream.collect_depth(source, frame_count=2)
+
+
+# =============================================================================
+# タスク 6.2: 計測点とロギング委譲
+# (tasks.md タスク 6.2 / 要件 10.1, 10.2, 10.3, 10.4, 10.5)
+#
+# 本節が確認すること:
+# - `CALIBRATE_STAGE` が `"calibrate"` であり、上流の実際の
+#   `RESERVED_STAGES`（`system` / `capture` / `record`）と衝突しないこと
+#   （ハードコードした推測ではなく実際の定数に対して確認する）
+# - `stage_logger` / `timed` が上流 `Logger.stage()` / `Logger.timed()` へ
+#   段階名 `calibrate` を添えて薄く委譲するだけであること（`logger=None` も
+#   安全に扱う）
+# - `timed_apply` が `WorldTransform.apply` へ実際に委譲し（自前で行列積を
+#   書き直さない）、その適用区間を計測委譲すること。`transform.py` 自体は
+#   一切変更しない
+# - `collect_depth` がロギング有効時に `collect` イベント（設計どおりの
+#   キー）を送出し、失敗時も `failure` イベントを送出してから例外を
+#   送出すること（成功時しかログが残らない状態を作らない）
+# - ロギングが無効（`logger=None` または上流の無効な `NullLogger`）な
+#   場合、`valid_ratio` の算出という計測値の生成そのものを行わないこと
+#   （出力の抑制ではなく計算自体のスキップであることを、算出関数への
+#   呼び出し回数をスパイして固定する）
+#
+# ここでも task 6.1 と同じ方針（実機・SDK・上流の具象ロガー実装
+# `StructuredLogger` は使わず、`Logger` プロトコルを構造的に満たすだけの
+# 記録専用ダブルを用いる）を踏襲する。
+# =============================================================================
+
+
+class _SpyStageLogger:
+    """`Logger.stage(name)` の戻り値（`StageLogger`）を模した記録専用ダブル。
+
+    `sensing_foundation.obslog.StageLogger` は公開入口（`__all__`）に
+    含まれないため型として import しない。`upstream.stage_logger` の
+    戻り値がこのダブルと構造的に同じ使い方（`emit` / `timed`）をする
+    ことをテストの側から検証する。
+    """
+
+    def __init__(self, parent: "_SpyLogger", stage: str) -> None:
+        self._parent = parent
+        self._stage = stage
+
+    def emit(self, event: str, /, **data: object) -> None:
+        self._parent.emit(self._stage, event, **data)
+
+    @contextmanager
+    def timed(self, event: str, /, **data: object):
+        self._parent.timed_calls.append((self._stage, event, dict(data)))
+        yield
+
+
+class _SpyLogger:
+    """`sensing_foundation.Logger` プロトコルを満たす記録専用ダブル。
+
+    実際の I/O・ファイル書き込み・スレッドは一切行わない
+    （`StructuredLogger` は使わない）。`enabled` を切り替えて「ロギング
+    無効」を模擬できる。
+    """
+
+    def __init__(self, *, enabled: bool = True) -> None:
+        self.enabled = enabled
+        self.emitted: list[tuple[str, str, dict[str, object]]] = []
+        self.timed_calls: list[tuple[str, str, dict[str, object]]] = []
+
+    def emit(self, stage: str, event: str, /, **data: object) -> None:
+        self.emitted.append((stage, event, dict(data)))
+
+    def stage(self, stage: str) -> _SpyStageLogger:
+        return _SpyStageLogger(self, stage)
+
+    @contextmanager
+    def timed(self, stage: str, event: str, /, **data: object):
+        self.timed_calls.append((stage, event, dict(data)))
+        yield
+
+    def stats(self):  # pragma: no cover - collect_depth/timed_apply は呼ばない
+        raise NotImplementedError
+
+    def close(self, timeout_ms: float = 1000.0) -> None:  # pragma: no cover
+        return None
+
+
+# ---------------------------------------------------------------------------
+# CALIBRATE_STAGE: 予約段階名との非衝突
+# ---------------------------------------------------------------------------
+
+
+def test_calibrate_stage_is_the_literal_string_calibrate() -> None:
+    assert upstream.CALIBRATE_STAGE == "calibrate"
+
+
+def test_calibrate_stage_does_not_collide_with_upstream_reserved_stages() -> None:
+    """予約段階名（`system` / `capture` / `record`）と衝突しないことを、
+    ハードコードした推測ではなく `sensing_foundation` の実際の
+    `RESERVED_STAGES` 定数に対して確認する（tasks.md タスク 6.2）。
+
+    `RESERVED_STAGES` は `sensing_foundation` の公開入口（`__all__`）には
+    含まれない（`sensing_foundation/__init__.py` docstring
+    「含めなかったもの」を参照）。本番コード（`upstream.py`）はこれを
+    import しないが、本テストは実際の定数に対して固定するために内部
+    モジュールから直接読む。
+    """
+    from sensing_foundation.obslog import RESERVED_STAGES
+
+    assert upstream.CALIBRATE_STAGE not in RESERVED_STAGES
+
+
+# ---------------------------------------------------------------------------
+# stage_logger / timed: 上流 Logger への薄い委譲
+# ---------------------------------------------------------------------------
+
+
+def test_stage_logger_binds_calibrate_stage_and_delegates_emit() -> None:
+    spy = _SpyLogger()
+
+    bound = upstream.stage_logger(spy)
+    bound.emit("something", key=1)
+
+    assert spy.emitted == [("calibrate", "something", {"key": 1})]
+
+
+def test_stage_logger_with_none_logger_is_a_safe_noop() -> None:
+    """`logger=None` は上流の `NullLogger` へ正規化され、例外にならない。"""
+    bound = upstream.stage_logger(None)
+
+    bound.emit("something", key=1)
+    with bound.timed("something_else"):
+        pass
+
+
+def test_timed_delegates_to_logger_timed_with_calibrate_stage() -> None:
+    spy = _SpyLogger()
+
+    with upstream.timed(spy, "apply", key="value"):
+        pass
+
+    assert spy.timed_calls == [("calibrate", "apply", {"key": "value"})]
+
+
+def test_timed_with_none_logger_returns_a_working_context_manager() -> None:
+    entered = False
+    with upstream.timed(None, "apply"):
+        entered = True
+
+    assert entered is True
+
+
+# ---------------------------------------------------------------------------
+# timed_apply: WorldTransform.apply への外部からの薄い計測委譲。
+# transform.py 自体は変更しない（tasks.md タスク 2.2 Critical constraint）。
+# ---------------------------------------------------------------------------
+
+
+def _identity_transform() -> WorldTransform:
+    return WorldTransform(
+        rotation=((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+        translation_mm=(10.0, 20.0, 30.0),
+    )
+
+
+def test_timed_apply_returns_the_same_result_as_calling_apply_directly() -> None:
+    transform = _identity_transform()
+    points = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float64)
+
+    result = upstream.timed_apply(None, transform, points)
+
+    np.testing.assert_array_equal(result, transform.apply(points))
+
+
+def test_timed_apply_emits_a_timed_apply_event_under_calibrate_stage() -> None:
+    spy = _SpyLogger()
+    transform = _identity_transform()
+    points = np.array([[1.0, 2.0, 3.0]], dtype=np.float64)
+
+    upstream.timed_apply(spy, transform, points)
+
+    assert len(spy.timed_calls) == 1
+    stage, event, _data = spy.timed_calls[0]
+    assert stage == "calibrate"
+    assert event == "apply"
+
+
+def test_timed_apply_delegates_to_worldtransform_apply_without_reimplementing_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`timed_apply` が行列演算を自前で書き直さず、`WorldTransform.apply` へ
+    実際に委譲していることをスパイで固定する（`transform.py` 未変更の裏付け）。
+    """
+    transform = _identity_transform()
+    points = np.array([[1.0, 2.0, 3.0]], dtype=np.float64)
+    calls: list[object] = []
+    real_apply = WorldTransform.apply
+
+    def _spy_apply(self: WorldTransform, points_camera_mm: np.ndarray) -> np.ndarray:
+        calls.append(points_camera_mm)
+        return real_apply(self, points_camera_mm)
+
+    monkeypatch.setattr(WorldTransform, "apply", _spy_apply)
+
+    upstream.timed_apply(None, transform, points)
+
+    assert len(calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# collect_depth へのロギング統合: collect イベントと failure イベント
+# ---------------------------------------------------------------------------
+
+
+def test_collect_depth_emits_collect_event_with_designed_keys_when_logger_enabled() -> None:
+    profile = _stream_profile(depth_scale_mm=2.0, width_px=2, height_px=1)
+    frame = _capture_frame(index=0, depth=_u16([[10, 0]]), profile=profile)
+    source = _FakeFrameSource([frame])
+    spy = _SpyLogger(enabled=True)
+
+    upstream.collect_depth(source, frame_count=1, logger=spy)
+
+    assert len(spy.emitted) == 1
+    stage, event, data = spy.emitted[0]
+    assert stage == "calibrate"
+    assert event == "collect"
+    assert data["frames_requested"] == 1
+    assert data["frames_used"] == 1
+    assert data["valid_ratio"] == pytest.approx(0.5)
+    assert "duration_ms" in data
+    assert data["duration_ms"] >= 0.0
+
+
+def test_collect_depth_with_none_logger_does_not_compute_valid_ratio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ロギングが無効（`logger=None`）な場合、計測値（`valid_ratio`）の
+    生成そのものを行わない（要件 10.5）。「渡された値を使わない」だけで
+    なく、値を計算する関数自体が呼ばれないことを固定する。
+    """
+    calls: list[object] = []
+
+    def _spy_valid_ratio(valid_count: np.ndarray) -> float:
+        calls.append(valid_count)
+        return 0.0
+
+    monkeypatch.setattr(upstream, "_valid_ratio", _spy_valid_ratio)
+
+    profile = _stream_profile(depth_scale_mm=1.0, width_px=2, height_px=1)
+    frame = _capture_frame(index=0, depth=_u16([[10, 20]]), profile=profile)
+    source = _FakeFrameSource([frame])
+
+    upstream.collect_depth(source, frame_count=1, logger=None)
+
+    assert calls == []
+
+
+def test_collect_depth_with_disabled_null_logger_does_not_compute_valid_ratio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`logger=None` だけでなく、上流の無効な `NullLogger`（`enabled=False`）
+    を明示的に渡した場合も同様に計測値の生成そのものを行わないことを固定する。
+    """
+    calls: list[object] = []
+
+    def _spy_valid_ratio(valid_count: np.ndarray) -> float:
+        calls.append(valid_count)
+        return 0.0
+
+    monkeypatch.setattr(upstream, "_valid_ratio", _spy_valid_ratio)
+
+    profile = _stream_profile(depth_scale_mm=1.0, width_px=2, height_px=1)
+    frame = _capture_frame(index=0, depth=_u16([[10, 20]]), profile=profile)
+    source = _FakeFrameSource([frame])
+
+    upstream.collect_depth(source, frame_count=1, logger=NullLogger())
+
+    assert calls == []
+
+
+def test_collect_depth_with_enabled_logger_does_compute_valid_ratio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """対照テスト: ロギングが有効なら `_valid_ratio` が実際に呼ばれる。"""
+    calls: list[object] = []
+    real_valid_ratio = upstream._valid_ratio
+
+    def _spy_valid_ratio(valid_count: np.ndarray) -> float:
+        calls.append(valid_count)
+        return real_valid_ratio(valid_count)
+
+    monkeypatch.setattr(upstream, "_valid_ratio", _spy_valid_ratio)
+
+    profile = _stream_profile(depth_scale_mm=1.0, width_px=2, height_px=1)
+    frame = _capture_frame(index=0, depth=_u16([[10, 20]]), profile=profile)
+    source = _FakeFrameSource([frame])
+
+    upstream.collect_depth(source, frame_count=1, logger=_SpyLogger(enabled=True))
+
+    assert len(calls) == 1
+
+
+def test_collect_depth_emits_failure_event_before_raising_on_exhausted_source() -> None:
+    """成功時しかログが残らない状態を作らない: フレーム収集が失敗しても
+    `failure` イベントを送出してから例外を送出する。
+    """
+    profile = _stream_profile()
+    frame = _capture_frame(index=0, depth=_u16([[10, 20]]), profile=profile)
+    source = _FakeFrameSource([frame])  # 1枚しか供給できない
+    spy = _SpyLogger(enabled=True)
+
+    with pytest.raises(CalibrationConfigError):
+        upstream.collect_depth(source, frame_count=3, logger=spy)
+
+    assert len(spy.emitted) == 1
+    stage, event, data = spy.emitted[0]
+    assert stage == "calibrate"
+    assert event == "failure"
+    assert "exhausted" in data["detail"]
+
+
+def test_collect_depth_emits_failure_event_on_stream_configuration_change() -> None:
+    profile_a = _stream_profile(fps=30)
+    profile_b = replace(profile_a, fps=15)
+    frame1 = _capture_frame(index=0, depth=_u16([[10, 20]]), profile=profile_a)
+    frame2 = _capture_frame(index=1, depth=_u16([[30, 40]]), profile=profile_b)
+    source = _FakeFrameSource([frame1, frame2])
+    spy = _SpyLogger(enabled=True)
+
+    with pytest.raises(CalibrationConfigError):
+        upstream.collect_depth(source, frame_count=2, logger=spy)
+
+    assert len(spy.emitted) == 1
+    assert spy.emitted[0][1] == "failure"
+
+
+def test_collect_depth_with_none_logger_still_raises_on_failure() -> None:
+    """`logger=None` でも例外送出そのものは変わらない
+    （ロギングの有無が処理そのものの成否を左右しない）。
+    """
+    source = _FakeFrameSource([])
+
+    with pytest.raises(CalibrationConfigError):
+        upstream.collect_depth(source, frame_count=0, logger=None)
+
+
+def test_collect_depth_without_logger_argument_still_works_backward_compatibly() -> None:
+    """`logger` はキーワード専用の既定 `None` であり、既存呼び出し
+    （タスク 6.1 の全テスト）が引き続き動作すること（後方互換）。
+    """
+    profile = _stream_profile(depth_scale_mm=2.0)
+    depth_raw = _u16([[100, 200, 0, 400], [500, 0, 700, 800]])
+    frame = _capture_frame(index=0, depth=depth_raw, profile=profile)
+    source = _FakeFrameSource([frame])
+
+    result = upstream.collect_depth(source, frame_count=1)
+
+    assert result.frames_used == 1
