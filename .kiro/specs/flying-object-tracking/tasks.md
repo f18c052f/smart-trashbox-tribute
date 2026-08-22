@@ -242,7 +242,7 @@
 
 - [ ] 6. 統合: 検出 → 逆投影 → 追跡の結線
 
-- [ ] 6.1 処理パイプラインを組み立てる
+- [x] 6.1 処理パイプラインを組み立てる
   - 1フレームを受け取り、検出 → 逆投影 → 追跡を順に実行し、逐次結果を返す
   - 検出区間と追跡区間の計測をそれぞれ該当区間だけに掛ける
   - 上流が検出したフレーム欠落を点へ引き継ぎ、**欠落をエラーとして扱わない**
@@ -503,3 +503,29 @@
   `peak()` は真のスライディングウィンドウ（原点整列した固定ビンではない）
   で実装すること。固定ビンだと境界をまたぐバーストを過小評価する
   （実測: `[95,100,105,110]`, `window_ms=100` で真値4に対し固定ビン3）。
+- タスク6.1: `TrackingPipeline` は design.md の複数の記載不備を解消した。
+  1. **除外理由の合算**: `PointEstimator.estimate()` が返す `count=1` の単体
+     `CandidateRejection`（task 3.1）と `Detector.detect()` が返す集約済み
+     `DetectResult.rejections` を `_merge_rejections()` で理由ごとに合算する
+     （同一理由が2エントリに分裂しないようにする）。`SingleObjectTracker` は
+     常に `rejections=()`/`point_failures=()` を返すため、`dataclasses.replace()`
+     でこれらのフィールドだけを合算済みの値に差し替えて返す。
+  2. **`mask_px` の橋渡し**: `TrackingMetrics.record_update()` に
+     `mask_px: int = 0` というキーワード専用引数を**追記のみ**で足した
+     （task 5.1 の既存ロジック・テストは無変更・無リグレッション）。
+  3. **`counters()`/`caught_exceptions()` の API分割**: design.md の
+     `TrackingPipeline.counters() -> TrackingCounters` という型注釈は
+     `TrackingMetrics.counters()` への単純委譲のまま維持し、捕捉例外の
+     種別・件数は新設の `caught_exceptions() -> CaughtExceptionCounters`
+     （`total`/`by_type`）から取り出す形にした（`TrackingCounters` 自体
+     ＝task 5.1 の境界を拡張しないため）。
+  4. **例外捕捉の範囲は検出・逆投影・追跡の全段**。`SingleObjectTracker.update()`
+     は状態を持つ副作用ありの呼び出しのため、単純な catch-and-retry-same-args
+     は安全でない。実装は3段構え（実引数で呼ぶ→失敗したら候補ゼロで1回だけ
+     再試行し tracker 自身の欠測ロジックを機能させる→それも失敗したら
+     直前の `CameraTrack` スナップショットを使い回した合成 `TrackUpdate` を
+     返し、以後そのフレームでは tracker を呼ばない）を採用し、捕捉件数の
+     二重計上を避ける。`TrackingConfigError`/`IntrinsicsUnavailableError`/
+     `DetectorUnavailableError` は非捕捉のまま伝播させる。
+  詳細な根拠は `src/flying_object_tracking/pipeline.py` のモジュール docstring
+  を参照。

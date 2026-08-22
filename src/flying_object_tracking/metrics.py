@@ -85,15 +85,15 @@ detect / track 区間の "frame" イベントの組み立て方（本タスク�
 それぞれちょうど1回ずつ送出する。送出後、保持していた所要時間は次のフレーム
 に持ち越さないよう `None` にリセットする。
 
-**既知の欠落（CONCERNS 参照。上記の二重送出問題とは別種のギャップ）**:
-`mask_px`（前景画素数）は `TrackUpdate` に対応するフィールドが無く、本
-タスクの境界内では取得手段が無い。したがって `record_update()` が送出する
-`stage="detect"` の `"frame"` イベントには `mask_px` を含めない（存在しない
-値を捏造しない）。これは design.md の Event Contract を完全には満たさない
-既知のギャップであり、`TrackingPipeline`（タスク 6.1）が `DetectResult.
-mask_px` を計測へ橋渡しする手段（`TrackUpdate` の拡張、または別経路）を
-用意する必要がある。レビューでもこちらは「シグネチャ変更なしには解決でき
-ない、本タスクの境界外」として non-blocking 扱いが確認されている。
+**既知の欠落は task 6.1 で解消済み（タスク 5.1 時点の記述を更新）**:
+`mask_px`（前景画素数）は `TrackUpdate` に対応するフィールドが無く、
+本モジュール単体では取得手段が無かった。`TrackingPipeline`（タスク 6.1）
+が `DetectResult.mask_px` を保持しているため、`record_update()` に
+**キーワード専用の追加引数** `mask_px: int = 0` を足し、`stage="detect"`
+の `"frame"` イベントへ橋渡しできるようにした。既定値 0 により、この
+引数を渡さない既存の呼び出し（本ファイルの既存テストを含む）はそのまま
+動作し続ける後方互換な追加であり、他のロジック（二重送出防止・pending
+バッファ・カウンタ計算）には一切手を加えていない。
 """
 
 from __future__ import annotations
@@ -338,7 +338,9 @@ class TrackingMetrics:
             else:
                 self._pending_track_ms = elapsed_ms
 
-    def record_update(self, update: TrackUpdate, frame: CaptureFrame) -> None:
+    def record_update(
+        self, update: TrackUpdate, frame: CaptureFrame, *, mask_px: int = 0
+    ) -> None:
         """1フレーム分の `TrackUpdate` からカウンタを更新し、付随イベントを送出する。
 
         カウンタの更新は計測の有効・無効に関わらず常に行う（軽量な整数演算
@@ -353,6 +355,13 @@ class TrackingMetrics:
             frame: 元となったフレーム。`frame.index` をイベントの
                 `frame_index` として使う（要件 8.3: フレームの識別情報との
                 突き合わせ）。
+            mask_px: 前景画素数（`DetectResult.mask_px`）。`TrackUpdate` は
+                このフィールドを持たないため、呼び出し側（`TrackingPipeline`,
+                タスク 6.1）が明示的に渡す。既定 0 は「呼び出し側が
+                `mask_px` を持たない（渡さない）」ケースの後方互換値であり、
+                実際の前景画素数 0 と区別しない（design.md の Event
+                Contract に `mask_px` を欠測として送らない選択肢が無いため、
+                いずれの場合も 0 として送出する）。
         """
         self._frames_processed += 1
         if update.candidates == 0:
@@ -394,6 +403,7 @@ class TrackingMetrics:
                 "rejected": {
                     rejection.reason: rejection.count for rejection in update.rejections
                 },
+                "mask_px": mask_px,
             }
             if self._pending_detect_ms is not None:
                 detect_data["detect_ms"] = self._pending_detect_ms
