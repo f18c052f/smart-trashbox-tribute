@@ -279,7 +279,7 @@
 
 - [ ] 7. 比較と入口: OQ-26 を決められる状態にする
 
-- [ ] 7.1 検出方式の比較と判定規則を実装する
+- [x] 7.1 検出方式の比較と判定規則を実装する
   - 同一の記録済みセッション（合成セッションを含む）に対して3方式を実行し、方式ごとの結果を**同一の指標**で出す
   - 結果に、実効サンプル数（窓あたりと最密窓）・取りこぼしフレーム数・3D化失敗数・検出区間と追跡区間の処理時間の代表値とばらつきを含める
   - **後段設定が全方式で同一であることを実行前に検証**し、不一致なら拒否する。用いた後段設定の指紋を結果に含める
@@ -555,3 +555,29 @@
   frame_diff 固有の位置バイアスを承知の上で判定すること**（実効サンプル数
   やレイテンシでは frame_diff が有利に見えても、位置精度では depth_band /
   background に劣る可能性がある）。
+- タスク7.1: `DetectorComparison` は design.md の複数の記載不備を解消した。
+  1. **`DetectorComparisonResult.runs` の型**: design.md は `tuple[DetectorRunResult, ...]`
+     だが、Batch/Job Contract は「失敗した方式は null 相当で残す」と
+     「他方式の結果を捨てない」の両方を要求し矛盾する。実装は
+     `runs: tuple[DetectorRunResult | None, ...]`（失敗スロットは位置対応の
+     `None`）と `failures: Mapping[str, str]`（理由）の両方を採用した。
+  2. **`parameter_count()`（判定規則3の「設定パラメータが少ない方」の定義）**:
+     `DetectorConfig` は3方式共通の単一データクラスのため素朴な
+     `dataclasses.fields()` では機能しない。方式固有のマスクコンストラクタ
+     引数から共通後段パラメータ（open_kernel_px/close_kernel_px/
+     max_candidates）を除いて数える（depth_band=0, frame_diff=1,
+     background=3、共通3を含め各3/4/6）。
+  3. **判定規則2のIQR閾値**: `max(leader.detect_ms_iqr, run.detect_ms_iqr)`
+     を使う（比較対象2方式のどちらか片側だけだと「AからはBと区別つかないが
+     BからはAと区別つく」という非対称な矛盾が起きるため）。**この
+     `max()` という選択自体が判定結果を左右する**（片側基準だと同じ入力で
+     別の方式が選ばれる）ことを非対称IQRの人工データで固定済み。
+  4. **`detect_ms_p50`/`p95`/`iqr` の集計元**: `sensing_foundation.logsummary
+     .FieldStats` は p50/p95/mean/min/max のみで Q1/Q3/IQR を持たない
+     （上流の改修は本タスクの境界外）。`DetectorComparison` は `Logger`
+     プロトコルの `enabled`/`emit()` だけを実装する最小限のインメモリ
+     `_CapturingLogger` で生の `detect_ms` を捕捉し、比較実行後（フレーム
+     処理中ではない）に自分で分位点を計算する。
+  5. `compare_detectors()` は単一セッションのみを対象とする。複数セッション
+     の集約はCLI（task 7.3）の責務。`measurements.md` への書き込みは
+     行わない（実機実測が絡む task 9.x の責務）。
