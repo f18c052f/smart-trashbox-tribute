@@ -62,31 +62,24 @@ import しない。`--print-settings` は「解決済み設定を表示できる
 呼ばない設計であることに拠る。本タスクはその上に何も追加しない）。
 
 ============================================================================
-`export` サブコマンドのスコープ（タスク 7.4 との分担。CONCERNS 必読）
+`export` サブコマンドのスコープ（タスク 7.3 / 7.4 の分担）
 ============================================================================
 
 design.md の File Structure Plan は `export`（点列の書き出し）を CLI 節に
-含める一方、tasks.md は**別タスク 7.4**（本タスクに `Depends`）として
-「点列の書き出しを実装する」を切り出し、非数・無限大を欠測にする変換規則等
-の詳細（要件 7.1, 7.6, 12.6）をそちらの責務にしている。
+含める一方、tasks.md は本タスクとは別に**タスク 7.4**（本タスクに
+`Depends`）として「点列の書き出しを実装する」を切り出し、design.md
+「エクスポート形式（開発用）」節が定めるフィールド単位の変換規則（非数・
+無限大はその項目を欠測にする等。要件 7.1, 7.6, 12.6）をそちらの責務に
+している。
 
-本タスク（7.3）は次の分担を取る:
-
-- **`export` サブコマンドの argparse 面（引数・ヘルプ・起動前検証）は
-  ここで完成させる。** 他の3サブコマンドと同一の共通フラグ群を共有する。
-- **本文の点列書き出しロジックは最小実装に留める**: `run_track()` を内部で
-  呼んで得た `CameraTrack` を `dataclasses.asdict()` で辞書化し、
-  `json.dumps(..., allow_nan=False)` でそのまま書き出す。design.md
-  「エクスポート形式」節が要求する「非数・無限大はその項目を欠測にする」
-  という**フィールド単位の変換規則は実装しない**（通常の検出・追跡経路では
-  NaN/Infinity は生じない値域のため、本タスク自身の観測可能な完了状態
-  「画面のない環境で完走する」は満たすが、その規則自体はタスク 7.4 の
-  責務として明示的に未実装のまま残す）。
-- **後続のタスク 7.4 がこの最小実装を置き換える／専用モジュール
-  （例: 本体側の `export.py` 相当）へ切り出すことを想定する。** 本タスクは
-  `run_export()` という差し替え可能な1関数にロジックを閉じてあるため、
-  7.4 はこの関数の中身だけを置き換えればよく、argparse 面には触れる必要が
-  ない設計にしてある。
+- **タスク 7.3（本ファイルの土台）** は `export` サブコマンドの argparse 面
+  （引数・ヘルプ・起動前検証）を完成させ、`run_export()` という差し替え
+  可能な1関数にロジックを閉じた。
+- **タスク 7.4** が `run_export()` の本体を、`serialize_camera_track()`
+  （本ファイル下部）による design.md 準拠の書き出しへ置き換えた。
+  `Boundary: CLI` が7.3と同一のため、専用モジュールへ切り出さずこの
+  ファイルを拡張する形を採った（design.md はこの書き出しロジックに
+  独立したコンポーネント名を与えていない）。argparse 面には触れていない。
 
 ============================================================================
 `--source simulated` の内部供給関数
@@ -132,6 +125,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import math
 import os
 import sys
 import time
@@ -161,7 +155,7 @@ from flying_object_tracking.bench.overhead import OverheadBench, write_overhead_
 from flying_object_tracking.config import TrackingSettings
 from flying_object_tracking.errors import TrackingConfigError, TrackingError
 from flying_object_tracking.pipeline import TrackingPipeline
-from flying_object_tracking.types import DetectorKind
+from flying_object_tracking.types import CameraTrack, DetectorKind
 
 __all__ = ["main"]
 
@@ -304,18 +298,126 @@ def _dump_json(payload: object) -> str:
 
 
 # ----------------------------------------------------------------------------
+# 非有限値のサニタイズ（要件 7.6 / 12.6 の材料。タスク 7.4）
+# ----------------------------------------------------------------------------
+
+#: 非有限値を検出したときの内部センチネル。呼び出し元がキー/要素を除く。
+#: `sensing_foundation.obslog` の同名パターン（design.md「エクスポート形式
+#: （開発用）」節・`prediction_core.record` と方針を揃える）を、
+#: 上流の private ヘルパーを import せずに複製したもの。
+_DROP = object()
+
+
+def _sanitize_value(value: object) -> object:
+    """非有限 float を検出したら `_DROP` を返す（呼び出し元がキー/要素を除く）。
+
+    dict は再帰的にサニタイズしてキーを落とし、list/tuple も再帰的に
+    サニタイズして非有限要素を除く。それ以外の値はそのまま返す。
+    `sensing_foundation.obslog._sanitize_value` と同じ規約。
+    """
+    if isinstance(value, float):
+        return value if math.isfinite(value) else _DROP
+    if isinstance(value, dict):
+        sanitized: dict[str, object] = {}
+        for key, inner in value.items():
+            sanitized_inner = _sanitize_value(inner)
+            if sanitized_inner is not _DROP:
+                sanitized[key] = sanitized_inner
+        return sanitized
+    if isinstance(value, (list, tuple)):
+        sanitized_list: list[object] = []
+        for inner in value:
+            sanitized_inner = _sanitize_value(inner)
+            if sanitized_inner is not _DROP:
+                sanitized_list.append(sanitized_inner)
+        return sanitized_list
+    return value
+
+
+def serialize_camera_track(track: CameraTrack) -> dict[str, object]:
+    """`CameraTrack` を design.md「エクスポート形式（開発用）」節が定める
+    フィールド単位の辞書へ変換する（タスク 7.4。要件 7.1, 7.6, 12.6）。
+
+    出力キーは同節の表と一対一対応する: `handoff_version` / `frame` /
+    `track_id` / `started_t_ms` / `source` / `detector_kind` / `state` /
+    `end_reason` / `points[]`（各点は `t_ms` / `x_mm` / `y_mm` / `z_mm` /
+    `valid_depth_px` / `depth_spread_mm` / `apparent_diameter_px` /
+    `expected_diameter_px` / `frame_index` / `frame_seq` / `gap_before` /
+    `rivals`）。`dataclasses.asdict()` をそのまま使わない理由: `TrackPoint`
+    は `point: CameraPoint` を入れ子に持つが、この表はフィールドを
+    フラットに並べる契約であるため、ここで平坦化する（`CameraPoint` の
+    `frame` / `intrinsics_source` はこの表に現れないため出力しない）。
+
+    **非有限値（NaN / Infinity）はその項目だけ欠測にする**（上流
+    `sensing_foundation.obslog` と `prediction_core.record` の方針に揃える。
+    要件 10.6 「欠測を 0 や推定値で埋めず、欠測として扱う」とも整合する）。
+    値を書かず null にもせず、キー自体を辞書から取り除く。これにより
+    後段の `json.dumps(..., allow_nan=False)` は常に安全に呼べる
+    （非有限値が事前に取り除かれているため `ValueError` を起こさない）。
+
+    **World 座標のフィールドをこの形式に足さない。** `CameraPoint` /
+    `CameraTrack`（`types.py`）自体が World 座標のフィールドを持たない
+    設計であり（`types.py` モジュール docstring参照）、本関数もそれを
+    前提に上記の固定フィールド集合だけを書き出す。将来この関数へ
+    `x_world_mm` 等を足したくなっても、それは `world-frame-calibration` /
+    `m1-prediction-validation` の責務であり、本 Spec の境界を壊す
+    （design.md「Boundary Commitments」）。
+
+    **投擲記録（`prediction_core.ThrowRecord` / `SCHEMA_VERSION`）のスキーマを
+    新たに定義せず、本 Spec は投擲記録を一切読み書きしない。** ここで書く
+    JSON は design.md が明示する通り「エクスポート形式（開発用）」——下流の
+    手動確認用の開発時ダンプであり、`prediction_core` が所有する投擲記録の
+    正式スキームとは無関係の別形式である（要件 7.6 / 13.1: 予測コアへの
+    変更・依存追加を持たない）。
+    """
+    points_payload: list[object] = [
+        {
+            "t_ms": track_point.point.t_ms,
+            "x_mm": track_point.point.x_mm,
+            "y_mm": track_point.point.y_mm,
+            "z_mm": track_point.point.z_mm,
+            "valid_depth_px": track_point.point.valid_depth_px,
+            "depth_spread_mm": track_point.point.depth_spread_mm,
+            "apparent_diameter_px": track_point.point.apparent_diameter_px,
+            "expected_diameter_px": track_point.point.expected_diameter_px,
+            "frame_index": track_point.frame_index,
+            "frame_seq": track_point.frame_seq,
+            "gap_before": track_point.gap_before,
+            "rivals": track_point.rivals,
+        }
+        for track_point in track.points
+    ]
+
+    payload: dict[str, object] = {
+        "handoff_version": track.handoff_version,
+        "frame": track.frame,
+        "track_id": track.track_id,
+        "started_t_ms": track.started_t_ms,
+        "source": track.source,
+        "detector_kind": track.detector_kind,
+        "state": track.state,
+        "end_reason": track.end_reason,
+        "points": points_payload,
+    }
+
+    sanitized = _sanitize_value(payload)
+    assert isinstance(sanitized, dict)
+    return sanitized
+
+
+# ----------------------------------------------------------------------------
 # サブコマンド本体（`main()` からも、テストからも `supplier` 注入つきで呼べる）
 # ----------------------------------------------------------------------------
 
 
-def run_track(
+def _run_pipeline(
     tracking_settings: TrackingSettings,
     runtime_settings: RuntimeSettings,
     *,
-    supplier: Callable[[int], "np.ndarray | None"] | None = None,
-    speed: Literal["fast", "realtime"] = "fast",
-) -> dict[str, object]:
-    """`track` サブコマンドの本体。入力元から追跡を実行し、点列と統計を返す。
+    supplier: Callable[[int], "np.ndarray | None"] | None,
+    speed: Literal["fast", "realtime"],
+) -> tuple[str, CameraTrack, object, object]:
+    """`run_track()` / `run_export()` が共有するパイプライン実行本体。
 
     `track_source()`（`pipeline.py`）ではなく `TrackingPipeline` を直接
     構築する（design.md「TrackingPipeline / Preconditions: `open_source()`
@@ -326,7 +428,10 @@ def run_track(
     「`TrackingPipeline.finish()` は本関数から呼ばない」参照）。
 
     入力元は `with source:` で開閉する（要件 1.5〜1.7。途中終了・例外時でも
-    `source.stop()` が走る）。
+    `source.stop()` が走る）。`run_export()` が `CameraTrack` の実体
+    （`dataclasses.asdict()` 後の辞書ではなく）を必要とするため（タスク
+    7.4: `serialize_camera_track()` へそのまま渡す）、両サブコマンドの
+    共通部分をここへ抽出した。
     """
     session_id = _derive_session_id(runtime_settings, prefix="track")
     clock = SessionClock(session_id=session_id)
@@ -347,6 +452,20 @@ def run_track(
 
     counters = pipeline.counters()
     caught = pipeline.caught_exceptions()
+    return session_id, final_track, counters, caught
+
+
+def run_track(
+    tracking_settings: TrackingSettings,
+    runtime_settings: RuntimeSettings,
+    *,
+    supplier: Callable[[int], "np.ndarray | None"] | None = None,
+    speed: Literal["fast", "realtime"] = "fast",
+) -> dict[str, object]:
+    """`track` サブコマンドの本体。入力元から追跡を実行し、点列と統計を返す。"""
+    session_id, final_track, counters, caught = _run_pipeline(
+        tracking_settings, runtime_settings, supplier=supplier, speed=speed
+    )
 
     return {
         "session_id": session_id,
@@ -365,21 +484,24 @@ def run_export(
 ) -> dict[str, object]:
     """`export` サブコマンドの本体。点列を JSON として書き出す（下流の手動確認用）。
 
-    モジュール docstring「`export` サブコマンドのスコープ」参照:
-    本実装は `run_track()` を内部で呼び、得られた `CameraTrack` を
-    そのまま JSON 化する最小実装であり、design.md「エクスポート形式」節が
-    定めるフィールド単位の非数・無限大→欠測変換は実装しない（タスク 7.4
-    の責務として明示的に残す）。
+    書き出す先は `tracking_settings.output_root`（要件 12.6: 出力先を
+    コード外から与えられる。CLI では `--output-root` / `STB_FOT_OUTPUT_ROOT`
+    / `--config` 経由で上書きできる——`TrackingSettings.resolve()` の解決順序
+    をそのまま使う）。ファイル名は design.md が定める
+    `track-<session_id>-<track_id>.json`。
+
+    実際のフィールド単位の変換（非有限値の欠測化・World 座標フィールドの
+    非追加・投擲記録スキーマとの非関係）は `serialize_camera_track()`
+    （本ファイル上部、タスク 7.4）に委ねる。
     """
-    track_result = run_track(tracking_settings, runtime_settings, supplier=supplier, speed=speed)
-    session_id = track_result["session_id"]
-    track_payload = track_result["track"]
-    assert isinstance(track_payload, dict)
-    track_id = track_payload["track_id"]
+    session_id, final_track, counters, _caught = _run_pipeline(
+        tracking_settings, runtime_settings, supplier=supplier, speed=speed
+    )
+    track_payload = serialize_camera_track(final_track)
 
     output_root = tracking_settings.output_root
     output_root.mkdir(parents=True, exist_ok=True)
-    path = output_root / f"track-{session_id}-{track_id}.json"
+    path = output_root / f"track-{session_id}-{final_track.track_id}.json"
     path.write_text(
         json.dumps(track_payload, ensure_ascii=False, allow_nan=False, indent=2, sort_keys=True),
         encoding="utf-8",
@@ -388,7 +510,7 @@ def run_export(
     return {
         "output_path": str(path),
         "track": track_payload,
-        "counters": track_result["counters"],
+        "counters": dataclasses.asdict(counters),
     }
 
 

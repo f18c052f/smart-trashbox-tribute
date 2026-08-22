@@ -316,7 +316,7 @@
   - _Depends: 7.1, 7.2_
   - _Boundary: CLI_
 
-- [ ] 7.4 点列の書き出しを実装する
+- [x] 7.4 点列の書き出しを実装する
   - 1投擲の点列を、受け渡し形式の版番号・座標系・追跡開始時刻・入力元種別・検出方式・終了理由・各点の値と判断材料を含む形で書き出す
   - 非数・無限大は値として書かず、**その項目を欠測にする**（上流と予測コアの方針に揃える）
   - **投擲記録のスキーマを新たに定義せず**、本 Spec は投擲記録を読み書きしない旨を docstring に明記する
@@ -612,3 +612,16 @@
   `SensingFoundationError` を最上位で捕捉し1行のエラーメッセージで
   終了する（レビューで実測確認: `--source simulated` で実際に候補検出が
   起きても生のトレースバックにはならない）。
+- タスク7.4: 点列の書き出し本体（`serialize_camera_track()`）は `cli.py`
+  内に実装した（design.md がこのロジックに独立コンポーネント名を与えて
+  おらず、task 7.4 自身の `Boundary:` が task 7.3 と同一 `CLI` のため）。
+  非数・無限大は上流 `sensing_foundation.obslog` の `_sanitize_value`/
+  `_DROP` と同一方針（項目ごとに欠測＝キー省略）で実装した。design.md
+  「上流と `prediction_core` の方針に揃える」という記述のうち
+  `prediction_core` 側は実際には**項目ごとの欠測ではなくレコード全体を
+  `RecordSerializationError` で拒否する**方式であり、design.md の記述と
+  実際の `prediction_core.record.ThrowRecord.to_json()` の挙動は厳密には
+  一致しない（design.md 側の記載不備。本タスクは design.md の表の指示
+  「その項目を欠測にする」どおりに実装しており、この不一致は本タスクの
+  責任範囲外）。`run_track()`/`run_export()` の共通処理は `_run_pipeline()`
+  へ抽出したが、`run_track()` の戻り値の形は変更していない。
