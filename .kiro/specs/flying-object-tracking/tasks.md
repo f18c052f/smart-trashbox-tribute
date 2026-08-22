@@ -254,7 +254,7 @@
   - _Depends: 2.7, 3.1, 4.1, 5.1_
   - _Boundary: TrackingPipeline_
 
-- [ ] 6.2 上流のフレーム供給と結線する
+- [x] 6.2 上流のフレーム供給と結線する
   - 上流のフレーム反復を唯一の入力経路とし、**入力元の種別で処理を分岐させない**
   - 上流の**公開された入口からのみ**参照する（内部モジュールへ直接触れない）
   - 反復を途中で捨てられても上流の停止処理が呼ばれるようにする
@@ -529,3 +529,18 @@
      `DetectorUnavailableError` は非捕捉のまま伝播させる。
   詳細な根拠は `src/flying_object_tracking/pipeline.py` のモジュール docstring
   を参照。
+- タスク6.2: `sensing_foundation.source._build_simulated_profile()` は
+  `SourceKind.SIMULATED` の `StreamProfile.intrinsics` を**常に `None`**
+  にする（`open_source(..., supplier=...)` の `supplier` は Depth 配列のみを
+  供給し、内因パラメータを注入する経路が無い）。そのため `open_source(
+  SourceKind.SIMULATED)` から得たフレームで候補が1つでも検出されると、
+  `PointEstimator.estimate()` が `IntrinsicsUnavailableError` を送出し
+  （`TrackingPipeline` の非捕捉例外）、**`open_source(SIMULATED)` と
+  `open_source(RECORDED)` を実際に比較する意味のある点列テストは書けない**。
+  タスク6.2はこれを踏まえ、「テスト用のフレーム供給」を task 1.5 の
+  `SyntheticFrameSource`（内因パラメータを持てる）、「上流の記録再生に
+  相当する供給」を `SessionRecorder` → `open_source(RECORDED)` と読み替えて
+  クロスソース等価性を検証した（タスク文言「テスト用の…」「上流の記録
+  再生に相当する…」という原文に照らして妥当な読み替え）。**後続タスク
+  （6.3 の入力元種別比較、7.x の compare-detectors 等）が `open_source(
+  SIMULATED)` を経由する場合、この制約に注意すること。**

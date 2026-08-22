@@ -137,11 +137,11 @@ design.md 自身の `TrackingPipeline` 契約コードブロックは
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, replace
 from types import MappingProxyType
 
-from sensing_foundation import CaptureFrame, Logger
+from sensing_foundation import CaptureFrame, FrameSource, Logger
 
 from flying_object_tracking.config import TrackingSettings
 from flying_object_tracking.detection.detector import Detector, create_detector
@@ -168,7 +168,7 @@ from flying_object_tracking.types import (
     TrackUpdate,
 )
 
-__all__ = ["TrackingPipeline", "CaughtExceptionCounters"]
+__all__ = ["TrackingPipeline", "CaughtExceptionCounters", "track_source"]
 
 
 # 例外が起きた場合でも構造化ログには「呼び出し方・設定の誤り」区分と
@@ -493,3 +493,100 @@ def _merge_rejections(
             order.append(rejection.reason)
         counts[rejection.reason] = counts.get(rejection.reason, 0) + rejection.count
     return tuple(CandidateRejection(reason=reason, count=counts[reason]) for reason in order)
+
+
+# ==============================================================================
+# track_source(): 上流のフレーム供給との結線（design.md「TrackingPipeline /
+# track_source」、タスク 6.2）
+# ==============================================================================
+
+
+def track_source(
+    source: FrameSource, settings: TrackingSettings, logger: Logger
+) -> Iterator[TrackUpdate]:
+    """上流の `FrameSource` を `TrackingPipeline` へ結線し、逐次結果を返す。
+
+    design.md「L6-L7: 追跡と統合 → TrackingPipeline」節の `track_source`
+    契約（タスク 6.2）。`TrackingPipeline` を1つ構築し、
+    `source.frames()` が返すフレームを順に `pipeline.process()` へ渡して、
+    その戻り値をそのまま1フレームにつき1個ずつ `yield` する薄い結線層で
+    ある。
+
+    **唯一の入力経路・入力元の種別で分岐しない（要件 1.1）**: 本関数は
+    `source.frames()`（`for frame in source.frames(): ...`）だけを入力経路
+    として使う。`source.kind`（`SourceKind.LIVE` / `SIMULATED` /
+    `RECORDED`）を一切参照せず、`if source.kind == ...` のような分岐を
+    持たない。live / recorded / simulated のいずれの `FrameSource` を
+    渡されても、本関数のコードパスは完全に同一である。
+
+    **上流の公開された入口からのみ参照する（要件 1.5）**: 本モジュールが
+    `sensing_foundation` から import するのはトップレベルパッケージが
+    re-export する `FrameSource` / `Logger` / `CaptureFrame` のみであり
+    （モジュール先頭の import 文を参照）、`sensing_foundation.source` /
+    `sensing_foundation.sources.*`（`SimulatedSource` / `RecordedSource` /
+    `RealSenseSource`）/ `sensing_foundation.recording.*` のような内部
+    モジュールへは一切触れない。本関数は `FrameSource` プロトコルの向こう側
+    にある具体的なアダプタ型を知らない。
+
+    **フレーム取得・記録・再生・ロギング基盤そのものは本パッケージの責務に
+    含めない（要件 1.6）。** それらはすべて上流 `sensing_foundation` が
+    提供し、本関数は既に構築済みの `source: FrameSource` を受け取って
+    結線するだけである。`source` の構築（`sensing_foundation.open_source()`
+    の呼び出し）は本関数の責務ではなく、呼び出し側（CLI・bench）が行う
+    （design.md「Preconditions: `open_source()` を呼ぶのは CLI と bench
+    だけ」）。
+
+    **`with source:` で反復本体を包む（イテレータの早期放棄対応）**: 本関数
+    はジェネレータ関数であり、`with source:` は `for frame in
+    source.frames(): yield ...` という反復**本体そのもの**を包む
+    （`source.start()` の呼び出しだけを `with` で囲み、反復をその外側に
+    置く実装は誤り——その形では呼び出し側が反復を最後まで消費せずに捨てた
+    場合に `stop()` が呼ばれる保証が無い）。呼び出し側が本ジェネレータを
+    最後まで消費せずに捨てた場合（`for update in track_source(...): ...`
+    ループを `break` する、ジェネレータオブジェクトを明示的に `.close()`
+    する、または参照を手放してガベージコレクションされる場合のいずれも）、
+    Python はジェネレータの現在の中断点（`yield` 文）へ `GeneratorExit` を
+    送出する。この中断点は `with` ブロックの内側にあるため、
+    `GeneratorExit` が `with` 文を抜ける過程で `source.__exit__()` が
+    呼ばれ、`source.stop()` が確実に実行される（design.md「Integration:
+    `track_source` は `with source:` を用いる。イテレータを途中で捨てられ
+    ても上流の `stop()` が呼ばれる（上流の Risks に対応）」）。
+
+    **`TrackingPipeline.finish()` は本関数から呼ばない（設計判断）**:
+    design.md の Postconditions は「入力が尽きたら `finish(SOURCE_END)`
+    相当の最終 `CameraTrack` を得られる」と書くが、これは `TrackingPipeline`
+    自身が既に提供する契約（タスク 6.1 で実装済みの `finish()` メソッド）
+    であり、タスク 6.2 のタスク本文（verbatim の5箇条）は `finish()` に
+    一切言及していない。本関数は `Iterator[TrackUpdate]` を返す薄い結線層
+    であり、内部で構築した `TrackingPipeline` インスタンスを呼び出し側へ
+    渡さない（＝隠蔽する）。そのため、仮に本関数がフレーム枯渇時に内部で
+    `finish()` を呼んだとしても、その戻り値（最終 `CameraTrack`）を呼び出し
+    側が受け取る経路が無く観測可能な効果を持たない上、「1フレームにつき
+    1個の `TrackUpdate` を順序通り返す」という本関数の基本契約に、
+    フレーム由来ではない追加の要素を混ぜてしまう。最終 `CameraTrack` が
+    必要な呼び出し側は `TrackingPipeline` を直接構築し、`process()` ループ
+    の後に自分で `finish()` を呼ぶこと（本関数はそのユースケースを置き
+    換えない）。
+
+    Args:
+        source: 上流の `FrameSource`（`sensing_foundation.open_source()` が
+            構築したもの、またはテスト用のフェイク）。本関数はこれを
+            `start()` 済みでない前提で受け取り、`with source:` の中で
+            `start()`/`stop()` を呼ぶ。
+        settings: 検出・逆投影・追跡の設定。
+        logger: `TrackingPipeline` が捕捉した例外の記録先。
+
+    Yields:
+        `pipeline.process(frame)` の戻り値を、`source.frames()` が返す順序
+        のまま1フレームにつき1個ずつ。
+
+    Raises:
+        `TrackingPipeline.process()` が伝播させる例外（`TrackingConfigError`
+        / `IntrinsicsUnavailableError` / `DetectorUnavailableError`）は
+        本関数もそのまま伝播させる（`with source:` の中であるため、伝播の
+        過程で `source.stop()` は呼ばれる）。
+    """
+    pipeline = TrackingPipeline(settings, logger)
+    with source:
+        for frame in source.frames():
+            yield pipeline.process(frame)
