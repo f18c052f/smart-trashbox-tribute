@@ -37,7 +37,7 @@
   - _Requirements: 10.4, 10.5_
   - _Boundary: errors_
 
-- [ ] 1.3 受け渡し型と座標系の表明を定義する
+- [x] 1.3 受け渡し型と座標系の表明を定義する
   - 検出候補・除外理由・カメラ座標系の3D点・3D化の失敗理由・追跡点・点列・逐次更新結果を、不変（frozen かつ slots）で定義する
   - **座標系を型で表明する。** 3D点と点列は座標系フィールドを持ち、本 Spec が生成する値は常にカメラ座標系である
   - 距離 mm・時刻 ms・画素量 px をフィールド名に含める
@@ -407,3 +407,12 @@
   - 観測可能な完了状態: 未決事項一覧に検出方式の行が残っておらず、決定記録に結論と根拠が記載され、本文側に決着済み項目への未決参照が残っていない
   - _Requirements: 4.8, 13.7_
   - _Depends: 9.3, 9.4_
+
+## Implementation Notes
+
+- タスク1.3: `tests/` 配下に `__init__.py` が無く pytest の import mode 上、design.md
+  Directory Structure が示す短いテストファイル名（`test_types.py` / `test_config.py` 等）は
+  他 Spec の同名ファイル（例: `tests/prediction_core/test_types.py`）と basename が衝突し
+  収集エラーになる。`sensing_foundation` / `trajectory_sim` に倣い、
+  `test_flying_object_tracking_<name>.py` のようにフィーチャ名を含むフルプレフィックスで
+  命名する（以後の全タスクで踏襲すること）。
