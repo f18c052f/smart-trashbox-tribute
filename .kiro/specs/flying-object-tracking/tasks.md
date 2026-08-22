@@ -64,7 +64,7 @@
   - _Depends: 1.3_
   - _Boundary: TrackingSettings_
 
-- [ ] 1.5 合成入力とテスト用フレーム供給を用意する
+- [x] 1.5 合成入力とテスト用フレーム供給を用意する
   - **既知の3D軌道から Depth フレーム列を生成する合成器**をテストツリーに置く（本体には置かない）
   - 合成器は逆投影の逆演算として動き、指定した内部パラメータ・距離・対象物直径から所定の画素位置と画素サイズの塊を描く
   - 静止背景・無効画素（測距できない画素）・フレーム欠落を差し込めるようにする
@@ -421,3 +421,13 @@
   要求しており、Dependency Direction 表（`config` は `detection/masks` を import 禁止）
   と矛盾する。実装は `DetectorKind` を両層の共通祖先である `types.py`（L1）に置くことで
   解消した（design.md 本体は未修正。`trajectory-simulator` の前例に倣い、ここに記録する）。
+- タスク1.5: `tests/` 配下に `__init__.py` が無いため、モジュール basename は
+  セッション全体で `sys.modules` を共有する。`tests/sensing_foundation/synthetic.py`
+  が既に存在し13ファイルが `from synthetic import ...`（bare import）で依存しているため、
+  `tests/flying_object_tracking/synthetic.py` / `fakes.py` を同じ流儀で bare import すると
+  コレクション順序次第でどちらが `sys.modules["synthetic"]` に入るか変わり、
+  **無警告で**片方の Spec のテストが他方のモジュールを掴む（実際に踏んだ）。
+  **後続タスク（3.1 test_projection.py・3.2・6.3 test_pipeline.py 等）は
+  `tests/flying_object_tracking/synthetic.py` / `fakes.py` を bare import せず、
+  `tests/flying_object_tracking/conftest.py` の `synthetic_module` / `fakes_module`
+  フィクスチャ経由でのみ参照すること。**
