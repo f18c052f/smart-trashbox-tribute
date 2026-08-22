@@ -330,7 +330,7 @@
 
 - [ ] 7. 検証・回帰・手順書
 
-- [ ] 7.1 合成データによる end-to-end 検証を実装する
+- [x] 7.1 合成データによる end-to-end 検証を実装する
   - 既知のカメラ姿勢・既知のマーカー配置から生成した Depth に対し、計画 → 確立 → 保存 → 検証を通す
   - 復元された変換が**正解の変換と数値誤差の範囲で一致する**ことを確かめる
   - 検証が合格になることを確かめる
@@ -429,3 +429,4 @@
 - タスク3.1: `linalg.x_hint_degeneracy` は `build_world_frame` 内で「原点マーカー→方向マーカー」ベクトルに対して呼ばれるが、**両マーカーの `point_on_plane_mm` は既に同一平面（同じ `Plane`）へ投影済み（タスク2.4の契約）のため、その差ベクトルは常に厳密に平面内（Z直交）になる**。したがって `x_hint_degeneracy` が実際に発火しうるのは「`point_on_plane_mm` が実は渡された `plane` と同一平面上に無い」という不整合入力の場合のみであり、design.md の例示（「マーカーがほぼ真上/真下にある」物理的縮退シナリオ）は実際には基線長不足（`ANCHOR_BASELINE_TOO_SHORT`）側で捕捉される。**タスク3.2で `ANCHOR_DEGENERATE` を合成的に再現する場合、カメラ姿勢パイプライン全体ではなく、直接 `AnchorObservation` を不整合な値で構築する必要がある**（`test_world_frame_calibration_frame.py` の該当テストが実例）。design.md 側のこの記述は将来の改訂で是正が必要。
 - タスク5.1: `evaluate_verification_points` は検証点の `AnchorObservation.point_camera_mm`（投影前のロバスト代表点）を使う。**`point_on_plane_mm`（床平面投影後）を使うと高さ情報が失われ、要件4.9（既知の高さを持つ検証点）が満たせなくなる。** 幾何的には、`WorldTransform` の Z 軸＝床平面法線であるため、`apply_point(point_camera_mm).z` は平面からの符号付き距離（＝真の高さ）と厳密に一致し、X/Y成分は投影の有無で変わらない（レビューで解析的に検証済み）。`PointVerification` は design.md の `PointError` の部分集合（bias/scatter/距離帯/tolerance/verdict は含まない）であり、これらはタスク5.2/5.3で追加される。関数名 `evaluate_verification_points` も design.md の最終形 `verify_calibration` とは異なる（tolerance/expected_baseline_mm を束ねるのはタスク5.3以降）。
 - タスク6.2: テストファイルは `sensing_foundation.obslog.RESERVED_STAGES`（内部モジュール、公開入口の外）を直接importして `calibrate` ステージ名が予約語と衝突しないことを確認している。**「公開入口のみ参照」制約（design.md）は本パッケージの本番コード（`src/world_frame_calibration/**`）の依存グラフに対するものであり、テストコードの内省的な参照までは禁じていない。** タスク7.3の `test_boundaries.py` を書く際、この意図的な例外を壊さないよう注意すること。またタスク6.4（CLI）が `plane_fit`/`anchor_observe`/`frame_build`/`verify` の各段階ログを、本タスクが用意した `timed`/`stage_logger` を使って追加する予定である（design.mdのUpstreamAdapter契約には段階別の専用関数は無く、`collect_depth` 以外は6.4側でこのプリミティブを使って組み立てる）。
+- タスク7.1: 許容値の「余裕が大きい／ほぼ厳密」という主張を裏付ける実測値は、**必ず実際にテストが叩く経路（今回は `cli.run_calibrate`）で測り直すこと。** 幾何コアのモジュール（`plane`/`anchors`/`frame`）を直接呼んで測ると、CLIが経由する `depth_scale_mm` 丸め込みなどの量子化が欠落し、実際より何桁も小さい誤差を「実測値」として報告してしまう（本タスクでは回転誤差が 6e-17 対 8.1e-07 と約13000倍食い違った）。許容値の非空虚性（halving）テストは、この実際に叩く経路で測った値に対して書くこと。
