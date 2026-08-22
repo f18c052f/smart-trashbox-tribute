@@ -43,7 +43,7 @@
   - 観測可能な完了状態: `import world_frame_calibration` が成功し、`python -m pytest` が既存の `prediction_core` テストとあわせて成功終了する
   - _Requirements: 11.5_
 
-- [ ] 1.2 (P) 例外階層と失敗理由の列挙を定義する
+- [x] 1.2 (P) 例外階層と失敗理由の列挙を定義する
   - 基底例外、設定・入力ファイルの誤りを表す例外、**座標系が定まらない条件を表す例外**の3階層を定義する
   - 失敗理由を、有効点不足・平面が支持されない・入射角過小・マーカー未検出・基線長不足・マーカー縮退・非対応の歪み・回転が非直交・未知の形式版・設定不一致・検証点が独立でない、として列挙する
   - 失敗例外に「実測値と判定に用いた下限」を載せる文脈情報の器を持たせる
@@ -418,3 +418,7 @@
   - 観測可能な完了状態: 再現性の実測値と、見直し後の許容値・下限およびその根拠が `measurements.md` に残り、許容値仕様が暫定でなくなる。許容値を変更した場合は `m1-prediction-validation` への通知が記録されている
   - _Requirements: 4.6, 7.4, 10.6_
   - _Depends: 8.2_
+
+## Implementation Notes
+
+- タスク1.2: `CalibrationConfigError` は `prediction_core.PredictionConfigError` / `sensing_foundation.SensingConfigError` と異なり `ValueError` を継承しない。design.md の例外契約スニペットが `ValueError` に一切触れていないため契約どおりに実装した結果であり、実装上の欠陥ではない。今後 design.md を改訂する場合は、他パッケージとの `except ValueError` 互換性を意図的に持たせるかどうかを判断すること。
