@@ -84,7 +84,7 @@
   - _Depends: 1.4_
   - _Boundary: CalibrationPlan_
 
-- [ ] 1.6 既知姿勢からの合成 Depth 生成器をテストツリーに用意する
+- [x] 1.6 既知姿勢からの合成 Depth 生成器をテストツリーに用意する
   - 既知のカメラ姿勢・既知の内部パラメータ・既知のマーカー配置から、床平面と直方体マーカーを描画した Depth 画像を生成するヘルパを `tests/world_frame_calibration/synthetic.py` に置く
   - 生成時に**正解の変換**（カメラ → World）を同時に返し、以降のテストが復元結果と直接比較できるようにする
   - 指定した標準偏差のノイズ、指定した割合の無効画素、外れ値（床以外の平面や浮遊物）を混ぜられるようにする
@@ -424,3 +424,4 @@
 - タスク1.2: `CalibrationConfigError` は `prediction_core.PredictionConfigError` / `sensing_foundation.SensingConfigError` と異なり `ValueError` を継承しない。design.md の例外契約スニペットが `ValueError` に一切触れていないため契約どおりに実装した結果であり、実装上の欠陥ではない。今後 design.md を改訂する場合は、他パッケージとの `except ValueError` 互換性を意図的に持たせるかどうかを判断すること。
 - タスク1.3: `linalg.orthonormal_basis` は `x_hint` が `z_axis` とほぼ平行（縮退）な入力で呼ばれると `unit()` 内で 0/0 による NaN を静かに返す（例外を送出しない。本モジュールは numpy 以外を import せず判定を持たないため設計どおり）。**タスク3.1（WorldFrameBuilder）は `orthonormal_basis` を呼ぶ前に必ず `x_hint_degeneracy` で縮退を確認し、縮退時は `CalibrationFailure(ANCHOR_DEGENERATE)` を送出してから `orthonormal_basis` を呼ばないこと。** この呼び出し順序を守らないと縮退した基底が静かに下流へ流れる。
 - タスク1.4: `FrameGeometry.yaw_sensitivity_deg_per_mm` / `lateral_error_mm_per_mm_at_1000mm` は純粋な値オブジェクトのフィールドであり、`types.py` 自体は計算しない（生成時に検証・導出をしない設計方針どおり）。**この解析的関係を実際に計算して埋めるのはタスク3.1（WorldFrameBuilder）である。** 1.4 のテストは独立に事前計算したリテラル値でこの関係を固定しているが、実装側の計算はまだ存在しないため、3.1 で計算式を書く際に同じ式（`degrees(1/baseline_mm)`、`1000/baseline_mm`）を使うこと。
+- タスク1.6: `tests/world_frame_calibration/synthetic.py` は `tests/sensing_foundation/synthetic.py` と**裸のモジュール名が衝突する**（`tests/**` に `__init__.py` が一切無いため）。design.md がファイル名を `synthetic.py` に固定しているためリネームでは解決できない。**このモジュールを他のテストファイルから使う場合は、素の `import synthetic` / `from synthetic import ...` を使わず、`importlib.util.spec_from_file_location` によるパス指定ロードを使うこと**（`test_world_frame_calibration_synthetic.py` に実装パターンあり）。この衝突が今後関係するタスク: 2.x の `test_frame.py`、3.2、7.1 の `test_e2e_synthetic.py`、7.2 の `test_verify.py`。
