@@ -163,7 +163,7 @@
 
 - [ ] 3. World frame の確立
 
-- [ ] 3.1 床平面と2マーカーから World frame を確立する
+- [x] 3.1 床平面と2マーカーから World frame を確立する
   - Z 軸を床平面法線（カメラ側正）、原点を原点マーカーの床平面投影点、+X を原点マーカーから方向マーカーへ向かうベクトルの平面内成分、+Y を Z × X として構成する
   - 基線長（2マーカーの床平面上の距離）を算出し、下限を下回れば **+X が不安定である旨とともに失敗させる**
   - 方向マーカーの平面内成分がほぼ消える場合を、別の失敗理由として報告する
@@ -426,3 +426,4 @@
 - タスク1.4: `FrameGeometry.yaw_sensitivity_deg_per_mm` / `lateral_error_mm_per_mm_at_1000mm` は純粋な値オブジェクトのフィールドであり、`types.py` 自体は計算しない（生成時に検証・導出をしない設計方針どおり）。**この解析的関係を実際に計算して埋めるのはタスク3.1（WorldFrameBuilder）である。** 1.4 のテストは独立に事前計算したリテラル値でこの関係を固定しているが、実装側の計算はまだ存在しないため、3.1 で計算式を書く際に同じ式（`degrees(1/baseline_mm)`、`1000/baseline_mm`）を使うこと。
 - タスク1.6: `tests/world_frame_calibration/synthetic.py` は `tests/sensing_foundation/synthetic.py` と**裸のモジュール名が衝突する**（`tests/**` に `__init__.py` が一切無いため）。design.md がファイル名を `synthetic.py` に固定しているためリネームでは解決できない。**このモジュールを他のテストファイルから使う場合は、素の `import synthetic` / `from synthetic import ...` を使わず、`importlib.util.spec_from_file_location` によるパス指定ロードを使うこと**（`test_world_frame_calibration_synthetic.py` に実装パターンあり）。この衝突が今後関係するタスク: 2.x の `test_frame.py`、3.2、7.1 の `test_e2e_synthetic.py`、7.2 の `test_verify.py`。
 - タスク2.2: `WorldTransform` 構築時の正規直交性・行列式チェック失敗は `CalibrationFailure(reason=FailureReason.ROTATION_NOT_ORTHONORMAL, context={...})` であり、`CalibrationConfigError` ではない（design.md の Preconditions を正とする）。**形状不一致（3x3でない等）だけは `CalibrationConfigError`。** 縮退条件は `CalibrationFailure` 系、呼び出し方の誤りは `CalibrationConfigError` 系という区別を以降のタスクでも踏襲すること。`apply()` は設計どおり検証を一切行わない（tasks.mdの明示的指示がdesign.mdの矛盾する記述に優先する）。
+- タスク3.1: `linalg.x_hint_degeneracy` は `build_world_frame` 内で「原点マーカー→方向マーカー」ベクトルに対して呼ばれるが、**両マーカーの `point_on_plane_mm` は既に同一平面（同じ `Plane`）へ投影済み（タスク2.4の契約）のため、その差ベクトルは常に厳密に平面内（Z直交）になる**。したがって `x_hint_degeneracy` が実際に発火しうるのは「`point_on_plane_mm` が実は渡された `plane` と同一平面上に無い」という不整合入力の場合のみであり、design.md の例示（「マーカーがほぼ真上/真下にある」物理的縮退シナリオ）は実際には基線長不足（`ANCHOR_BASELINE_TOO_SHORT`）側で捕捉される。**タスク3.2で `ANCHOR_DEGENERATE` を合成的に再現する場合、カメラ姿勢パイプライン全体ではなく、直接 `AnchorObservation` を不整合な値で構築する必要がある**（`test_world_frame_calibration_frame.py` の該当テストが実例）。design.md 側のこの記述は将来の改訂で是正が必要。
