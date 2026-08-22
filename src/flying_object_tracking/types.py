@@ -43,6 +43,7 @@ from sensing_foundation import SourceKind
 __all__ = [
     "HANDOFF_VERSION",
     "CoordinateFrame",
+    "DetectorKind",
     "RejectReason",
     "PointFailureReason",
     "TrackState",
@@ -77,6 +78,26 @@ class CoordinateFrame(StrEnum):
 
     CAMERA = "camera"
     """本 Spec が出す唯一の値。"""
+
+
+class DetectorKind(StrEnum):
+    """前景検出方式の識別子（design.md「L4-L5: 検出」節の `MaskBuilder`）。
+
+    **本来は L4-L5（`detection/masks`）に属する列挙型だが、`config` 層
+    （L2）の `DetectorConfig.kind` が既定値としてこの値を必要とし、かつ
+    「Dependency Direction」表は左から右への import しか許さない
+    （`Types --> Config` はあるが `Config --> Masks` の逆流は無い）。
+    `config`（L2）と `detection/masks`（L4）の両方が import できる最小の
+    層は `types`（L1）であるため、ここに置く。`detection/masks/*` は
+    実装時にこのメンバーをそのまま使い、独自に再定義しない。
+    """
+
+    DEPTH_BAND = "depth_band"
+    """ROI 内で距離帯に入る画素を前景とする。状態を持たない。"""
+    FRAME_DIFF = "frame_diff"
+    """直前フレームとの Depth 差分を前景とする。既定（暫定。OQ-26 の実測で確定する）。"""
+    BACKGROUND = "background"
+    """初期フレーム群から作った背景 Depth モデルとの差分を前景とする。"""
 
 
 class RejectReason(StrEnum):

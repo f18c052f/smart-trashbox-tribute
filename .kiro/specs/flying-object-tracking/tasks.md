@@ -51,7 +51,7 @@
   - _Depends: 1.2_
   - _Boundary: CoreTypes_
 
-- [ ] 1.4 設定の解決と起動時検証を実装する
+- [x] 1.4 設定の解決と起動時検証を実装する
   - 処理範囲（画素矩形と距離方向の下限・上限）、対象物モデル（想定直径と許容倍率、粗いふるいの画素数）、検出方式と方式別パラメータ、逆投影パラメータ、追跡閾値、計測の有効無効と評価窓長、出力先を定義する
   - 解決順序を **CLI 引数 > 環境変数 > 設定ファイル > 既定値**とし、解決結果を不変にする
   - 処理範囲が未指定のときはフレーム全体を対象とする既定挙動にする
@@ -416,3 +416,8 @@
   収集エラーになる。`sensing_foundation` / `trajectory_sim` に倣い、
   `test_flying_object_tracking_<name>.py` のようにフィーチャ名を含むフルプレフィックスで
   命名する（以後の全タスクで踏襲すること）。
+- タスク1.4: design.md に記載不備がある。`DetectorKind` を L4-L5「MaskBuilder」節で
+  定義しつつ、L1-L2 の `DetectorConfig`（`config.py`）がその既定値として同 enum を
+  要求しており、Dependency Direction 表（`config` は `detection/masks` を import 禁止）
+  と矛盾する。実装は `DetectorKind` を両層の共通祖先である `types.py`（L1）に置くことで
+  解消した（design.md 本体は未修正。`trajectory-simulator` の前例に倣い、ここに記録する）。
