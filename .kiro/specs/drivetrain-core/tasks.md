@@ -198,7 +198,7 @@
   - _Requirements: 5.1, 5.2, 5.4, 5.5, 5.6, 5.7, 5.8, 5.9, 6.5, 17.6_
   - _Depends: 3.3_
 
-- [ ] 6.2 制御ステップの骨格（設定・時刻・計測）を実装する
+- [x] 6.2 制御ステップの骨格（設定・時刻・計測）を実装する
   - 設定を検証してから内部状態を構築する経路を用意し、**検証に失敗した状態では制御を開始させない**。ポートが揃っていないことも設定エラーとして拒否する
   - **状態を変えるすべての公開入口が時刻を引数に取る形**にし、現在時刻を内部で取得しない。自らループを回さない
   - 与えられた時刻が前回以前のときは、**ポートも読まず状態も更新せず、前回の結果をそのまま返す**副作用の無い短絡にする
@@ -333,4 +333,6 @@
 - **タスク 5.2**: `LowVoltageProtector` の `Unavailable → Normal` 復帰には `Tripped → Normal` と異なり `latching` の制約が無い（design.md の状態遷移図で確認済み: `Tripped --> Normal` のみ「保持設定が自動解除」の条件を持つ）。`latching=true` でも有効な読み値が復帰し移動平均が復帰閾値以上になれば `kUnavailable` は自己解除する。タスク5.5でこの非対称性を前提に実装すること
 - **タスク 5.5**: `MotorLockDetector::reset()`/`LowVoltageProtector::reset()` はどちらも無条件（自己判定できない）ため、`ProtectionSupervisor::resetProtections()` が「解除条件を満たす保護だけを解く」（要件14.6）というゲーティングを担う。`MotorLockDetector` は latching=true で Tripped に入ると条件の再評価自体を止め、かつ生条件を読むアクセサを持たないため、`ProtectionSupervisor::updateLock()` が同一の閾値判定を**独自に再計算**して `last_lock_condition_[]` にキャッシュしている。これは design.md でロック済みの `MotorLockDetector` インターフェース（4メソッドのみ）を拡張できないための回避策であり、**将来 `motor_lock.cpp` の判定式を変更する際は `supervisor.cpp` の重複箇所も同時に直す必要がある**（コンパイラは同期を強制しない）。将来の design.md 改訂で `MotorLockDetector` に読み取り専用アクセサ（例: `conditionActive()`）を追加しこの重複を解消する余地がある
 - **タスク 5.5**: `resetProtections()` の安全性は、同一制御ステップ内で `updateLock()`/`updateLowVoltage()` が**先に**呼ばれ `last_lock_condition_[]`/`last_voltage_sample_valid_` が最新化されていることに依存する。この呼び出し順序の事前条件は現状コード上に明記されていない。**タスク6（DrivetrainController）で `resetProtections()` を呼ぶ際は、必ず同一ステップの `updateLock()`/`updateLowVoltage()`/`updateWatchdog()` より後に呼ぶこと**（`compose()` と同じ呼び出し順序の制約）
+- **タスク 6.2**: `Kinematics`/`Odometry`/`CommandInput`/`ProtectionSupervisor`/`VelocityPid` はデフォルトコンストラクタを持たないため、`DrivetrainController`（デフォルト構築可能・`configure()` 成功後にこれらを構築）は `alignas(T) std::byte storage_[sizeof(T)]` へのプレースメント new で遅延構築する `LazySlot<T>` ヘルパーを使う。**`get()` は必ず `std::launder(reinterpret_cast<T*>(&storage_))` を経由すること**（`Odometry`/`CommandInput` は `const Kinematics&` 参照メンバを持つため、再構築後のアクセスに `std::launder` を欠くと `[basic.life]p8` 違反の未定義動作になる。`emplace()` 直後の placement-new が返すポインタ自体は例外でランダリング不要）。`storage_` は `unsigned char[]` ではなく `std::byte[]` を使う（`unsigned ` の字面がタスク8の固定幅整数トークン検査と衝突するため）
+- **タスク 6.2**: `DrivetrainController` の copy/move は `= delete` する（参照メンバを持つ内部オブジェクトのメンバワイズコピーは参照先を誤らせるため）。`configure()` は non-null な3ポートの検証も行うが、null ポートに対応する専用の `ConfigField` 列挙子が無いため `ConfigError::kOutOfRange` ＋ `ConfigDiagnostic::index`（0=encoder/1=motor/2=battery）を暫定的に流用している。**タスク6.5で公開エラー診断面を確定する前に、専用の列挙子（例: `kPortsEncoderNull` 等）を追加するか検討すること**
 - **タスク 2.1**: `pio run -e teleop` の並行実行（フォアグラウンドとバックグラウンドを同時に走らせる等）は同一 `.pio/build/teleop` への同時書き込みでファイル破損を招く（`objdump: file format not recognized` 等の紛らわしいエラーになる）。**PlatformIO のビルドは常に1つずつ・フォアグラウンドで実行する**
