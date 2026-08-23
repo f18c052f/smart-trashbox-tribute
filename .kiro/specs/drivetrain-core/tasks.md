@@ -147,7 +147,7 @@
   - _Requirements: 10.1, 10.2, 10.3, 10.4, 10.5, 10.6, 10.7_
   - _Boundary: MotorLockDetector_
 
-- [ ] 5.2 (P) 保護② LiPo 低電圧保護を実装する
+- [x] 5.2 (P) 保護② LiPo 低電圧保護を実装する
   - 電圧の読み値を**固定長の移動平均**（動的メモリ確保を行わない）で平滑し、警告閾値を下回った時点で警告状態を、停止閾値未満の継続が継続時間を超えた時点で停止状態を立てる
   - 復帰閾値を停止閾値より高く設定できるヒステリシスを持たせ、急加速による一時的な電圧降下では停止しないようにする
   - **読み値が得られないサンプルを移動平均へ取り込まない。** 欠測が継続時間を超えて続いた場合は、低電圧とは**別の理由**として停止する
@@ -330,4 +330,5 @@
 - **タスク 4.2**: `VelocityPid::commit()` の条件付き積分（design.md「適用値が生の出力より小さく」）は**大きさ（絶対値）の比較**として実装する。符号付き比較 `applied < raw` では、`scaleToLimit()` が常に非負の一様係数で全輪を縮小する（`docs` の方針どおり符号を保つ）ため、`raw` が負の場合に `applied`（0へ近づいた負値）が数値上 `raw` より大きくなり、負方向の飽和でアンチワインドアップが機能しなくなる。`|applied| < |raw|` かつ `sign(偏差) == sign(raw)` の両条件で判定することで両方向対称に動作する。design.md 本文の文言（「小さく」）は符号ではなく大きさを意図している旨を明確化済み（コミット参照）
 - **タスク 5.1**: `MotorLockDetector::reset()` は無条件（発火条件が現在も成立しているかを再判定しない）で実装する。design.md の署名が `now` のみを取り、電流の条件を渡さないため構造的に自己判定できない。「解除条件を満たす保護だけを解く」（要件14.6）は `ProtectionSupervisor::resetProtections()`（タスク5.5）の責務。**タスク5.5実装時は、輪の拘束条件が現在も成立しているときに `MotorLockDetector::reset()` を呼ばないことを必ず確認する**
 - **タスク 5.1**: `tests/firmware/test_firmware_boundaries.py` の `_actual_lib_source_paths()` が非再帰的な `glob("*.cpp")` を使っており、サブディレクトリ（`src/protection/` 等）の `.cpp` を検出できていなかった。`rglob("*.cpp")` に修正済み。design.md の File Structure Plan は L7 以降のソースを `protection/` 等のサブディレクトリに置くと定めているため、この修正はタスク5.1が最初に踏んだだけで以降のどのタスクでも必要だった
+- **タスク 5.2**: `LowVoltageProtector` の `Unavailable → Normal` 復帰には `Tripped → Normal` と異なり `latching` の制約が無い（design.md の状態遷移図で確認済み: `Tripped --> Normal` のみ「保持設定が自動解除」の条件を持つ）。`latching=true` でも有効な読み値が復帰し移動平均が復帰閾値以上になれば `kUnavailable` は自己解除する。タスク5.5でこの非対称性を前提に実装すること
 - **タスク 2.1**: `pio run -e teleop` の並行実行（フォアグラウンドとバックグラウンドを同時に走らせる等）は同一 `.pio/build/teleop` への同時書き込みでファイル破損を招く（`objdump: file format not recognized` 等の紛らわしいエラーになる）。**PlatformIO のビルドは常に1つずつ・フォアグラウンドで実行する**
