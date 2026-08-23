@@ -4,9 +4,10 @@
 
 // drivetrain_control DrivetrainController implementation (design.md L10
 // "DrivetrainController", タスク 6.2「制御ステップの骨格（設定・時刻・
-// 計測）」). See controller.hpp for the full contract, preconditions, and
+// 計測）」・タスク 6.3「制御ステップの出力段（上限・PID・縮小・遮断・
+// 極性）」). See controller.hpp for the full contract, preconditions, and
 // the placement-new-based composition rationale. 要件 3.1, 3.2, 3.4, 3.5,
-// 3.6, 15.4。
+// 3.6, 6.5, 12.4, 13.5, 13.6, 14.1, 14.2, 14.3, 15.4。
 
 namespace drivetrain_control {
 
@@ -31,6 +32,7 @@ void DrivetrainController::resetComposedState() noexcept {
   for (std::uint8_t i = 0; i < kWheelCount; ++i) {
     pid_[i].reset();
   }
+  pwm_ceiling_.reset();
   protection_.reset();
   command_input_.reset();
   odometry_.reset();
@@ -64,6 +66,9 @@ ConfigDiagnostic DrivetrainController::configure(const DrivetrainConfig& config,
   odometry.reset(Pose2D{}, now);  // 原点を configure() 時点で初期化する。
   command_input_.emplace(kinematics, config_.limits);
   protection_.emplace(config_);
+  // 要件 12.4／design.md "PwmCeiling" Implementation Notes: ProtectionSupervisor
+  // を介さず DrivetrainController が直接保持する。
+  pwm_ceiling_.emplace(config_.pwm_ceiling, config_.output.absolute_max_duty);
   for (std::uint8_t i = 0; i < kWheelCount; ++i) {
     pid_[i].emplace(config_.pid[i]);
   }
@@ -75,6 +80,9 @@ ConfigDiagnostic DrivetrainController::configure(const DrivetrainConfig& config,
   last_measured_mm_s_[0] = 0.0f;
   last_measured_mm_s_[1] = 0.0f;
   last_measured_mm_s_[2] = 0.0f;
+  last_commanded_duty_[0] = 0.0f;
+  last_commanded_duty_[1] = 0.0f;
+  last_commanded_duty_[2] = 0.0f;
   last_step_ms_ = now;
   last_result_ = StepResult{};
 
@@ -124,13 +132,107 @@ StepResult DrivetrainController::step(TimeMs now) noexcept {
   // い）。
   odometry_.get().update(last_measured_mm_s_, dt_ms, now);
 
-  // タスク 6.2 は「骨格」のみ。PID の compute/commit、PWM 上限、等比縮小、
-  // 保護①〜④の合成・遮断、出力極性の適用、MotorOutputPort への書き出しは
-  // タスク 6.3 が配線する。ここでは出力デューティは既定値（全ゼロ）の
-  // StepResult を返す。
+  // --- 出力段（タスク 6.3。design.md System Flows「制御ステップ1回の
+  // フロー」の ReadBatt 以降。要件 6.5, 12.4, 13.5, 13.6, 14.1, 14.2,
+  // 14.3） -------------------------------------------------------------
+
+  // ReadBatt → LowV: 保護②（低電圧）の検出器を1回進める。
+  const VoltageSample battery_sample = ports_.battery->read();
+  protection_.get().updateLowVoltage(battery_sample, now);
+
+  // Ceil: PwmCeiling は ProtectionSupervisor を介さず DrivetrainController
+  // が直接呼ぶ（design.md「フローの決定事項」）。上限は PID の compute
+  // 直後の等比縮小に使うため、Supervisor::compose() より前に確定させる。
+  const float ceiling = pwm_ceiling_.get().evaluate(battery_sample);
+
+  // Wd: 保護④（ウォッチドッグ）の検出器を1回進める。判定は最後に有効
+  // だった指令の有効時刻と「起動後に有効な指令を受けたか」のみを見る
+  // （指令元に固有の情報を参照しない、要件 13.2, 13.7）。
+  const WheelTargets& targets = command_input_.get().latched();
+  const bool watchdog_tripped = protection_.get().updateWatchdog(now, targets.issued_at_ms, targets.valid);
+
+  // Target → Pid → Scale → Commit: 2段プロトコルの呼び出し順序を
+  // applyWheelOutputs() へ閉じ込める（compute()/commit() を直接呼ぶ経路は
+  // これ以外に作らない）。ウォッチドッグ発火中は目標速度を無視し、PID を
+  // holdReset の経路に置く（直前の指令を継続実行しない、要件 13.5）。
+  applyWheelOutputs(targets.mm_s, dt_ms, ceiling, watchdog_tripped, last_commanded_duty_);
+
+  // Lock: 保護①（モータロック）を輪ごとに1回進める。判定入力は「上限
+  // 適用後・遮断前」の出力指令（last_commanded_duty_、極性適用前）である
+  // （design.md「フローの決定事項」）。
+  for (std::uint8_t i = 0; i < kWheelCount; ++i) {
+    protection_.get().updateLock(i, last_commanded_duty_[i], last_measured_mm_s_[i], now);
+  }
+
+  // Sup: 直近の updateLowVoltage/updateWatchdog/updateLock の結果と、
+  // configured/output_enabled/has_command を合成する（検出器は呼び直さ
+  // ない）。
+  const GateOutcome outcome =
+      protection_.get().compose(configured_, command_input_.get().outputEnabled(), targets.valid);
+
+  // Gate: 理由が立つ輪のデューティを遮断値（0）にする。
+  WheelOutputs outputs{};
+  for (std::uint8_t i = 0; i < kWheelCount; ++i) {
+    outputs.duty[i] = last_commanded_duty_[i];
+  }
+  ProtectionSupervisor::applyGate(outcome, outputs);
+
+  // Polarity: 出力極性パラメータの適用は最後のこの1箇所だけで行う
+  // （要件 6.6 を出力側で担保する）。
+  for (std::uint8_t i = 0; i < kWheelCount; ++i) {
+    outputs.duty[i] *= static_cast<float>(config_.output.polarity[i]);
+  }
+
+  // Write: MotorOutputPort へ書き出す。
+  ports_.motor->write(outputs);
+
+  // Snap: StepResult を確定させて返す。
   StepResult result{};
+  result.outputs = outputs;
+  result.global_reasons = outcome.global_reasons;
+  for (std::uint8_t i = 0; i < kWheelCount; ++i) {
+    result.wheel_reasons[i] = outcome.wheel_reasons[i];
+  }
+  result.outputs_written = true;
+
   last_result_ = result;
   return last_result_;
+}
+
+void DrivetrainController::applyWheelOutputs(const float targets_mm_s[kWheelCount], DurationMs dt_ms,
+                                              float ceiling, bool watchdog_tripped,
+                                              float out_applied_duty[kWheelCount]) noexcept {
+  if (watchdog_tripped) {
+    // design.md「フローの決定事項」: 発火中は CommandInput の保持する輪
+    // 目標速度が PID へ渡らない。目標を 0 とし、PID を holdReset の経路に
+    // 置く。VelocityPid の Preconditions（velocity_pid.hpp）は同一ステップ
+    // 内で compute()/commit() と holdReset() を混在させることを禁じるため、
+    // ここでは compute()/commit() を一切呼ばない。
+    for (std::uint8_t i = 0; i < kWheelCount; ++i) {
+      pid_[i].get().holdReset(last_measured_mm_s_[i]);
+      out_applied_duty[i] = 0.0f;
+    }
+    return;
+  }
+
+  // compute(): 上限でクランプしない生の出力を3輪ぶん算出する。
+  float raw[kWheelCount];
+  for (std::uint8_t i = 0; i < kWheelCount; ++i) {
+    raw[i] = pid_[i].get().compute(targets_mm_s[i], last_measured_mm_s_[i], dt_ms);
+  }
+
+  // Scale: 輪ごとの個別クリップではなく、3輪まとめての等比縮小として PWM
+  // 上限を適用する（要件 6.5, 12.4）。すでに上限以内なら scaleToLimit() は
+  // 値を変更しない（呼び分けを条件分岐で書く必要が無い）。
+  scaleToLimit(raw, ceiling);
+
+  // commit(): 各輪は自分自身の（縮小後の）値で確定する。これにより
+  // commit() 内部のアンチワインドアップ判定（「この輪の値が群としての
+  // 縮小で小さくされたか」）が輪ごとに正しく機能する。
+  for (std::uint8_t i = 0; i < kWheelCount; ++i) {
+    pid_[i].get().commit(raw[i]);
+    out_applied_duty[i] = raw[i];
+  }
 }
 
 }  // namespace drivetrain_control

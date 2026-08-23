@@ -4,17 +4,19 @@
 // "DrivetrainController", 要件 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 6.5, 12.4,
 // 15.4, 15.5, 17.1, 17.7).
 //
-// ⚠️ タスク 6.2 スコープ: このヘッダは design.md が定義する
+// ⚠️ タスク 6.2/6.3 スコープ: このヘッダは design.md が定義する
 // `DrivetrainController` の完全なインターフェースのうち、「制御ステップの
-// 骨格（設定・時刻・計測）」だけを実装する。以下は未実装で、後続タスクが
-// 追加する:
-//   - タスク 6.3: PID の compute/commit 配線、PwmCeiling、等比縮小、
-//     ProtectionSupervisor の updateLock/updateLowVoltage/updateWatchdog/
-//     compose/applyGate 配線、出力極性の適用、MotorOutputPort への書き出し
+// 骨格（設定・時刻・計測、タスク6.2）」と「出力段（上限・PID・縮小・遮断・
+// 極性、タスク6.3）」を実装する。以下は未実装で、後続タスクが追加する:
 //   - タスク 6.4: status()/DrivetrainStatus、実測周期・指令反映遅れ
 //   - タスク 6.5: submit()/setOutputEnabled()/resetProtections()/
 //     resetOdometry() の公開入口としての配線
-// このため本ヘッダはこれらの公開メソッドをまだ宣言しない。
+// このため本ヘッダはこれらの公開メソッドをまだ宣言しない
+// （`CommandInput::submit()` へは task 6.5 まで外部から到達できないため、
+// タスク6.3 のホストテストは friend アクセサ経由で内部の `CommandInput` へ
+// 直接指令を投入する。controller.cpp 側のロジックはこの制約を前提にしない
+// ―― `command_input_.get()` を通じて通常どおり呼ぶだけであり、将来 6.5 が
+// 公開 `submit()` を追加しても controller.cpp の変更は不要）。
 //
 // configure() の検証（要件 15.4）:
 //   `drivetrain_control::validate()`（config.cpp、タスク2.3）で
@@ -54,17 +56,37 @@
 //
 //   `!configured_` のときは、ポートを一切読まず、`BlockReason::
 //   kNotConfigured` を立てた遮断値（デューティ全ゼロ）の `StepResult` を
-//   返す（要件 15.4）。PID・PWM上限・保護①〜④の合成・出力極性・
-//   `MotorOutputPort` への書き出しはタスク 6.3 が配線するまでは行わない
-//   ため、configured かつ実際にステップが進んだ場合でも `StepResult` の
-//   出力デューティはこのタスクの時点ではゼロ（`StepResult{}` の既定値）の
-//   ままである。
+//   返す（要件 15.4）。
+//
+// step() の出力段（タスク 6.3。design.md System Flows「制御ステップ1回の
+// フロー」の `ReadBatt` 以降。要件 6.5, 12.4, 13.5, 13.6, 14.1, 14.2,
+// 14.3）:
+//   `BatteryVoltagePort::read()` → `ProtectionSupervisor::
+//   updateLowVoltage()` → `PwmCeiling::evaluate()`（`DrivetrainController`
+//   自身が直接保持して呼ぶ。`ProtectionSupervisor` を介さない） →
+//   `ProtectionSupervisor::updateWatchdog()` →
+//   `CommandInput::latched()` から輪目標速度を取得 →
+//   非公開ヘルパー `applyWheelOutputs()`（`VelocityPid::compute()` を
+//   3輪ぶん呼んで生の出力を得た後、`scaleToLimit()` で PWM 上限へ3輪
+//   まとめて等比縮小し、`VelocityPid::commit()` を各輪の縮小後の値で
+//   呼ぶ。ウォッチドッグ発火中はこの `compute→scale→commit` の代わりに
+//   3輪すべてで `VelocityPid::holdReset()` を呼び、適用デューティを 0
+//   にする） → `ProtectionSupervisor::updateLock()`（輪ごと、上限適用後・
+//   遮断前の出力指令で判定） → `ProtectionSupervisor::compose()` →
+//   `ProtectionSupervisor::applyGate()` → 出力極性
+//   （`OutputParams::polarity`）の適用（最後の1箇所だけ） →
+//   `MotorOutputPort::write()`。
+//
+//   `VelocityPid::compute()`/`commit()` を直接呼ぶコードパスは
+//   `applyWheelOutputs()` の外に作らない（design.md "DrivetrainController"
+//   Implementation Notes: 2段プロトコルの誤用防止）。
 //
 // Preconditions: `configure()` が `ok()` を返していること。そうでない場合
 // `step()` は `kNotConfigured` を立てて遮断値を書き出す。
 // Postconditions: `now <= last_step_ms_` のとき、ポートを読まず状態も
 // 変えず、前回の `StepResult` をそのまま返す（要件 3.4）。経過時間は
-// `now - last_step_ms_` から求める（要件 3.5）。
+// `now - last_step_ms_` から求める（要件 3.5）。PWM 上限の適用と等比縮小は
+// 遮断より前に行う（要件 12.4, 6.5）。
 // Invariants: 自らループを回さない（要件 3.2）。現在時刻を内部で取得しない
 // （要件 3.1）。`<ctime>` / `<chrono>` / `millis` / `esp_timer_*` を核から
 // 参照しない。
@@ -104,6 +126,7 @@
 #include "drivetrain_control/kinematics.hpp"
 #include "drivetrain_control/odometry.hpp"
 #include "drivetrain_control/ports.hpp"
+#include "drivetrain_control/protection/pwm_ceiling.hpp"
 #include "drivetrain_control/protection/supervisor.hpp"
 #include "drivetrain_control/types.hpp"
 #include "drivetrain_control/velocity_pid.hpp"
@@ -124,19 +147,23 @@ class DrivetrainController {
   const DrivetrainConfig& effectiveConfig() const noexcept { return config_; }  // 要件 15.5
 
   // 制御ステップ。状態を変える公開メソッドはすべて now を取る（要件 3.6）。
-  // タスク 6.2 時点では「骨格」のみ（configure 未完了時の遮断・過去時刻の
-  // 短絡・dt 計算・計測速度算出・Odometry 更新）を実装する。PID・PWM上限・
-  // 保護の合成・出力書き出しはタスク 6.3 が追加する。
+  // タスク 6.2「骨格」（configure 未完了時の遮断・過去時刻の短絡・dt
+  // 計算・計測速度算出・Odometry 更新）に、タスク 6.3「出力段」
+  // （PwmCeiling・PID compute/scale/commit・保護①〜④の合成・出力極性・
+  // MotorOutputPort への書き出し）を続けて実装する。
   StepResult step(TimeMs now) noexcept;
 
  private:
-  // タスク6.2 時点では status()（タスク6.4）が無く、dt→計測速度→Odometry
-  // 更新の配線を外部から観測する公開手段が無い。task 6.2 のホストテスト
-  // （test_controller_step）だけがこの内部状態（last_measured_mm_s_ /
-  // last_encoder_counts_ / odometry_ の状態）を読めるようにする、テスト
-  // 専用の friend アクセサ。status() の先取り実装ではない（DrivetrainStatus
-  // 型もそのフィールドもここでは一切定義しない）。タスク6.4 が status() を
-  // 追加した後は不要になる想定。
+  // タスク6.2/6.3 時点では status()（タスク6.4）が無く、dt→計測速度→
+  // Odometry 更新や出力段（PID/上限/保護/極性）の配線を外部から観測する
+  // 公開手段が無い。同じく `CommandInput::submit()` も公開されていない
+  // （task 6.5）。test_controller_step だけがこの内部状態
+  // （last_measured_mm_s_ / last_encoder_counts_ / odometry_ /
+  // last_commanded_duty_ / command_input_ / pid_ の状態）を読み・指令を
+  // 直接投入できるようにする、テスト専用の friend アクセサ。status() の
+  // 先取り実装ではない（DrivetrainStatus 型もそのフィールドもここでは一切
+  // 定義しない）。タスク6.4/6.5 が該当メソッドを追加した後は不要になる
+  // 想定。
   friend struct ControllerStepTestHooks;
 
   // ヒープを使わず、既定構築子を持たない型 T を「未構築 or 構築済み」の
@@ -200,6 +227,26 @@ class DrivetrainController {
   // （Kinematics）を後に破棄する（宣言順の逆 = 依存の逆順）。
   void resetComposedState() noexcept;
 
+  // タスク 6.3: `VelocityPid::compute()` → `scaleToLimit()`（PWM 上限で
+  // 3輪まとめての等比縮小） → `VelocityPid::commit()` の呼び出し順序を
+  // この1箇所へ閉じ込める非公開ヘルパー（design.md "DrivetrainController"
+  // Implementation Notes）。`compute()`/`commit()` を直接呼ぶコードパスは
+  // これ以外に作らない。
+  //
+  // ウォッチドッグ発火中（`watchdog_tripped == true`）は、
+  // `targets_mm_s` を無視し、3輪すべてで `compute()`/`commit()` の代わりに
+  // `VelocityPid::holdReset()` を呼び、`out_applied_duty` を全輪 0 にする
+  // （design.md「フローの決定事項」: 「発火中は CommandInput の保持する
+  // 輪目標速度が PID へ渡らない（目標を 0 とし、PID を holdReset に
+  // 置く）」。`VelocityPid` の Preconditions は同一ステップ内での
+  // compute/commit と holdReset の混在を禁じる）。
+  //
+  // `out_applied_duty` は「上限適用後・遮断前」の出力指令であり、
+  // `ProtectionSupervisor::updateLock()` の判定入力にそのまま使う
+  // （design.md「フローの決定事項」）。
+  void applyWheelOutputs(const float targets_mm_s[kWheelCount], DurationMs dt_ms, float ceiling,
+                         bool watchdog_tripped, float out_applied_duty[kWheelCount]) noexcept;
+
   // --- 実効設定・診断・configured フラグ -------------------------------
   DrivetrainConfig config_{};
   ConfigDiagnostic diagnostic_{};
@@ -230,16 +277,30 @@ class DrivetrainController {
   // status() の wheel_measured_mm_s がここを再利用する前提で保持する。
   float last_measured_mm_s_[kWheelCount] = {0.0f, 0.0f, 0.0f};
 
+  // タスク 6.3: 直近ステップで `applyWheelOutputs()` が返した「上限適用後・
+  // 遮断前」の出力指令（`OutputParams::polarity` 適用前。design.md
+  // 「フローの決定事項」の `Commit`〜`Lock` ノード間の値）。
+  // `ProtectionSupervisor::updateLock()` の判定入力として同一ステップ内で
+  // 再利用するほか、ホストテストが「ウォッチドッグ発火中に PID の内部
+  // ターゲットが実際に 0 化されたこと」を、最終出力の遮断（ゲート）で
+  // マスクされずに検証できるようにするため、メンバとして保持する
+  // （friend アクセサ経由。他のどのコンポーネントもこの値を保持しない）。
+  float last_commanded_duty_[kWheelCount] = {0.0f, 0.0f, 0.0f};
+
   // --- 合成オブジェクト（configure() 成功時のみ構築） --------------------
   // 宣言順 = 構築の依存順（Kinematics が先。Odometry/CommandInput は
   // Kinematics への参照を保持するため後）。C++ はメンバを宣言の逆順で
   // 破棄するため、DrivetrainController の暗黙のデストラクタでも
   // Odometry/CommandInput が Kinematics より先に破棄され、参照の生存期間
-  // が壊れない。
+  // が壊れない。`PwmCeiling` は他の合成メンバへの参照を保持しないため、
+  // 構築・破棄の順序に制約が無い。
   LazySlot<Kinematics> kinematics_;
   LazySlot<Odometry> odometry_;
   LazySlot<CommandInput> command_input_;
   LazySlot<ProtectionSupervisor> protection_;
+  // 要件 12.4／design.md "PwmCeiling" Implementation Notes: `PwmCeiling` は
+  // `ProtectionSupervisor` を介さず `DrivetrainController` が直接保持する。
+  LazySlot<PwmCeiling> pwm_ceiling_;
   LazySlot<VelocityPid> pid_[kWheelCount];
 
   // LazySlot は placement new で構築したオブジェクトへの生の参照

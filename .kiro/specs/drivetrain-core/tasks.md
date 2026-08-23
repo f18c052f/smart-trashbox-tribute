@@ -209,7 +209,7 @@
   - _Boundary: DrivetrainController_
   - _Depends: 2.3, 2.4, 4.1_
 
-- [ ] 6.3 制御ステップの出力段（上限・PID・縮小・遮断・極性）を実装する
+- [x] 6.3 制御ステップの出力段（上限・PID・縮小・遮断・極性）を実装する
   - 電圧サンプルから低電圧判定を進め、**出力上限を決定してからPIDを算出**する。上限は輪ごとの個別クリップではなく**3輪まとめての等比縮小**として適用する（1輪だけ飽和した瞬間に指令された運動の方向が崩れるため）
   - PIDの算出と確定の2段呼び出しを**この1箇所へ閉じ込め**、他のコードパスから直接呼べないようにする（呼び忘れ・二重呼び出しを構造で防ぐため）
   - ウォッチドッグ発火中は目標速度をゼロとして扱い、PIDを遮断中の経路に置く（直前の指令を継続して実行しないため）
@@ -335,4 +335,5 @@
 - **タスク 5.5**: `resetProtections()` の安全性は、同一制御ステップ内で `updateLock()`/`updateLowVoltage()` が**先に**呼ばれ `last_lock_condition_[]`/`last_voltage_sample_valid_` が最新化されていることに依存する。この呼び出し順序の事前条件は現状コード上に明記されていない。**タスク6（DrivetrainController）で `resetProtections()` を呼ぶ際は、必ず同一ステップの `updateLock()`/`updateLowVoltage()`/`updateWatchdog()` より後に呼ぶこと**（`compose()` と同じ呼び出し順序の制約）
 - **タスク 6.2**: `Kinematics`/`Odometry`/`CommandInput`/`ProtectionSupervisor`/`VelocityPid` はデフォルトコンストラクタを持たないため、`DrivetrainController`（デフォルト構築可能・`configure()` 成功後にこれらを構築）は `alignas(T) std::byte storage_[sizeof(T)]` へのプレースメント new で遅延構築する `LazySlot<T>` ヘルパーを使う。**`get()` は必ず `std::launder(reinterpret_cast<T*>(&storage_))` を経由すること**（`Odometry`/`CommandInput` は `const Kinematics&` 参照メンバを持つため、再構築後のアクセスに `std::launder` を欠くと `[basic.life]p8` 違反の未定義動作になる。`emplace()` 直後の placement-new が返すポインタ自体は例外でランダリング不要）。`storage_` は `unsigned char[]` ではなく `std::byte[]` を使う（`unsigned ` の字面がタスク8の固定幅整数トークン検査と衝突するため）
 - **タスク 6.2**: `DrivetrainController` の copy/move は `= delete` する（参照メンバを持つ内部オブジェクトのメンバワイズコピーは参照先を誤らせるため）。`configure()` は non-null な3ポートの検証も行うが、null ポートに対応する専用の `ConfigField` 列挙子が無いため `ConfigError::kOutOfRange` ＋ `ConfigDiagnostic::index`（0=encoder/1=motor/2=battery）を暫定的に流用している。**タスク6.5で公開エラー診断面を確定する前に、専用の列挙子（例: `kPortsEncoderNull` 等）を追加するか検討すること**
+- **タスク 6.3**: ウォッチドッグ発火中は `compute(0, measured, dt)` ではなく `holdReset()` が compute/commit ペアを**完全に置き換える**（`VelocityPid` の Precondition「holdReset() を呼んだステップでは compute/commit のどちらも呼ばない」と、design.md の「PID を holdReset に置く」という文言から）。`CommandWatchdog` は `has_command==false` のとき無条件に `tripped()==true` になるため、`kNoCommandYet` は常に `kCommandTimeout` と同時に立つ（設計上の帰結であり不具合ではない）
 - **タスク 2.1**: `pio run -e teleop` の並行実行（フォアグラウンドとバックグラウンドを同時に走らせる等）は同一 `.pio/build/teleop` への同時書き込みでファイル破損を招く（`objdump: file format not recognized` 等の紛らわしいエラーになる）。**PlatformIO のビルドは常に1つずつ・フォアグラウンドで実行する**
