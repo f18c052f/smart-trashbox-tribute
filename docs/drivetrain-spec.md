@@ -393,6 +393,9 @@ PWM_MAX = min(1.0, 12.0 / measured_battery_voltage)
 
 #### 10.1.2 テレオペ用ファームウェアは分離する
 
+> 排他の具体的な実現方法（ビルドフラグ・コンポーネント allowlist 等）は `drivetrain-core` 実装時に確定した
+> → [decisions.md D-11](./decisions.md#d-11-テレオペ用と本番用ファームウェアの排他方法を確定した-oq-21-決着)
+
 **BT スタックを M3 の本番ファームウェアへ持ち込まない。**
 
 - 理由: ESP32 の BT Classic と Wi-Fi は **2.4GHz を time-share** するため、両方を同時に使うと
@@ -476,6 +479,12 @@ PWM_MAX = min(1.0, 12.0 / measured_battery_voltage)
 | 13 | 実車重量 | 設計方針（軽量化）の効果確認 |
 | 14 | バッテリー側バランスコネクタ形状 | 充電器接続（現物確認結果を優先） |
 
+> **MCU の型番確認**: 手元の ESP32 DevKit の**正確な型番（バリアント）**を現物で確認し、
+> [bom.md](./bom.md) #8 へ明記する（現状は「ESP32 DevKit」とだけ記載され型番未指定）。
+> **classic ESP32 に固定**すること（S3 / C3 / C6 / H2 は不可）。DualSense は BR/EDR のみで BLE 非対応のため、
+> BT Classic を持たないバリアントでは §10.1.1 のテレオペ接続方式が成立せず、**無線方式上、他系統の型番を流用できない**。
+> 現物を見れば決まる事項であり、未決事項一覧（[open-questions.md](./open-questions.md)）には載せない。
+
 **M2a 手動テレオペで確認する項目**。#15〜#18 は**台上（ホイールを浮かせた状態）で先に確認**する。
 
 | # | 項目 | 段階 | 目的 |
@@ -525,7 +534,7 @@ PWM_MAX = min(1.0, 12.0 / measured_battery_voltage)
 
 ## 13. 未決事項
 
-**未決事項は本ドキュメントに列挙しない。** 全40件を [open-questions.md](./open-questions.md) に集約している。
+**未決事項は本ドキュメントに列挙しない。** [open-questions.md](./open-questions.md) に集約している。
 
 ### 駆動系に直接関わるもの
 
@@ -542,6 +551,5 @@ PWM_MAX = min(1.0, 12.0 / measured_battery_voltage)
 | [OQ-18](./open-questions.md#d-移動体制御テレオペ) ★ | 指令ウォッチドッグのタイムアウト値（→ §10 の④） |
 | [OQ-19](./open-questions.md#d-移動体制御テレオペ) | FR-10 のタイムアウト値（**OQ-18 と別々に決めない**） |
 | [OQ-20](./open-questions.md#d-移動体制御テレオペ) | FR-11 動作領域の範囲と判定側 |
-| [OQ-21](./open-questions.md#d-移動体制御テレオペ) | テレオペ用 FW と本番 FW の排他方法（→ §10.1.2） |
 | [OQ-22](./open-questions.md#d-移動体制御テレオペ) | 移動体の制御ループ周期 |
 | [OQ-04](./open-questions.md#a-システム設計成功条件) | キャッチ時の減速方針。⚠️ **停止方式を採ると実質的な必要加速性能が約2倍になる** |

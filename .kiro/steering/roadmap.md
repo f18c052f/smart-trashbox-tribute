@@ -121,7 +121,8 @@ BT 版ファームまで自由に再利用可能だと誤読させてはいけ�
 - **Throw Record は `schema_version` 1.0。** 下流はこれに従い、独自スキーマを定義しない
 - **依存方向**: units/errors → types → config → fitting・impact → predictor → **record** → tracker → `__init__`。
   `record` を `tracker` より下層に置くのは、スキーマ単体を import できるようにするため
-- 未決のまま残しているもの: **OQ-40**（全体のディレクトリ構成。本 Spec は `src/prediction_core/` のみ確定）、
+- 当時未決のまま残していたもの: ~~OQ-40~~（全体のディレクトリ構成。本 Spec は `src/prediction_core/` のみ確定していた。
+  **その後 `drivetrain-core` が決着済み → [decisions.md D-10](../../docs/decisions.md#d-10-リポジトリのディレクトリ構成を確定した-oq-40-決着)**）、
   **OQ-41**（Python の環境構築・パッケージ管理。第一候補は uv だが実機まで確定させない）
 
 > ⚠️ **`docs/requirements.md §3` の時間予算表はまだ更新していない。**

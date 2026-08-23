@@ -24,7 +24,7 @@
 
 | ファイル | 責務 |
 |---|---|
-| `docs/open-questions.md` | **未決事項の唯一の正**。OQ-01〜OQ-40 |
+| `docs/open-questions.md` | **未決事項の唯一の正**。OQ-01〜OQ-42（欠番あり。決着した ID は再利用しない） |
 | `docs/decisions.md` | **決定と不採用案の記録**。方針転換（D-1〜）＋旧案アーカイブ |
 
 ## Documentation Rules ★これを守らないと元の混乱に戻る
@@ -81,20 +81,33 @@
 - 見出しに `（）` `、` `:` を多用すると**アンカーが壊れやすい**。ID を含む見出しは簡潔にする
 - 改行コードは **CRLF** で統一されている。一括編集時に混在させない
 
-## Future Code Layout（案・未確定 → OQ-40）
+## Code Layout
 
-実装着手時に改めて決める。現時点で**ディレクトリを作らない**。
+移動体側（`firmware/`）と固定側（`src/`）は、それぞれ独立したビルド・テスト系列を持つ部分木として存在する。
+**新規ファイルは以下のパターンに従って配置する。パターンに従う限り本節の更新は不要。**
 
-```
-docs/          設計ドキュメント
-.kiro/         steering（プロジェクト知識） / specs（個別機能の仕様）
-（以下は将来案・未作成）
-  入力層        RealSense live / recorded / simulated data の読み出し
-  処理層        detection / tracking / 3D position / prediction
-  通信層        ESP32 への送信
-  移動体側      ESP32 ファームウェア（テレオペ用と本番用は排他ビルド）
-  観測基盤      Throw Record の記録・可視化・評価
-```
+### 移動体側（`firmware/`）
+
+- ハード非依存の純ロジック（逆運動学・速度PID・オドメトリ・保護状態機械等）は
+  **`firmware/lib/drivetrain_control/`**（`include/` + `src/`）へ置く。
+  `CMakeLists.txt`（IDF コンポーネント）と `library.json`（PlatformIO ライブラリマニフェスト）を
+  同一ディレクトリに同居させる（→ [decisions.md D-10](../../docs/decisions.md#d-10-リポジトリのディレクトリ構成を確定した-oq-40-決着)）
+- ホストテスト専用のフェイクポート・プラントモデルは **`firmware/lib/test_support/`** へ置く。
+  実機ビルドへ混入させないため `CMakeLists.txt` は意図的に持たず、`library.json` のみを持つ
+- 実機ペリフェラル実装（PCNT / LEDC / ADC1、無線等）とアプリ層の指令生成は **`firmware/src/`** へ置く。
+  `teleop` / `production` のビルドプロファイル分岐（→ [decisions.md D-11](../../docs/decisions.md#d-11-テレオペ用と本番用ファームウェアの排他方法を確定した-oq-21-決着)）もここで行う
+- ホストで実行するテストは **`firmware/test/native/`**（`test_` 接頭辞必須のディレクトリ）、
+  実機上で実行するテストは **`firmware/test/embedded/`** へ置く
+- ビルド補助スクリプト（ビルドプロファイルの受け渡し等）は **`firmware/scripts/`** へ置く
+
+### 固定側（`src/`）
+
+- Spec 1つにつき1パッケージを **`src/<パッケージ名>/`** へ追加する（単一 `pyproject.toml` / `src` レイアウトへ相乗り）
+- 対応するテストは **`tests/<パッケージ名>/`**、実行可能な設定ファイルは **`configs/<パッケージ名>/`** へ置く
+
+### 横断
+
+- 設計ドキュメントは **`docs/`**、steering・spec は **`.kiro/`** の既存構成に従う
 
 ### Code Organization Principles（実装時に効かせる）
 

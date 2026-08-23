@@ -60,7 +60,7 @@ Pi で記録した実データは WSL へ持ち帰り、繰り返し解析する
 
 | ドキュメント | 内容 |
 |---|---|
-| [docs/open-questions.md](./docs/open-questions.md) | **未決事項の唯一の正**（OQ-01〜OQ-40） |
+| [docs/open-questions.md](./docs/open-questions.md) | **未決事項の唯一の正**（OQ-01〜OQ-42、欠番あり） |
 | [docs/decisions.md](./docs/decisions.md) | **決定と不採用案の記録**（方針転換の経緯・旧案アーカイブ） |
 
 各仕様書は「**現在どうなっているか**」だけを書く。
