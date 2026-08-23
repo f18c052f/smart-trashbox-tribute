@@ -1,26 +1,100 @@
 # Roadmap
 
-## 現在地（最終更新: 2026-08-22）
+## 現在地（最終更新: 2026-08-23）
 
 > **セッションをまたぐ引き継ぎはこの節を正とする。** 作業が進んだら必ずここを更新する。
 
 | 項目 | 状態 |
 |---|---|
-| フェーズ | **全7Specの生成が完了した。** `/kiro-spec-batch` で残り6Specを依存ウェーブ順に生成し、クロスSpecレビュー2巡で整合を取った |
+| フェーズ | **固定側7Specの生成が完了し、ハード非依存の実装はほぼ枯れた。** 残るのは実機必須タスクと未着手2Spec |
 | ドキュメント | `docs/` 7ファイル、steering 4ファイル（本ファイル含む）が整備済み |
-| Spec | **実装完了は `prediction-core`・`trajectory-simulator` の2件**（`trajectory-simulator` は `spec/trajectory-simulator` ブランチで全22サブタスク完了・725テスト全通過・`/kiro-validate-impl` GO判定済み。`main` への未マージ）。残り5件は**Spec生成済み・実装未着手** |
-| 実機 | **Raspberry Pi 4 / RealSense D435 ともに未セットアップ**（OS 未導入） |
-| ブランチ | **`spec/spec-batch` に残り5Spec分を作成済み**（未マージ）。**`spec/trajectory-simulator` は実装完了・未マージ**。新規作業は `main` から `spec/<feature>` を切る |
+| Spec | 下表「Spec 実装状況」を正とする |
+| 実機（固定側） | **Raspberry Pi 4 / RealSense D435 ともに未セットアップ**（OS 未導入） |
+| 実機（移動体） | **ESP32 DevKit と JGB37-520 モータは手元にある。Nexus 14145 ホイール / 18020 ハブは未着**（→ 機構の現物採寸は部分的にしか進められない） |
+| ブランチ | **`spec/*` ブランチはすべて `main` へマージ済み**。現在は `spec/hardware`（`main` と差分なし）。新規作業は `main` から `spec/<feature>` を切る |
+
+### Spec 実装状況
+
+| Spec | 状態 | 残り |
+|---|---|---|
+| `prediction-core` | **完了** | — |
+| `trajectory-simulator` | **完了** | — |
+| `sensing-foundation` | セクション1〜8 完了 | **セクション9（実機ブリングアップ）7サブタスク** |
+| `world-frame-calibration` | セクション1〜7 完了 | **セクション8（実機での確立と検証）3サブタスク** |
+| `flying-object-tracking` | セクション1〜8 完了 | **セクション9（実機実測と OQ-26 確定）5サブタスク** |
+| `m1-prediction-validation` | 未着手 | 全47項目 |
+| `simulator-visualization` | 未着手 | 全19項目（**急がない**） |
+
+> **重要な帰結**: 固定側で「実機なしに進められる作業」は `simulator-visualization` を除いてほぼ残っていない。
+> 上3Specの残タスクはすべて Pi 4 / D435 のセットアップを前提とし、`m1-prediction-validation` は
+> その3Specの実機タスク完了を前提とする。**ここが駆動系トラックを並行で立ち上げる理由である。**
 
 ### 次のアクション
 
-1. **`spec/trajectory-simulator` をレビューして `main` へマージする。** 実装完了・GO判定済みだが人間のレビューは未実施
-2. **`spec/spec-batch` をレビューして `main` へマージする。**
-   残り5Specは自動承認（`-y` 相当）で生成しているため、`spec.json` の `approved: true` は人間のレビューを経ていない
-3. **`/kiro-impl sensing-foundation`** — Wave 0 かつ他3Specの上流。
-   ただしタスク群9は実機必須のため、実機セットアップと並行して進める
-4. 並行して**実機セットアップ**（`development-environment.md §16` の手順。#3〜#6 を fps 計測より先に）
-5. `simulator-visualization` は `trajectory-simulator` 完了により着手可能になったが、**急がない**（下記 Specs 一覧の注記どおり）
+1. **実機セットアップ（固定側）** — `development-environment.md §16` の手順。
+   これが `sensing-foundation` 9 → `world-frame-calibration` 8 → `flying-object-tracking` 9 →
+   `m1-prediction-validation` の全体を開錠する唯一の鍵
+2. **`/kiro-spec-init drivetrain-core`** — 駆動系トラックの1本目。**ハード不要で今すぐ着手できる。**
+   discovery は 2026-08-23 に完了し、3Spec の brief.md を書き出し済み（下記「駆動系トラック」）
+3. `simulator-visualization` はハード不要だが**急がない**（下記 Specs 一覧の注記どおり）
+
+### 駆動系トラックの起点（2026-08-23 追加）
+
+固定側がハード待ちに入ったため、**移動体側を本ファイルの Scope へ追加した**（従来は Out）。
+
+着手方針:
+
+- **1本目はハード非依存の駆動コア**とする。`drivetrain-spec.md §10.1.2` の層構造がそのまま境界になる。
+  上段（パッド入力 → `(vx, vy, ω)`）は使い捨てだが、下段（逆運動学・速度PID・PWM出力・保護①〜④）は
+  M2b・M3 と完全に共有される
+- 根拠: `drivetrain-spec.md §10` が **「M2a（初通電走行）より前に ①モータロック保護 ②LiPo低電圧保護
+  ③PWM上限 ④指令ウォッチドッグ を実装する」**と明記している。
+  **実機に通電する前に書き終えていなければならないコードが、既に仕様として確定している**
+- `prediction-core` と同じ作り方ができる。逆運動学も保護の状態機械も純関数・状態機械に落ちるため、
+  ペリフェラル（PCNT / LEDC / BT）を薄いアダプタへ隔離すればホスト側で単体テストできる
+- **見張るべき seam**: `trajectory_sim.drivetrain` が既に「等方な質点＋加速度上限」の運動モデルを持つ。
+  M2b の実測値を `DrivetrainParams` へ戻す口を最初に決めておかないと、
+  シミュレータのキャッチ可能領域を実機由来の数字で更新できなくなる。**後付けでは繋がらない**
+- **部品制約**: ホイール・ハブが未着のため、`drivetrain-spec.md §11` の現物採寸のうち
+  #1（付属ブラケット実寸）・#2（取付穴ピッチ）は着手できるが、
+  #3（最低地上高）・OQ-07（フレーム外形＝ホイール間隔）・整備スタンドの支持形状は**ホイール到着待ち**
+
+#### ファームウェア構成の決定（2026-08-23 の技術検証で確定）
+
+⚠️ **これらは調査で判明した罠に基づく決定である。根拠ごと残す。**
+
+| 項目 | 決定 | 理由 |
+|---|---|---|
+| フレームワーク | **`framework = espidf` + Arduino-as-component を両ビルドで使う** | Bluepad32 は `framework = arduino` の `lib_deps` として導入できず、改造コアとして組み込まれる。片方だけ espidf にすると `main/` と `src/` でレイアウトが割れる |
+| PlatformIO プラットフォーム | **`pioarduino` フォークをリリース zip で pin** | 公式 `platformio/platform-espressif32` は 7.0.1（2024年5月）で凍結され Arduino 3.x 非対応。⚠️ pioarduino は実質1人規模のため `stable` / `#develop` を使わない |
+| 出発点 | `esp-idf-arduino-bluepad32-template` | 公式ルート。IDF 5.4.x 系 |
+| パーティション | テレオペビルドは `huge_app`（3MB / OTA 無し） | Arduino core + BTstack BR/EDR HID host で約 1.0〜1.4MB。既定の 4MB スキーム（1.31MB × 2）では溢れる |
+| MCU | **classic ESP32 に固定。S3 / C3 / C6 / H2 は不可** | DualSense は BR/EDR のみで BLE 非対応。PCNT ユニット数も classic 8 / S3 2 / C3 0。**将来 S3 へ乗り換える選択肢は無い**（`bom.md` #8 は型番未指定 → 明記が要る） |
+| エンコーダ | **`driver/pulse_cnt.h`（IDF 5.x 新 API）で自前アダプタを書く** | `ESP32Encoder` は非推奨 legacy API 上。方向反転時のパルス落ちも報告あり。自前化はアダプタ隔離方針とも一致 |
+| ホストテスト | **時刻源を注入する。固定幅整数型（`int32_t`/`int64_t`）を初日から使う** | ホストに `millis()`/`micros()` は無い。ホストは 64-bit で `long` が 8 バイト、ESP32 は 4 バイト。⚠️ **カウンタと PID 積分項のオーバーフロー挙動がホストテストで再現されない** |
+| テスト配置 | 純ロジックは `lib/control/`。`test/` は `test_native/` と `test_embedded/` に分け `test_filter` で振り分ける | `test_build_src` は既定 `no` でテストから `src_dir` が見えない。`test/` は全環境向けにビルドされる |
+
+**ライセンス**: Bluepad32 本体は Apache-2.0 だが、依存する **BTstack はオープンソースではない**
+（「個人的利益のためのみ。商用目的・金銭的利得のためには使用不可」条項付き。商用は BlueKitchen 社の有償ライセンス）。
+趣味プロジェクトとしての使用は問題ないが、**GitHub 公開時にトップレベル LICENSE が
+BT 版ファームまで自由に再利用可能だと誤読させてはいけない。**
+本番ファームは BT を落とすため、**encumbrance をテレオペビルドに封じ込めれば本番成果物はクリーンに保てる。**
+これは「テレオペFWと本番FWを排他にする」既存の決定に、2.4GHz 共存とは**別の根拠を追加する**。
+
+**実装時に踏みやすい罠**（Spec 設計時に必ず拾う）:
+
+- ⚠️ **PCNT のハードウェアカウンタは符号付き 16bit（±32767）。**
+  watch point ＋ 64bit ソフトウェアアキュムレータで桁上げを累積しないと、
+  **「数秒走るとオドメトリが壊れる」形で現れる**
+- ⚠️ **ADC1 を使う**（ADC2 は Wi-Fi 動作中に使用不可 = 本番ビルドで効く）。
+  ESP32 の生 ADC は両端で非線形なので**カーブフィッティング補正を入れる** — LiPo カットオフ精度に直結
+- DualSense のマルチペアモードで無言のペアリング失敗が既知。レガシー手順（Create/Share + PS 長押し）を使う。
+  リンクキーの残留が再接続失敗の頻出原因なので、**「Bluetooth キー消去」操作をファームに用意する**
+- DevKit の電波は弱く数 m 程度。**リンク断での停止を前提に置く**（④ が必要な理由がもう一つ増える）
+- GPIO 34〜39 は入力専用で内部プルアップが無い
+
+> ✅ 調査が指摘した「Windows に MSYS2 + MinGW が必要」は**本プロジェクトには該当しない**。
+> 開発は WSL2 側で行うため gcc は標準で使える。
 
 ### 着手順序の制約（Spec生成で判明したもの）
 
@@ -56,7 +130,7 @@
 
 ### `trajectory-simulator` 実装完了の要点（引き継ぎ用）
 
-- `spec/trajectory-simulator` ブランチで全22サブタスク（5セクション）完了・725テスト全通過・`/kiro-validate-impl` GO判定済み（**`main` へは未マージ**）
+- 全22サブタスク（5セクション）完了・`/kiro-validate-impl` GO判定済み・**`main` へマージ済み**
 - 公開API（`trajectory_sim.__init__`）は33シンボルに確定済み: パラメータ型・掃引型・結果型・`run_sweep`/`write_sweep_result`/`evaluate_throw`/`evaluate_reachability`/`OUTPUT_SCHEMA_VERSION`・例外階層。**`prediction_core` のシンボルは一切再エクスポートしない**（上流依存を隠さないため）
 - OQ-33（物理モデルの詳細度）を決着済み → [decisions.md D-9](../../docs/decisions.md#d-9-シミュレータの物理モデルの詳細度を最小限で決着した-oq-33-決着)。`trajectory_sim.MODEL_EXCLUSIONS` が決着内容そのもの
 - CLI: `python -m trajectory_sim --config <path> --output <path> [--drivetrain <path>]`。設定JSONの形式（`{"parameters":..., "sweep":...}` の2キー、あらゆるネスト階層で未知キー拒否）は design.md 未記載だったため実装時に確定（`tasks.md` Implementation Notes 参照）
@@ -74,7 +148,8 @@
   ```
 
 - ただし**実機を要する Spec はハード待ちで並列化できない**。
-  ハード不要なのは `prediction-core`（実装完了）・`trajectory-simulator`（実装完了）・`simulator-visualization`（未着手、`trajectory-simulator` 完了により着手可能）のみ
+  固定側でハード不要なのは `simulator-visualization`（未着手）のみ。
+  **駆動系トラックの1本目（ハード非依存の駆動コア）も並列化できる**
 - **Spec 生成（`/kiro-spec-batch`）に worktree は不要**。1ツリー内でサブエージェントが並列化する
 
 ### 引き継ぎ時の読み込み順
@@ -100,6 +175,12 @@ M1 は「飛来するゴミを検出・追跡し、落下地点を予測して�
 これは `original-features.md` の原則「予測は本番と同一コードを使う。ブラウザ側に複製しない」を
 構造として担保するためであり、**この共有こそが2トラックを1つの roadmap に置く理由**である。
 
+**2026-08-23 に第3のトラックとして駆動系（M2a / M2b）を追加した。**
+固定側のハード非依存な実装が枯れ、残りが Pi 4 / D435 のセットアップ待ちに一本化されたためである。
+駆動系トラックも同じ形の共有を持つ: **`trajectory_sim.drivetrain` の運動モデルと実機の駆動制御は、
+`DrivetrainParams`（最高速度・加速度上限・減速度上限）を介して繋がる。**
+M2b の実測値をここへ戻すことで、シミュレータのキャッチ可能領域が机上値から実機由来の値へ置き換わる。
+
 ## Approach Decision
 
 - **Chosen**: 予測コアを最初に独立して切り出し、そこへ「合成データ（シミュレータ）」と
@@ -121,9 +202,17 @@ M1 は「飛来するゴミを検出・追跡し、落下地点を予測して�
 
 ## Scope
 
-- **In**: M1（検出 → 追跡 → 予測 → 可視化 → 時間予算の実測）、柱1（シミュレータ）、柱2a（構造化ロギング）
+> **2026-08-23 更新**: 固定側のハード非依存な実装がほぼ枯れたため、
+> **移動体側（M2a / M2b、テレオペ、ESP32 ファームウェア）を Out から In へ移した。**
+> 従来「移動体側のすべて」を Out としていたのは、固定側にハード不要の作業が潤沢に残っていた間の判断である。
+> M3 / M4（結合と最終チューニング）は引き続き Out とし、**駆動系が M2b まで到達してから再判断する。**
+
+- **In**:
+  - M1（検出 → 追跡 → 予測 → 可視化 → 時間予算の実測）、柱1（シミュレータ）、柱2a（構造化ロギング）
+  - **駆動系トラック: M2a（手動テレオペによるブリングアップ）・M2b（短時間応答の自動計測）、柱4（手動テレオペ）**
 - **Out**:
-  - 移動体側のすべて（M2a / M2b / M3 / M4、テレオペ、ESP32 ファームウェア）
+  - **M3（予測→通信→走行の結合）／ M4（高速化・復帰動作）** — 通信方式（OQ-29）と
+    物理的な非常停止手段（OQ-13）が未決であり、いずれも M2b の実測を待って決める
   - 柱2b ライブダッシュボード（→ OQ-38、M3 着手時に再判断）
   - 柱3 投擲アーカイブ／ベンチマーク（→ OQ-39、M1 でデータが貯まってから再判断）
 
@@ -134,6 +223,12 @@ M1 は「飛来するゴミを検出・追跡し、落下地点を予測して�
 - 固定側は Python。可視化のみ TypeScript で、**アルゴリズムを持たせない**
 - Raspberry Pi 4 の性能達成を断定しない。**設定・ソフトで詰めてからハード変更を検討する**
 - 数値は暫定目標値として扱い、**未実測の値を合否条件にしない**
+- 移動体は ESP32。**駆動コアはホストで単体テストできる形に保ち、ペリフェラル（PCNT / LEDC / BT）は
+  薄いアダプタへ隔離する。** `prediction-core` と同じ「実機なしで検証できる中核」の作り方を踏襲する
+- **駆動系の部品は全部は揃っていない**（ESP32・モータは手元、ホイール／ハブは未着）。
+  機構の現物採寸に依存する作業を、ファーム側の作業のクリティカルパスに置かない
+- **M2a（初通電走行）より前に保護①〜④を実装する**（`drivetrain-spec.md §10`）。
+  この順序は安全要件であり、スケジュール都合で入れ替えない
 
 ## Boundary Strategy
 
@@ -153,6 +248,15 @@ M1 は「飛来するゴミを検出・追跡し、落下地点を予測して�
     **別々に決めない**
   - **構造化ロギングの計測点**: `sensing-foundation` が基盤を作るが、
     段階別レイテンシ（`development-environment.md §13.1`）は各 Spec が自分の区間を計測する
+  - **`DrivetrainParams` の意味論**（駆動系トラック）: `trajectory_sim` の
+    最高速度・加速度上限・減速度上限・制御周期・指令反映遅れと、`drivetrain-core` が扱う量の
+    **単位と定義を揃える**。`m2-motion-validation` が実測値をここへ翻訳して戻すため、
+    ずれると**シミュレータの結論が静かに間違う**。
+    ⚠️ ただし**コードは共有しない** — シミュレータの質点モデルと実機の逆運動学は別物であり、
+    `tech.md` 標準3 が禁じる「本番アルゴリズムの二重実装」には当たらない
+  - **ウォッチドッグの入力元**（駆動系トラック）: ④ は「コントローラ固有の処理」ではなく
+    **「最後に有効な指令を受けてからの経過時間」だけを見る形**で実装する。
+    FR-10 は M3 でこの入力元を差し替えるだけにする。**新規実装にしない**
 
 ## Specs (dependency order)
 
@@ -163,9 +267,13 @@ M1 は「飛来するゴミを検出・追跡し、落下地点を予測して�
 - [x] flying-object-tracking -- 飛翔物の検出、3D位置取得、フレーム間追跡。Dependencies: sensing-foundation
 - [x] m1-prediction-validation -- 実データを prediction-core へ接続し、落下地点をプロット。時間予算7項目を実測して M1 完了判定。Dependencies: prediction-core, world-frame-calibration, flying-object-tracking
 - [x] simulator-visualization -- ブラウザでの軌跡アニメーションとキャッチ可能領域の表示。**先送り可**。Dependencies: trajectory-simulator
+- [ ] drivetrain-core -- 3輪オムニ逆運動学・速度PID・オドメトリ・保護①〜④の判定ロジック。ペリフェラルはポート宣言のみ。ホストで単体テストする。**ハード不要**。Dependencies: none
+- [ ] teleop-bringup -- ESP32 ペリフェラル実装（PCNT/LEDC/ADC1）、DualSense 直結、M2a-0/1/2 の実施、エンコーダ校正、安全機能4種の発火試験。Dependencies: drivetrain-core
+- [ ] m2-motion-validation -- スクリプト化指令による短時間応答の自動計測（M2b 記録項目14件）、NFR-1 の評価、実測値の DrivetrainParams への還元。Dependencies: drivetrain-core, teleop-bringup
 
 > **`[x]` は Spec が生成済み（requirements / design / tasks の3フェーズ完了）であることを示す。実装完了ではない。**
-> 実装が完了しているのは `prediction-core` と `trajectory-simulator` の2件（いずれも `main` 未マージ）。
+> 実装状況は上部「Spec 実装状況」の表を正とする。
+> **`[ ]` の3本は 2026-08-23 の discovery で決めた駆動系トラックであり、brief.md のみ存在する。**
 
 ### 着手ウェーブ
 
@@ -175,6 +283,26 @@ M1 は「飛来するゴミを検出・追跡し、落下地点を予測して�
 | 1 | `trajectory-simulator` / `world-frame-calibration` / `flying-object-tracking` | 3本とも並行可 |
 | 2 | `m1-prediction-validation` | M1 の完了判定と OQ-27（Pi 4 継続可否）の判断 |
 | — | `simulator-visualization` | **急がない。** `original-features.md` が「可視化に時間をかけすぎて結論が出ない失敗」を警告している |
+
+### 着手ウェーブ（駆動系トラック / 2026-08-23 追加）
+
+固定側とは**独立に進む**。両者を繋ぐのは M3 だが、M3 は現時点で Scope の Out。
+
+| Wave | Spec | 備考 |
+|---|---|---|
+| 0 | `drivetrain-core` | **ハード不要。今すぐ着手できる**。固定側の実機セットアップと完全に並行可 |
+| 1 | `teleop-bringup` | 実機必須。**ホイール／ハブ未着のため部分的にしか進められない**（下記） |
+| 2 | `m2-motion-validation` | 実機必須。`teleop-bringup` の完了（特にエンコーダ校正）が前提 |
+
+**`teleop-bringup` の段階的着手**（部品が揃うのを待たずに削れる不確実性）:
+
+| 必要な部品 | できること |
+|---|---|
+| ESP32 のみ | **Bluepad32 / DualSense の導通・ペアリング挙動（OQ-16）**。⚠️ 最大の未検証項目で、これ単体で潰せる |
+| ＋ モータ・ドライバ | PCNT アダプタ、エンコーダ A/B 符号、回転方向の確認 |
+| ＋ ホイール・ハブ | 整備スタンドの支持形状、M2a-1 以降の接地走行すべて |
+
+> ⚠️ **モータドライバ AE-TB67H450 が手元にあるかは未確認。** `teleop-bringup` 着手前に確認する。
 
 ## 決着させる未決事項の対応
 

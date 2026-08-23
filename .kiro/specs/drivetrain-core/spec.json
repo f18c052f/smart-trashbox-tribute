@@ -1,0 +1,22 @@
+{
+  "feature_name": "drivetrain-core",
+  "created_at": "2026-08-23T05:49:53Z",
+  "updated_at": "2026-08-23T07:07:08Z",
+  "language": "ja",
+  "phase": "design-generated",
+  "approvals": {
+    "requirements": {
+      "generated": true,
+      "approved": true
+    },
+    "design": {
+      "generated": true,
+      "approved": true
+    },
+    "tasks": {
+      "generated": false,
+      "approved": false
+    }
+  },
+  "ready_for_implementation": false
+}
