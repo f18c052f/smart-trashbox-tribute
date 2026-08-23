@@ -108,7 +108,15 @@ def find_source_set_mismatch(cmake_text: str, actual_relative_paths: set[str]) -
 
 
 def _actual_lib_source_paths() -> set[str]:
-    return {f"src/{p.name}" for p in LIB_SRC_DIR.glob("*.cpp")}
+    # design.md の File Structure Plan は L7 保護層以降を `src/protection/*.cpp`
+    # のようなサブディレクトリへ配置する（drivetrain-core タスク 5.1 以降）。
+    # 非再帰の `glob("*.cpp")` はこれらを走査対象から取りこぼし、CMakeLists.txt
+    # に正しく列挙されているファイルを「実体が存在しない」と誤検知する。
+    # `rglob` でサブディレクトリを含め、`LIB_SRC_DIR` からの相対パス
+    # （サブディレクトリ部分を保持したもの）を返す。
+    return {
+        f"src/{p.relative_to(LIB_SRC_DIR).as_posix()}" for p in LIB_SRC_DIR.rglob("*.cpp")
+    }
 
 
 def test_lib_cmakelists_srcs_matches_actual_source_files() -> None:
