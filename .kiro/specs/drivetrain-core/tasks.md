@@ -28,7 +28,7 @@
   - 観測可能な完了状態: 両方のビルド構成マクロを同時に定義したビルドがコンパイル時に失敗すること、および本番用ビルドの生成された設定に無線無効化が反映されていることを、実行して確認できる
   - _Requirements: 1.3, 1.4, 16.7_
 
-- [ ] 1.3 ビルド構成を静的に検査する仕組みを、以降のタスクより先に用意する
+- [x] 1.3 ビルド構成を静的に検査する仕組みを、以降のタスクより先に用意する
   - 既存の Python テスト資産と同じ流儀で、`tests/` 配下に静的走査のテストを追加する（駆動制御ロジックの複製ではないため二重実装には当たらない）
   - **⚠️ この検査を後回しにしない。** 組込みビルド用のソース列挙とホスト側のソース実体の集合がずれると、**ホストテストだけが緑でファームウェアがリンクできない**状態が生まれる。タスク2以降はソースを追加し続けるため、**この検査が無い期間そのものが危険**である
   - 上記のソース集合の一致と、テスト専用ライブラリが組込みの探索対象に含まれていないことを検出する
@@ -322,3 +322,5 @@
 - **タスク 1.2**: `CONFIG_ESP_WIFI_ENABLED` は classic ESP32 では実プロンプトを持たない Kconfig シンボル（`default y if SOC_WIFI_SUPPORTED` で無条件 `y`）であり、`sdkconfig.defaults*` へどう書いても無効。**本番ビルドから Wi-Fi を実際に除外するのは `firmware/CMakeLists.txt` の `COMPONENTS` allowlist**（`production` 環境限定で `list(APPEND COMPONENTS "src" "drivetrain_control" "__pio_env")`）であり、`sdkconfig.defaults.production` の `CONFIG_BT_ENABLED=n` は Bluetooth には効くが Wi-Fi には効かない別経路。`EXCLUDE_COMPONENTS` は `wpa_supplicant` 等の推移的 `PRIV_REQUIRES` により実際には除外できないことを実測済み（採用せず）
 - **タスク 1.2**: `build_src_filter` は `framework = espidf` では PlatformIO のビルドスクリプトが無視する（未サポート）。テレオペ専用ソースの除外は代わりに、ビルドプロファイルの環境変数を `firmware/src/CMakeLists.txt` が読んで `src/teleop/*.cpp` の glob を出し入れする方式（`firmware/scripts/set_build_profile_cmake_env.py`）で実現している
 - **タスク 1.2**: `production` の `COMPONENTS` allowlist は現在 `src` / `drivetrain_control` / `__pio_env`（PlatformIO 内部の必須ダミーコンポーネント）の3つのみ。**以降のタスクで `production` 側に実ペリフェラル（`esp_driver_pcnt` 等）を使うコードが増えたら、このリストへ明示的に追加する必要がある**（positive list のため、追加しないと該当コンポーネントがビルドから静かに落ちる）。`teleop` 環境はこの allowlist の対象外（デフォルトのコンポーネント自動探索のまま）
+- **タスク 1.3**: `tests/firmware/test_firmware_boundaries.py` を追加。この環境の `uv` venv は既定（`--group dev` のみ）だと `numpy` を要する既存26ファイル（`sensing_foundation`/`flying_object_tracking`/`world_frame_calibration`）の収集に失敗する。**リポジトリ全体のリグレッションは `uv run --all-extras --group dev pytest tests -q` で回す**（`tests/firmware` 単体は `--all-extras` 不要）。これは本 Spec が持ち込んだ問題ではなく既存の環境構成に起因する
+- **タスク 1.3**: design.md の FirmwareBoundaryCheck が挙げる残りの項目（禁止 include・禁止トークン・型トークン・依存方向・`test_support` 参照検出）はタスク8の範囲。タスク1.3はビルド構成（`platformio.ini`/`CMakeLists.txt`/`sdkconfig.defaults*`）のみを検査する
