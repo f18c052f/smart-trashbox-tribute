@@ -1,17 +1,17 @@
 # Roadmap
 
-## 現在地（最終更新: 2026-08-23）
+## 現在地（最終更新: 2026-08-24）
 
 > **セッションをまたぐ引き継ぎはこの節を正とする。** 作業が進んだら必ずここを更新する。
 
 | 項目 | 状態 |
 |---|---|
-| フェーズ | **固定側7Specの生成が完了し、ハード非依存の実装はほぼ枯れた。** 残るのは実機必須タスクと未着手2Spec |
+| フェーズ | **駆動系トラックの1本目 `drivetrain-core` が実装完了し `main` へマージ済み（2026-08-24）。** 固定側・移動体側ともにハード非依存の実装は枯れた。残るのは実機必須タスクと未生成2Spec |
 | ドキュメント | `docs/` 7ファイル、steering 4ファイル（本ファイル含む）が整備済み |
 | Spec | 下表「Spec 実装状況」を正とする |
 | 実機（固定側） | **Raspberry Pi 4 / RealSense D435 ともに未セットアップ**（OS 未導入） |
 | 実機（移動体） | **ESP32 DevKit と JGB37-520 モータは手元にある。Nexus 14145 ホイール / 18020 ハブは未着**（→ 機構の現物採寸は部分的にしか進められない） |
-| ブランチ | **`spec/*` ブランチはすべて `main` へマージ済み**。現在は `spec/hardware`（`main` と差分なし）。新規作業は `main` から `spec/<feature>` を切る |
+| ブランチ | **`spec/*` ブランチはすべて `main` へマージ済み**（`spec/hardware` は PR #1 で 2026-08-24 にマージ）。現在は `spec/teleop-bringup`（`main` から分岐）。新規作業は `main` から `spec/<feature>` を切る |
 
 ### Spec 実装状況
 
@@ -24,19 +24,33 @@
 | `flying-object-tracking` | セクション1〜8 完了 | **セクション9（実機実測と OQ-26 確定）5サブタスク** |
 | `m1-prediction-validation` | 未着手 | 全47項目 |
 | `simulator-visualization` | 未着手 | 全19項目（**急がない**） |
+| `drivetrain-core` | **完了**（2026-08-24 `main` へマージ） | — |
+| `teleop-bringup` | **Spec 未生成**（brief.md のみ） | requirements / design / tasks の生成から |
+| `m2-motion-validation` | **Spec 未生成**（brief.md のみ） | requirements / design / tasks の生成から |
 
 > **重要な帰結**: 固定側で「実機なしに進められる作業」は `simulator-visualization` を除いてほぼ残っていない。
 > 上3Specの残タスクはすべて Pi 4 / D435 のセットアップを前提とし、`m1-prediction-validation` は
-> その3Specの実機タスク完了を前提とする。**ここが駆動系トラックを並行で立ち上げる理由である。**
+> その3Specの実機タスク完了を前提とする。**ここが駆動系トラックを並行で立ち上げた理由である。**
+>
+> **2026-08-24 の更新**: その駆動系トラックも、ハード非依存だった `drivetrain-core` の完了で
+> 同じ状況に入った。`teleop-bringup` / `m2-motion-validation` の**実装**は実機を要する。
+> ただし**Spec 生成（requirements / design / tasks）はハード不要**であり、
+> 実機セットアップと並行して進められる。**残るハード不要の作業はこの2本の Spec 生成と
+> `simulator-visualization` の3つに絞られた。**
 
 ### 次のアクション
 
 1. **実機セットアップ（固定側）** — `development-environment.md §16` の手順。
    これが `sensing-foundation` 9 → `world-frame-calibration` 8 → `flying-object-tracking` 9 →
    `m1-prediction-validation` の全体を開錠する唯一の鍵
-2. **`/kiro-spec-init drivetrain-core`** — 駆動系トラックの1本目。**ハード不要で今すぐ着手できる。**
-   discovery は 2026-08-23 に完了し、3Spec の brief.md を書き出し済み（下記「駆動系トラック」）
-3. `simulator-visualization` はハード不要だが**急がない**（下記 Specs 一覧の注記どおり）
+2. **`teleop-bringup` の Spec 生成** — 駆動系トラックの2本目。brief.md は 2026-08-23 の
+   discovery で書き出し済み。**Spec 生成自体はハード不要で今すぐ着手できる**（実装は実機必須）。
+   Spec を先に用意しておくことで、部品が揃った時点で実装へ直行できる
+3. **モータドライバ AE-TB67H450 の手元確認** — `teleop-bringup` の実装着手前に必要（下記の⚠️）
+4. `simulator-visualization` はハード不要だが**急がない**（下記 Specs 一覧の注記どおり）
+
+> ✅ **完了済み**: `drivetrain-core`（旧アクション2）は 2026-08-24 に実装完了・`main` へマージ。
+> 詳細は下記「`drivetrain-core` 実装完了の要点」を参照。
 
 ### 駆動系トラックの起点（2026-08-23 追加）
 
@@ -138,6 +152,42 @@ BT 版ファームまで自由に再利用可能だと誤読させてはいけ�
 - 実行可能な設定ファイル4本を `configs/trajectory_sim/` に同梱（60mm/48mmホイール×到達可否掃引/レイアウト掃引の全組み合わせで動作確認済み）
 - 実行時のサードパーティ依存は引き続きゼロ（`test_trajectory_sim_boundaries.py` が静的に回帰検証する）
 - **design.md に2件の記載不備を発見・`tasks.md` Implementation Notes に記録済み（design.md 本体は未修正）**: (1) 依存方向表・Mermaid図が `prediction_link → drivetrain` の辺を欠いている（Service Interface とは矛盾。実装済みコードが正しく、境界検査側の許可リストで実態に合わせた）、(2) CLI設定JSONのスキーマが未記載だった（上記の通り実装時に確定）
+
+### `drivetrain-core` 実装完了の要点（引き継ぎ用 / 2026-08-24）
+
+- 全27サブタスク（9セクション）完了・`/kiro-validate-impl` GO判定済み・**`main` へマージ済み**（PR #1）
+- **公開ヘッダは `drivetrain_control/drivetrain_control.hpp` の1本のみ。** 下流（`teleop-bringup` /
+  `m2-motion-validation`）は**これだけを include する**。再エクスポートするのは型・3ポート・設定・
+  `WrapAccumulator` / `VoltageScaler` / `Kinematics` / `DrivetrainController`。
+  ⚠️ `Odometry` / `VelocityPid` / 保護4部品 / `ProtectionSupervisor` / `CommandInput` は
+  **意図的に非公開**（`DrivetrainController` の内部構造であり、下流が直接組み立てる対象ではない）
+- **ペリフェラルは3つの純粋仮想ポートに隔離済み**: `EncoderPort` / `MotorOutputPort` /
+  `BatteryVoltagePort`。**`teleop-bringup` の主な仕事はこの3つを PCNT / LEDC / ADC1 で実装すること**。
+  ポート実装が使うべき核ロジック（`WrapAccumulator` = PCNT の 16bit 折り返し累積、
+  `VoltageScaler` = ADC 生値の区分線形補正）も公開済みで、**下流で再実装しない**
+- 検証: native 230テストケース + 静的境界検査（`tests/firmware/test_firmware_boundaries.py`、96テスト）。
+  `teleop` / `production` の実ツールチェーンビルドも通る（`test_build_smoke` でリンク確認）
+- 決着させた未決事項: ~~OQ-40~~（ディレクトリ構成 → decisions.md **D-10**）、
+  ~~OQ-21~~（テレオペFWと本番FWの排他方法 → decisions.md **D-11**）。
+  **OQ-42（BTstack ライセンス）を新規登録**（`teleop-bringup` が BT を導入する際に効く）
+
+**⚠️ `teleop-bringup` 着手時に必ず拾うこと**:
+
+- **`sdkconfig.defaults.teleop` は存在しない。** `[env:teleop]` は `sdkconfig.defaults` 単独を使い、
+  無線は無効のまま。**Bluetooth の有効化は `teleop-bringup` の責務**（`drivetrain-core` の境界外として明示的に決定済み）
+- **本番ビルドの Wi-Fi 除外は Kconfig ではなくルート `CMakeLists.txt` の `COMPONENTS` 許可リストで効いている。**
+  classic ESP32 では `CONFIG_ESP_WIFI_ENABLED` に実質的な prompt が無く、
+  `sdkconfig.defaults.production` だけでは落ちない（実測で確認済み。map / `nm` / `strings` で検証）
+- `EXTRA_COMPONENT_DIRS` は `set()` ではなく **`list(APPEND ...)`** を使う
+  （PlatformIO の espidf builder が自前の値を先に注入しており、`set()` で潰すとビルドが壊れる）
+- `framework = espidf` では **`build_src_filter` が効かない。** ソース選択は
+  `scripts/set_build_profile_cmake_env.py` の環境変数経由で行っている
+  （CMake キャッシュ変数は IDF のコンポーネント要求収集サブプロセスに届かない）
+- **`DrivetrainController::resetProtections()` は直近の `step()` の直後に呼ぶこと。**
+  保護の解除条件判定が同一ステップの `updateLock()` / `updateLowVoltage()` の結果に依存する
+  （`controller.hpp` のコメントに事前条件として明記済み）
+- **PlatformIO のビルドは常に1つずつ・フォアグラウンドで実行する。**
+  同一 `.pio/build/` への並行書き込みは `objdump: file format not recognized` 等の紛らわしい破損を招く
 
 ### ブランチ運用
 
@@ -268,13 +318,15 @@ M2b の実測値をここへ戻すことで、シミュレータのキャッチ�
 - [x] flying-object-tracking -- 飛翔物の検出、3D位置取得、フレーム間追跡。Dependencies: sensing-foundation
 - [x] m1-prediction-validation -- 実データを prediction-core へ接続し、落下地点をプロット。時間予算7項目を実測して M1 完了判定。Dependencies: prediction-core, world-frame-calibration, flying-object-tracking
 - [x] simulator-visualization -- ブラウザでの軌跡アニメーションとキャッチ可能領域の表示。**先送り可**。Dependencies: trajectory-simulator
-- [ ] drivetrain-core -- 3輪オムニ逆運動学・速度PID・オドメトリ・保護①〜④の判定ロジック。ペリフェラルはポート宣言のみ。ホストで単体テストする。**ハード不要**。Dependencies: none
+- [x] drivetrain-core -- 3輪オムニ逆運動学・速度PID・オドメトリ・保護①〜④の判定ロジック。ペリフェラルはポート宣言のみ。ホストで単体テストする。**ハード不要**。Dependencies: none
 - [ ] teleop-bringup -- ESP32 ペリフェラル実装（PCNT/LEDC/ADC1）、DualSense 直結、M2a-0/1/2 の実施、エンコーダ校正、安全機能4種の発火試験。Dependencies: drivetrain-core
 - [ ] m2-motion-validation -- スクリプト化指令による短時間応答の自動計測（M2b 記録項目14件）、NFR-1 の評価、実測値の DrivetrainParams への還元。Dependencies: drivetrain-core, teleop-bringup
 
 > **`[x]` は Spec が生成済み（requirements / design / tasks の3フェーズ完了）であることを示す。実装完了ではない。**
 > 実装状況は上部「Spec 実装状況」の表を正とする。
-> **`[ ]` の3本は 2026-08-23 の discovery で決めた駆動系トラックであり、brief.md のみ存在する。**
+> **残る `[ ]` の2本（`teleop-bringup` / `m2-motion-validation`）は 2026-08-23 の discovery で決めた
+> 駆動系トラックであり、brief.md のみ存在する。** 同トラックの1本目 `drivetrain-core` は
+> 2026-08-24 に Spec 生成・実装ともに完了した。
 
 ### 着手ウェーブ
 
@@ -291,7 +343,7 @@ M2b の実測値をここへ戻すことで、シミュレータのキャッチ�
 
 | Wave | Spec | 備考 |
 |---|---|---|
-| 0 | `drivetrain-core` | **ハード不要。今すぐ着手できる**。固定側の実機セットアップと完全に並行可 |
+| 0 | `drivetrain-core` | ✅ **実装完了**（2026-08-24 `main` へマージ） |
 | 1 | `teleop-bringup` | 実機必須。**ホイール／ハブ未着のため部分的にしか進められない**（下記） |
 | 2 | `m2-motion-validation` | 実機必須。`teleop-bringup` の完了（特にエンコーダ校正）が前提 |
 
@@ -316,3 +368,6 @@ M2b の実測値をここへ戻すことで、シミュレータのキャッチ�
 | `flying-object-tracking` | OQ-26（物体検出方式） |
 | `m1-prediction-validation` | OQ-27（Pi 4 継続可否）★、OQ-05 の判断材料 |
 | `simulator-visualization` | OQ-34（Canvas / SVG / WebGL） |
+| `drivetrain-core` | ~~OQ-40~~（ディレクトリ構成、**決着済み → decisions.md D-10**）、~~OQ-21~~（テレオペFW/本番FWの排他、**決着済み → decisions.md D-11**）。**OQ-42（BTstack ライセンス）を新規登録** |
+| `teleop-bringup` | **OQ-16**（テレオペの接続方式。BT 直結が成立するか）★、OQ-17（入力マッピング）、**OQ-18**（指令ウォッチドッグのタイムアウト値。OQ-19 の根拠になるため別々に決めない）★、OQ-15（モータロック保護の復帰条件）、~~OQ-21~~（**D-11 で決着済み**。本 Spec は追認のみ）、OQ-37（ログ形式）、OQ-42（BTstack ライセンスの扱い） |
+| `m2-motion-validation` | OQ-14（LiPo 低電圧保護の具体閾値）、**OQ-22**（移動体の制御ループ周期）、OQ-36（ESP32 のログバッファ容量と吸い出し方法） |
