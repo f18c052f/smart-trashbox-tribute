@@ -477,7 +477,8 @@ stateDiagram-v2
 | 16.6 | ホスト結果を実機性能の主張にしない旨の明示 | PlantCoefficients, NativeTestSuite | テスト出力の宣言 | — |
 | 16.7 | ホストテストと実機テストの区別 | BuildSkeleton | `test_filter` | — |
 | 17.1 | 5量を既存モデルと同一の単位・定義で扱う | Types, MotionLimits, DrivetrainStatus, DrivetrainController | `DrivetrainParams` 対応表、`command_apply_latency_ms` の算出式 | 制御ステップ |
-| 17.2, 17.3, 17.4 | 翻訳を持たない・シミュレータを変更しない・共有しない | （Boundary Commitments に明記） | — | — |
+| 17.2 | 翻訳を持たない | （Boundary Commitments に明記） | — | — |
+| 17.3, 17.4 | シミュレータを変更しない・共有しない | （Boundary Commitments に明記）, FirmwareBoundaryCheck | `test_firmware_boundaries.py` | — |
 | 17.5 | 実装を伴わない契約の提供 | Ports, PublicApi | `drivetrain_control.hpp` | — |
 | 17.6 | 指令元の差し替えのみで本番経路へ | CommandInput | `submitBodyVelocity` | 指令受付 |
 | 17.7 | 制御ステップをブロックしない状態読み出し | DrivetrainController | `status() const` | — |
@@ -1485,7 +1486,7 @@ class FakeBatteryPort  : public drivetrain_control::BatteryVoltagePort { /* 時�
 | Field | Detail |
 |-------|--------|
 | Intent | 境界・型・ビルド構成の違反を、PlatformIO を起動せずに静的に検出する |
-| Requirements | 1.3, 1.4, 1.6, 1.7, 2.2, 2.4, 4.6, 16.3 |
+| Requirements | 1.3, 1.4, 1.6, 1.7, 2.2, 2.4, 4.6, 16.3, 17.3, 17.4 |
 
 **Contracts**: Service [ ] / API [ ] / Event [ ] / Batch [x] / State [ ]
 
@@ -1501,10 +1502,11 @@ class FakeBatteryPort  : public drivetrain_control::BatteryVoltagePort { /* 時�
 | 禁止 include: `Arduino.h` / `esp_*` / `driver/*` / `freertos/*` / `sdkconfig.h` / `WiFi*` / `Bluetooth*` | `lib/drivetrain_control/**` | 要件 2.2, 2.4 |
 | 禁止トークン: `millis(` / `micros(` / `esp_timer_` / `<chrono>` / `<ctime>` / `time(` | 同上 | 要件 3.1, 2.4 |
 | 禁止型トークン: `long` / `double` / `unsigned ` / `size_t` | 同上 | 要件 4.1, 4.6 |
-| 禁止: 例外・RTTI・動的確保（`throw` / `new ` / `malloc` / `<vector>` / `<string>` / `<iostream>`） | 同上 | Allowed Dependencies |
+| 禁止: 例外・RTTI・動的確保（`throw` / `new ` / `malloc` / `<vector>` / `<string>` / `<iostream>` / `typeid` / `dynamic_cast`） | 同上 | Allowed Dependencies |
 | 禁止: ビルド構成マクロ（`DRIVETRAIN_BUILD_TELEOP` / `DRIVETRAIN_BUILD_PRODUCTION`）の参照 | 同上 | 要件 1.2 |
 | 禁止: `test_support` への参照 | 同上 | 要件 16.3 |
 | 依存方向: 各ファイルの include が Dependency Direction 表の許可範囲に収まる | 同上 | Dependency Direction |
+| 禁止: `src/trajectory_sim/`（シミュレータ）への参照 | 同上 | 要件 17.3, 17.4 |
 | `CMakeLists.txt` の `SRCS` と `src/**/*.cpp` の集合が一致する | `lib/drivetrain_control/` | `research.md` R2 |
 | `lib/test_support/` に `CMakeLists.txt` が存在しない／`EXTRA_COMPONENT_DIRS` に含まれない | `firmware/CMakeLists.txt` | 要件 16.3 |
 | `platformio.ini` に `teleop` / `production` / `native` の3環境が存在する | `platformio.ini` | 要件 1.1 |

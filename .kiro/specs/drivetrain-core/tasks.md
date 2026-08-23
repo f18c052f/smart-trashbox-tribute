@@ -279,7 +279,7 @@
 
 ## 8. 純ロジックのソースを静的に検査する
 
-- [ ] 8. 純ロジックのソースを静的に検査する
+- [x] 8. 純ロジックのソースを静的に検査する
   - ビルド構成の静的検査（タスク 1.3）と同じ場所へ、純ロジックのソース走査を追加する
   - **ペリフェラルおよび組込みフレームワークに固有のヘッダの参照が混入していないこと**を検出する
   - **現在時刻を取得する手段の参照が混入していないこと**を検出する
@@ -336,6 +336,7 @@
 - **タスク 6.2**: `Kinematics`/`Odometry`/`CommandInput`/`ProtectionSupervisor`/`VelocityPid` はデフォルトコンストラクタを持たないため、`DrivetrainController`（デフォルト構築可能・`configure()` 成功後にこれらを構築）は `alignas(T) std::byte storage_[sizeof(T)]` へのプレースメント new で遅延構築する `LazySlot<T>` ヘルパーを使う。**`get()` は必ず `std::launder(reinterpret_cast<T*>(&storage_))` を経由すること**（`Odometry`/`CommandInput` は `const Kinematics&` 参照メンバを持つため、再構築後のアクセスに `std::launder` を欠くと `[basic.life]p8` 違反の未定義動作になる。`emplace()` 直後の placement-new が返すポインタ自体は例外でランダリング不要）。`storage_` は `unsigned char[]` ではなく `std::byte[]` を使う（`unsigned ` の字面がタスク8の固定幅整数トークン検査と衝突するため）
 - **タスク 6.2**: `DrivetrainController` の copy/move は `= delete` する（参照メンバを持つ内部オブジェクトのメンバワイズコピーは参照先を誤らせるため）。`configure()` は non-null な3ポートの検証も行うが、null ポートに対応する専用の `ConfigField` 列挙子が無いため `ConfigError::kOutOfRange` ＋ `ConfigDiagnostic::index`（0=encoder/1=motor/2=battery）を暫定的に流用している。**タスク6.5で公開エラー診断面を確定する前に、専用の列挙子（例: `kPortsEncoderNull` 等）を追加するか検討すること**
 - **タスク 6.3**: ウォッチドッグ発火中は `compute(0, measured, dt)` ではなく `holdReset()` が compute/commit ペアを**完全に置き換える**（`VelocityPid` の Precondition「holdReset() を呼んだステップでは compute/commit のどちらも呼ばない」と、design.md の「PID を holdReset に置く」という文言から）。`CommandWatchdog` は `has_command==false` のとき無条件に `tripped()==true` になるため、`kNoCommandYet` は常に `kCommandTimeout` と同時に立つ（設計上の帰結であり不具合ではない）
+- **タスク 8**: 静的走査の禁止トークン検査は、既にコミット済みのコードが禁止トークンについて説明するコメント（例:「`unsigned char` を避けて `std::byte` を使う理由」）を持つため、コメントを除去してから走査しないと**規約を最も丁寧に守っているファイルほど誤検知される**。全トークン系チェックの前に `strip_cpp_comments()`（文字列/文字リテラルは保持）を適用すること。`new` の禁止判定は `new T(...)`（禁止）と `new (ptr) T(...)`（placement new・許可）と `#include <new>`（許可）を区別する必要があり、`(?<!<)\bnew\b(?!\s*\()` で対応した
 - **タスク 6.4**: `ProtectionSupervisor` に `averagedBatteryMilliVolts()`/`batteryVoltageValid()`（`DrivetrainStatus.battery_milli_volts`/`battery_valid` を埋めるための読み取り専用転送）を追加し、design.md の Service Interface へも同期済み。**既に承認済みタスクのインターフェースを拡張する場合は、実装と同時に design.md も更新すること**（黙って拡張してレビュー任せにしない）。また `uv run --all-extras --group dev pytest` は WSL ブリッジ経由でのみ到達可能（Windows ネイティブの Bash/PowerShell には `uv` が無い）。ネイティブ側で `uv` が見つからないことを理由に回帰検証を省略しない
 - **タスク 6.5**（タスク5.5の警告を解消）: `DrivetrainController::resetProtections()` を公開し `ProtectionSupervisor::resetProtections()` へ委譲した。タスク5.5が指摘した「`resetProtections()` は直近の `step()` が `updateLock()`/`updateLowVoltage()`/`updateWatchdog()` を先に呼んでいることに依存する」という事前条件を、`controller.hpp` のドキュメントコメントと design.md の `DrivetrainController` Preconditions の両方へ明記した。**`resetProtections()` は必ず直近の `step()` 呼び出しの直後に呼ぶこと**（別スレッドの非同期コマンド処理等から間隔を空けて呼ばない）。この制約は再エクスポートされる公開ヘッダ（`drivetrain_control.hpp`）からも読める唯一の契約面（`controller.hpp` 自身のコメント）に置いてあるため、下流 Spec（`teleop-bringup` 等）はこれを読める
 - **タスク 2.1**: `pio run -e teleop` の並行実行（フォアグラウンドとバックグラウンドを同時に走らせる等）は同一 `.pio/build/teleop` への同時書き込みでファイル破損を招く（`objdump: file format not recognized` 等の紛らわしいエラーになる）。**PlatformIO のビルドは常に1つずつ・フォアグラウンドで実行する**

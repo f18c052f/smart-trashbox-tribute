@@ -47,6 +47,7 @@ from __future__ import annotations
 import configparser
 import re
 from pathlib import Path
+from typing import Callable
 
 import pytest
 
@@ -60,6 +61,7 @@ BUILD_PROFILE_HPP_PATH = FIRMWARE_DIR / "src" / "build_profile.hpp"
 SDKCONFIG_PRODUCTION_PATH = FIRMWARE_DIR / "sdkconfig.defaults.production"
 TEST_NATIVE_DIR = FIRMWARE_DIR / "test" / "native"
 TEST_EMBEDDED_DIR = FIRMWARE_DIR / "test" / "embedded"
+LIB_INCLUDE_ROOT_DIR = FIRMWARE_DIR / "lib" / "drivetrain_control" / "include" / "drivetrain_control"
 
 PLATFORMIO_INI_TEXT = PLATFORMIO_INI_PATH.read_text(encoding="utf-8")
 ROOT_CMAKE_TEXT = ROOT_CMAKE_PATH.read_text(encoding="utf-8")
@@ -624,3 +626,632 @@ def test_detects_wrong_test_filter_value_in_crafted_input() -> None:
     fake_ini = "[env:teleop]\ntest_filter = native/*\n"
     violations = find_test_filter_violations(fake_ini)
     assert violations != []
+
+
+# =============================================================================
+# タスク 8: 純ロジックのソースを静的に検査する（要件 2.2, 2.4, 4.6, 16.3, 17.3, 17.4）
+# =============================================================================
+#
+# タスク 1.3 が検査したのは `platformio.ini` / `CMakeLists.txt` /
+# `sdkconfig.defaults*` という「ビルド構成」だけであった。ここから先は
+# design.md FirmwareBoundaryCheck の Batch/Job Contract 表が挙げる残りの
+# 検査対象、すなわち `lib/drivetrain_control/**` の実ソース（.hpp/.cpp）
+# そのものを走査する。
+#
+# **コメントを剥がしてから走査する（設計判断）**: `strip_cpp_comments()` で
+# `//` 行コメントと `/* */` ブロックコメントを除去し、文字列/文字リテラル
+# は保持したテキストに対して禁止トークン・禁止 include・依存方向・
+# シミュレータ参照のすべての検査をかける。理由は、このリポジトリの
+# 実コードに以下の**確認済みの誤検知リスク**があるため:
+#   - `controller.hpp` は「`unsigned char` でも動作は同じだが `unsigned `
+#     はタスク8の検査と衝突するため `std::byte` を使う」という設計判断を
+#     コメントで説明しており、そのコメント自体が `unsigned ` / `size_t` /
+#     `<vector>` / `new ` を字面として含む（本ファイル冒頭でも実測済み）。
+#   - `voltage_scaler.hpp` は「float/double を用いない」という設計判断を
+#     コメントで説明しており `double` を字面として含む。
+#   - `types.hpp` は「`long` / `size_t` はこの名前空間に置かない」という
+#     規約をコメントで説明しており `long` / `size_t` を字面として含む。
+#   - `config.hpp` / `controller.hpp` / `drivetrain_control.hpp` は要件17.1
+#     が要求する `trajectory_sim.DrivetrainParams` との意味論対応をコメント
+#     で説明しており `trajectory_sim` を字面として含む。
+# これらはすべて「禁止事項をコード上で回避した理由」または「要件が要求する
+# 意味論対応の説明」であり、違反ではない。生テキストへの単純な文字列一致で
+# 検査すると、規約を最も丁寧に守っているファイルほど誤検知される逆説的な
+# 結果になるため、コメントを除去してから走査する。
+#
+# **`new` の扱い（設計判断）**: `controller.hpp` の `LazySlot<T>` は
+# `alignas(T) std::byte storage_[sizeof(T)]` 上へ **placement new**
+# （`new (&storage) T(args...)`）で構築する、動的メモリ確保を伴わない
+# embedded C++ の定石を使う（ヒープ確保をしない `DrivetrainController`
+# を既定構築可能にするため）。ヒープ確保の `new T(...)` と placement new
+# `new (ptr) T(...)` を区別できないと、この正当な実装が誤検出される
+# （`controller.hpp` 自身のコメントが将来のタスク8実装者へこの区別を
+# 明示的に要求している）。`\bnew\b(?!\s*\()` — 「`new` の直後（空白を
+# 挟んでよい）が `(` でなければヒープ確保とみなす」で区別する。
+
+
+def _all_pure_logic_files() -> list[Path]:
+    """`lib/drivetrain_control` 配下の純ロジック実ファイル（ヘッダ＋実装）を列挙する。"""
+    return sorted(LIB_INCLUDE_ROOT_DIR.rglob("*.hpp")) + sorted(LIB_SRC_DIR.rglob("*.cpp"))
+
+
+def test_all_pure_logic_files_is_non_empty() -> None:
+    """走査対象そのものが空振りでないことを確認する（前提の健全性）。"""
+    assert _all_pure_logic_files() != []
+
+
+_COMMENT_OR_LITERAL_PATTERN = re.compile(
+    r"//[^\n]*"  # 行コメント
+    r"|/\*.*?\*/"  # ブロックコメント
+    r'|"(?:\\.|[^"\\])*"'  # 文字列リテラル（保持する）
+    r"|'(?:\\.|[^'\\])*'",  # 文字リテラル（保持する）
+    re.S,
+)
+
+
+def strip_cpp_comments(text: str) -> str:
+    """C++ の `//` 行コメントと `/* */` ブロックコメントを除去する。
+
+    文字列/文字リテラルは保持する（リテラル内の `//` や `/*` をコメント
+    開始と誤認しないように、走査を1パスの正規表現で行う）。コメントは
+    1個の空白へ置き換える（トークンの隣接によるすり抜けを防ぐ）。
+    """
+
+    def _replace(match: re.Match[str]) -> str:
+        token = match.group(0)
+        if token.startswith("//") or token.startswith("/*"):
+            return " "
+        return token
+
+    return _COMMENT_OR_LITERAL_PATTERN.sub(_replace, text)
+
+
+def test_strip_cpp_comments_removes_comments_but_keeps_string_literals() -> None:
+    fake_cpp = (
+        '// unsigned という語を含む行コメント\n'
+        "/* long を含む\n   複数行ブロックコメント */\n"
+        'const char* kMsg = "size_t という語を含む文字列リテラル";\n'
+    )
+    stripped = strip_cpp_comments(fake_cpp)
+    assert "unsigned" not in stripped
+    assert "long" not in stripped
+    assert "size_t という語を含む文字列リテラル" in stripped
+
+
+def _violations_across_pure_logic_files(
+    check: Callable[[str], list[str]],
+) -> dict[str, list[str]]:
+    """`check` を全純ロジックファイルへ適用し、違反があったファイルのみを集める。"""
+    result: dict[str, list[str]] = {}
+    for path in _all_pure_logic_files():
+        violations = check(path.read_text(encoding="utf-8"))
+        if violations:
+            result[str(path.relative_to(REPO_ROOT))] = violations
+    return result
+
+
+# ---------------------------------------------------------------------------
+# 9. 禁止 include: ペリフェラルおよび組込みフレームワークに固有のヘッダ
+#    （要件 2.2, 2.4）
+# ---------------------------------------------------------------------------
+
+_INCLUDE_TARGET_PATTERN = re.compile(r'#include\s*[<"]([^">]+)[>"]')
+
+
+def classify_forbidden_include(header: str) -> str | None:
+    """include 対象がペリフェラル/組込みフレームワーク固有ヘッダか分類する。
+
+    該当すれば design.md の表記そのままのカテゴリ名を返す。該当しなければ
+    `None`（`drivetrain_control/...` や `<cstdint>` 等の標準ヘッダは該当しない）。
+    """
+    basename = header.rsplit("/", 1)[-1]
+    if basename == "Arduino.h":
+        return "Arduino.h"
+    if basename.startswith("esp_"):
+        return "esp_*"
+    if header.startswith("driver/"):
+        return "driver/*"
+    if header.startswith("freertos/"):
+        return "freertos/*"
+    if basename == "sdkconfig.h":
+        return "sdkconfig.h"
+    if basename.startswith("WiFi"):
+        return "WiFi*"
+    if basename.startswith("Bluetooth"):
+        return "Bluetooth*"
+    return None
+
+
+def find_forbidden_peripheral_includes(text: str) -> list[str]:
+    stripped = strip_cpp_comments(text)
+    violations = []
+    for match in _INCLUDE_TARGET_PATTERN.finditer(stripped):
+        header = match.group(1)
+        category = classify_forbidden_include(header)
+        if category is not None:
+            violations.append(f"{header} ({category})")
+    return violations
+
+
+def test_no_pure_logic_file_includes_forbidden_peripheral_headers() -> None:
+    violations = _violations_across_pure_logic_files(find_forbidden_peripheral_includes)
+    assert violations == {}, f"禁止ヘッダの参照が混入している: {violations}"
+
+
+@pytest.mark.parametrize(
+    ("include_line", "expected_category"),
+    [
+        ("#include <Arduino.h>\n", "Arduino.h"),
+        ('#include "esp_timer.h"\n', "esp_*"),
+        ("#include <driver/gpio.h>\n", "driver/*"),
+        ("#include <freertos/FreeRTOS.h>\n", "freertos/*"),
+        ('#include "sdkconfig.h"\n', "sdkconfig.h"),
+        ("#include <WiFi.h>\n", "WiFi*"),
+        ("#include <BluetoothSerial.h>\n", "Bluetooth*"),
+    ],
+)
+def test_detects_forbidden_peripheral_include_in_crafted_input(
+    include_line: str, expected_category: str
+) -> None:
+    """違反ケース: 7カテゴリそれぞれの禁止ヘッダが検出される。"""
+    violations = find_forbidden_peripheral_includes(include_line)
+    assert violations != []
+    assert any(expected_category in v for v in violations)
+
+
+def test_does_not_flag_legitimate_includes_in_crafted_input() -> None:
+    """誤検知回避: 標準ヘッダと `drivetrain_control/...` は禁止ヘッダに該当しない。"""
+    fake_cpp = (
+        "#include <cstdint>\n"
+        "#include <cstddef>\n"
+        "#include <cmath>\n"
+        "#include <new>\n"
+        "#include <type_traits>\n"
+        '#include "drivetrain_control/config.hpp"\n'
+        '#include "drivetrain_control/protection/motor_lock.hpp"\n'
+    )
+    assert find_forbidden_peripheral_includes(fake_cpp) == []
+
+
+# ---------------------------------------------------------------------------
+# 汎用: 「コメント除去後のテキスト」に対する複数トークンの一括検出
+# ---------------------------------------------------------------------------
+
+
+def _find_token_matches(text: str, patterns: dict[str, re.Pattern[str]]) -> list[str]:
+    stripped = strip_cpp_comments(text)
+    return [name for name, pattern in patterns.items() if pattern.search(stripped)]
+
+
+# ---------------------------------------------------------------------------
+# 10. 禁止トークン: 現在時刻を取得する手段（要件 3.1, 2.4）
+# ---------------------------------------------------------------------------
+
+FORBIDDEN_TIME_SOURCE_TOKEN_PATTERNS: dict[str, re.Pattern[str]] = {
+    "millis(": re.compile(r"\bmillis\s*\("),
+    "micros(": re.compile(r"\bmicros\s*\("),
+    "esp_timer_": re.compile(r"\besp_timer_\w*"),
+    "<chrono>": re.compile(r"<chrono>"),
+    "<ctime>": re.compile(r"<ctime>"),
+    "time(": re.compile(r"\btime\s*\("),
+}
+
+
+def find_forbidden_time_source_tokens(text: str) -> list[str]:
+    return _find_token_matches(text, FORBIDDEN_TIME_SOURCE_TOKEN_PATTERNS)
+
+
+def test_no_pure_logic_file_references_a_current_time_source() -> None:
+    violations = _violations_across_pure_logic_files(find_forbidden_time_source_tokens)
+    assert violations == {}, f"現在時刻を取得する手段の参照が混入している: {violations}"
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    [
+        "auto t = millis();\n",
+        "auto t = micros();\n",
+        "auto t = esp_timer_get_time();\n",
+        "#include <chrono>\n",
+        "#include <ctime>\n",
+        "auto t = time(nullptr);\n",
+    ],
+)
+def test_detects_forbidden_time_source_token_in_crafted_input(snippet: str) -> None:
+    """違反ケース: 6種の現在時刻取得手段トークンそれぞれが検出される。"""
+    assert find_forbidden_time_source_tokens(snippet) != []
+
+
+def test_does_not_flag_time_like_identifiers_in_crafted_input() -> None:
+    """誤検知回避: `time(` の語境界を跨がない識別子（`getRuntime()` 等）は検出しない。"""
+    fake_cpp = (
+        "std::int64_t since_reset_ms = 0;\n"
+        "std::int32_t last_step_interval_ms = 0;\n"
+        "int getRuntime() { return 1; }\n"
+    )
+    assert find_forbidden_time_source_tokens(fake_cpp) == []
+
+
+# ---------------------------------------------------------------------------
+# 11. 禁止型トークン: 処理系依存幅の整数型と倍精度浮動小数点（要件 4.1, 4.6）
+# ---------------------------------------------------------------------------
+
+FORBIDDEN_TYPE_TOKEN_PATTERNS: dict[str, re.Pattern[str]] = {
+    "long": re.compile(r"\blong\b"),
+    "double": re.compile(r"\bdouble\b"),
+    "unsigned ": re.compile(r"\bunsigned\s"),
+    "size_t": re.compile(r"\bsize_t\b"),
+}
+
+
+def find_forbidden_type_tokens(text: str) -> list[str]:
+    return _find_token_matches(text, FORBIDDEN_TYPE_TOKEN_PATTERNS)
+
+
+def test_no_pure_logic_file_uses_platform_dependent_width_or_double_precision_types() -> None:
+    violations = _violations_across_pure_logic_files(find_forbidden_type_tokens)
+    assert violations == {}, f"処理系依存幅の整数型/倍精度浮動小数点の混入: {violations}"
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    [
+        "long value = 0;\n",
+        "double value = 0.0;\n",
+        "unsigned char storage_[4];\n",
+        "size_t n = 0;\n",
+    ],
+)
+def test_detects_forbidden_type_token_in_crafted_input(snippet: str) -> None:
+    """違反ケース: `long` / `double` / `unsigned ` / `size_t` それぞれが検出される。"""
+    assert find_forbidden_type_tokens(snippet) != []
+
+
+def test_does_not_flag_fixed_width_types_in_crafted_input() -> None:
+    """誤検知回避: 固定幅整数・`float`・`bool`・`std::byte` は design.md の許可型であり検出しない。"""
+    fake_cpp = (
+        "std::uint32_t a = 0;\n"
+        "std::uint8_t b = 0;\n"
+        "std::int64_t c = 0;\n"
+        "float f = 0.0F;\n"
+        "bool ok = true;\n"
+        "alignas(T) std::byte storage_[sizeof(T)];\n"
+    )
+    assert find_forbidden_type_tokens(fake_cpp) == []
+
+
+def test_does_not_flag_banned_type_words_mentioned_only_in_comment_in_crafted_input() -> None:
+    """誤検知回避: `controller.hpp` 実物と同種の「回避理由を説明するコメント」は検出しない。"""
+    fake_cpp = (
+        "// std::byte（<cstddef>）を使う。`unsigned char` でも動作は同じだが、\n"
+        "// 「unsigned 」（末尾スペース込み）は design.md FirmwareBoundaryCheck\n"
+        "// の固定幅整数トークン検査と衝突するため std::byte を使う。size_t/long/double も同様。\n"
+        "alignas(T) std::byte storage_[sizeof(T)];\n"
+    )
+    assert find_forbidden_type_tokens(fake_cpp) == []
+
+
+# ---------------------------------------------------------------------------
+# 12. 禁止: 例外・RTTI・動的メモリ確保・重量級の標準ライブラリ
+#     （Allowed Dependencies）
+# ---------------------------------------------------------------------------
+
+FORBIDDEN_EXCEPTION_RTTI_ALLOCATION_TOKEN_PATTERNS: dict[str, re.Pattern[str]] = {
+    "throw": re.compile(r"\bthrow\b"),
+    # ヒープ確保の `new T(...)` のみを禁止し、placement new `new (ptr) T(...)` と
+    # 標準ヘッダ `#include <new>`（placement new 自体に必要）は許可する。
+    # `new` の直後（空白を挟んでよい）が `(` でなければヒープ確保とみなす。
+    # 加えて `<new>`（ヘッダ名そのもの）は直前が `<` であることで判別し除外する。
+    "new ": re.compile(r"(?<!<)\bnew\b(?!\s*\()"),
+    "malloc": re.compile(r"\bmalloc\s*\("),
+    "<vector>": re.compile(r"<vector>"),
+    "<string>": re.compile(r"<string>"),
+    "<iostream>": re.compile(r"<iostream>"),
+    # design.md の表は例示トークンを挙げていないが、要件・タスク文言が明示する
+    # 「実行時型情報 (RTTI)」を具体的に検出できるよう、無曖昧な2トークンを追加する。
+    "typeid": re.compile(r"\btypeid\b"),
+    "dynamic_cast": re.compile(r"\bdynamic_cast\b"),
+}
+
+
+def find_forbidden_exception_rtti_allocation_tokens(text: str) -> list[str]:
+    return _find_token_matches(text, FORBIDDEN_EXCEPTION_RTTI_ALLOCATION_TOKEN_PATTERNS)
+
+
+def test_no_pure_logic_file_uses_exceptions_rtti_or_dynamic_allocation() -> None:
+    violations = _violations_across_pure_logic_files(
+        find_forbidden_exception_rtti_allocation_tokens
+    )
+    assert violations == {}, f"例外・RTTI・動的確保・重量級標準ライブラリの参照が混入: {violations}"
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    [
+        'throw std::runtime_error("x");\n',
+        "T* p = new T(1);\n",
+        "void* p = malloc(4);\n",
+        "#include <vector>\n",
+        "#include <string>\n",
+        "#include <iostream>\n",
+        "if (typeid(a) == typeid(b)) {}\n",
+        "auto* d = dynamic_cast<Derived*>(base);\n",
+    ],
+)
+def test_detects_forbidden_exception_rtti_allocation_token_in_crafted_input(
+    snippet: str,
+) -> None:
+    """違反ケース: 8種のトークンそれぞれが検出される（RTTI用の2種を含む）。"""
+    assert find_forbidden_exception_rtti_allocation_tokens(snippet) != []
+
+
+def test_does_not_flag_new_standard_header_in_crafted_input() -> None:
+    """誤検知回避: `#include <new>`（placement new に必要な標準ヘッダ）は検出しない。
+
+    `controller.hpp` の実物がこのヘッダを実際に include している
+    （placement new を使うため）。
+    """
+    fake_cpp = "#include <new>\n"
+    assert find_forbidden_exception_rtti_allocation_tokens(fake_cpp) == []
+
+
+def test_does_not_flag_placement_new_in_crafted_input() -> None:
+    """誤検知回避: `controller.hpp` の `LazySlot<T>` が使う placement new は検出しない。
+
+    `controller.hpp` 自身のコメントがこの区別を将来のタスク8実装者へ要求している
+    （ヒープ確保の `new T(...)` とは異なり、`new (&storage) T(args...)` はヒープを
+    一切使わない）。
+    """
+    fake_cpp = "T* ptr = new (static_cast<void*>(&storage_)) T(static_cast<Args&&>(args)...);\n"
+    assert find_forbidden_exception_rtti_allocation_tokens(fake_cpp) == []
+
+
+def test_does_not_flag_new_or_vector_mentioned_only_in_comment_in_crafted_input() -> None:
+    """誤検知回避: `controller.hpp` 実物と同種の「ヒープ確保を避けた理由の説明」コメントは検出しない。"""
+    fake_cpp = (
+        "// ヒープ確保（`new` によるヒープ割り当て・`malloc`、`<vector>` 等の\n"
+        "// ヒープ利用）は一切行わない。placement new（`new (&storage) T(args...)`）\n"
+        "// だけを使う。\n"
+        "alignas(T) std::byte storage_[sizeof(T)];\n"
+    )
+    assert find_forbidden_exception_rtti_allocation_tokens(fake_cpp) == []
+
+
+# ---------------------------------------------------------------------------
+# 13. 禁止: ビルド構成マクロの参照が純ロジックに無いこと（要件 1.2）
+# ---------------------------------------------------------------------------
+
+FORBIDDEN_BUILD_MACRO_TOKEN_PATTERNS: dict[str, re.Pattern[str]] = {
+    "DRIVETRAIN_BUILD_TELEOP": re.compile(r"\bDRIVETRAIN_BUILD_TELEOP\b"),
+    "DRIVETRAIN_BUILD_PRODUCTION": re.compile(r"\bDRIVETRAIN_BUILD_PRODUCTION\b"),
+}
+
+
+def find_forbidden_build_macro_references(text: str) -> list[str]:
+    return _find_token_matches(text, FORBIDDEN_BUILD_MACRO_TOKEN_PATTERNS)
+
+
+def test_no_pure_logic_file_references_build_configuration_macros() -> None:
+    violations = _violations_across_pure_logic_files(find_forbidden_build_macro_references)
+    assert violations == {}, f"ビルド構成マクロの参照が純ロジックに混入している: {violations}"
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    [
+        "#ifdef DRIVETRAIN_BUILD_TELEOP\n#endif\n",
+        "#if defined(DRIVETRAIN_BUILD_PRODUCTION)\n#endif\n",
+    ],
+)
+def test_detects_build_macro_reference_in_crafted_input(snippet: str) -> None:
+    """違反ケース: `DRIVETRAIN_BUILD_TELEOP` / `DRIVETRAIN_BUILD_PRODUCTION` の参照が検出される。"""
+    assert find_forbidden_build_macro_references(snippet) != []
+
+
+def test_does_not_flag_unrelated_macro_names_in_crafted_input() -> None:
+    """誤検知回避: 無関係なマクロ名は検出しない。"""
+    fake_cpp = "#pragma once\n#define DRIVETRAIN_CONTROL_VERSION 1\n"
+    assert find_forbidden_build_macro_references(fake_cpp) == []
+
+
+# ---------------------------------------------------------------------------
+# 14. 禁止: `test_support` への参照（要件 16.3）
+# ---------------------------------------------------------------------------
+
+FORBIDDEN_TEST_SUPPORT_TOKEN_PATTERNS: dict[str, re.Pattern[str]] = {
+    "test_support": re.compile(r"\btest_support\b"),
+}
+
+
+def find_forbidden_test_support_references(text: str) -> list[str]:
+    return _find_token_matches(text, FORBIDDEN_TEST_SUPPORT_TOKEN_PATTERNS)
+
+
+def test_no_pure_logic_file_references_test_support_library() -> None:
+    violations = _violations_across_pure_logic_files(find_forbidden_test_support_references)
+    assert violations == {}, f"test_support への参照が純ロジックに混入している: {violations}"
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    [
+        '#include "test_support/fake_ports.hpp"\n',
+        "test_support::FakeEncoderPort port;\n",
+    ],
+)
+def test_detects_test_support_reference_in_crafted_input(snippet: str) -> None:
+    """違反ケース: include・名前空間参照のどちらの形でも `test_support` 参照が検出される。"""
+    assert find_forbidden_test_support_references(snippet) != []
+
+
+def test_does_not_flag_unrelated_identifiers_in_crafted_input() -> None:
+    """誤検知回避: 無関係な識別子は検出しない。"""
+    fake_cpp = "drivetrain_control::EncoderPort* port = nullptr;\n"
+    assert find_forbidden_test_support_references(fake_cpp) == []
+
+
+# ---------------------------------------------------------------------------
+# 15. 依存方向: 各ファイルの include が design.md "Dependency Direction"
+#     表の許可範囲に収まること
+# ---------------------------------------------------------------------------
+#
+# design.md の層表（L0〜L11）をそのままデータ化する。キーはファイルの
+# ベース名（拡張子・ディレクトリを除いたもの）。ベース名はツリー全体で
+# 一意（`protection/motor_lock.hpp` と衝突する `motor_lock.*` は他に無い）。
+
+LAYER_OF: dict[str, int] = {
+    "units": 0,
+    "errors": 0,
+    "types": 1,
+    "config": 2,
+    "ports": 3,
+    "wrap_accumulator": 4,
+    "voltage_scaler": 4,
+    "kinematics": 5,
+    "odometry": 6,
+    "velocity_pid": 6,
+    "motor_lock": 7,
+    "low_voltage": 7,
+    "pwm_ceiling": 7,
+    "command_watchdog": 7,
+    "supervisor": 8,
+    "command_input": 9,
+    "controller": 10,
+    "drivetrain_control": 11,
+}
+
+# 層番号 → 「依存してよい層番号の集合」。design.md の表の「依存してよい層」列を
+# そのまま転記したもの（単純な「自分より小さい番号なら何でも可」ではない。
+# 例えば L9 command_input は L5 kinematics へ直接依存してよいが L6/L7/L8 へは
+# 依存できない、という表が明示する層飛ばしの許可/不許可をそのまま反映する）。
+ALLOWED_LOWER_LAYERS: dict[int, frozenset[int]] = {
+    0: frozenset(),
+    1: frozenset({0}),
+    2: frozenset({0, 1}),
+    3: frozenset({0, 1}),
+    4: frozenset({0, 1, 2}),
+    5: frozenset({0, 1, 2}),
+    6: frozenset({0, 1, 2, 5}),
+    7: frozenset({0, 1, 2}),
+    8: frozenset({0, 1, 2, 7}),
+    9: frozenset({0, 1, 2, 5}),
+    10: frozenset(range(10)),
+    11: frozenset(range(11)),
+}
+
+_DRIVETRAIN_CONTROL_INCLUDE_PATTERN = re.compile(r'#include\s*"drivetrain_control/([^"]+)"')
+
+
+def parse_drivetrain_control_include_basenames(text: str) -> list[str]:
+    """`#include "drivetrain_control/..."` の対象をベース名（拡張子除く）の列として抽出する。"""
+    stripped = strip_cpp_comments(text)
+    includes = _DRIVETRAIN_CONTROL_INCLUDE_PATTERN.findall(stripped)
+    return [Path(inc).stem for inc in includes]
+
+
+def find_dependency_direction_violations(basename: str, text: str) -> list[str]:
+    """`basename` のファイルが自身に許可された層の外を include していないかを検査する。
+
+    自分自身のベース名（`.cpp` が対になる `.hpp` を include する自己参照）は、
+    層表の対象外の自己参照であり違反にしない。
+    """
+    if basename not in LAYER_OF:
+        return [f"未知のファイル（Dependency Direction 表に無い）: {basename}"]
+    own_layer = LAYER_OF[basename]
+    allowed = ALLOWED_LOWER_LAYERS[own_layer]
+    violations = []
+    for included_basename in parse_drivetrain_control_include_basenames(text):
+        if included_basename == basename:
+            continue
+        included_layer = LAYER_OF.get(included_basename)
+        if included_layer is None:
+            violations.append(f"未知の include（層表に無い）: {included_basename}")
+            continue
+        if included_layer not in allowed:
+            violations.append(
+                f"L{own_layer}({basename}) が L{included_layer}({included_basename}) を"
+                " include している（依存方向の許可範囲外）"
+            )
+    return violations
+
+
+def test_every_pure_logic_file_stays_within_dependency_direction_table() -> None:
+    violations: dict[str, list[str]] = {}
+    for path in _all_pure_logic_files():
+        file_violations = find_dependency_direction_violations(
+            path.stem, path.read_text(encoding="utf-8")
+        )
+        if file_violations:
+            violations[str(path.relative_to(REPO_ROOT))] = file_violations
+    assert violations == {}, f"Dependency Direction 表の許可範囲を外れた include: {violations}"
+
+
+def test_detects_upward_layer_reference_in_crafted_input() -> None:
+    """違反ケース: L5 kinematics が L8 supervisor を include する（上位層への参照）。"""
+    fake_hpp = '#include "drivetrain_control/protection/supervisor.hpp"\n'
+    violations = find_dependency_direction_violations("kinematics", fake_hpp)
+    assert violations != []
+
+
+def test_detects_disallowed_layer_skip_in_crafted_input() -> None:
+    """違反ケース: L2 config が L5 kinematics を include する（表で許可されていない層飛ばし）。"""
+    fake_hpp = '#include "drivetrain_control/kinematics.hpp"\n'
+    violations = find_dependency_direction_violations("config", fake_hpp)
+    assert violations != []
+
+
+def test_does_not_flag_explicitly_allowed_layer_skip_in_crafted_input() -> None:
+    """誤検知回避: L9 command_input が L5 kinematics を直接 include するのは表で明示的に許可されている。"""
+    fake_hpp = '#include "drivetrain_control/kinematics.hpp"\n'
+    assert find_dependency_direction_violations("command_input", fake_hpp) == []
+
+
+def test_does_not_flag_own_paired_header_self_include_in_crafted_input() -> None:
+    """誤検知回避: `.cpp` が自分自身の対になる `.hpp` を include するのは層表の対象外の自己参照。"""
+    fake_cpp = '#include "drivetrain_control/protection/supervisor.hpp"\n'
+    assert find_dependency_direction_violations("supervisor", fake_cpp) == []
+
+
+# ---------------------------------------------------------------------------
+# 16. シミュレータのコードを参照していないこと（要件 17.3, 17.4）
+# ---------------------------------------------------------------------------
+#
+# `trajectory_sim` はコメント上で意味論対応を説明する目的で正当に言及される
+# （要件 17.1 が要求する記述であり、これ自体はコード参照ではない）。禁止
+# されるのは実コード上の参照（#include・文字列リテラルでのパス参照）のみ
+# であるため、ここでもコメント除去後のテキストを走査する。
+
+
+def find_simulator_source_reference(text: str) -> list[str]:
+    stripped = strip_cpp_comments(text)
+    return [line.strip() for line in stripped.splitlines() if "trajectory_sim" in line]
+
+
+def test_no_pure_logic_file_references_simulator_source() -> None:
+    violations: dict[str, list[str]] = {}
+    for path in _all_pure_logic_files():
+        file_violations = find_simulator_source_reference(path.read_text(encoding="utf-8"))
+        if file_violations:
+            violations[str(path.relative_to(REPO_ROOT))] = file_violations
+    assert violations == {}, f"シミュレータのコードへの参照が混入している: {violations}"
+
+
+def test_detects_simulator_include_reference_in_crafted_input() -> None:
+    """違反ケース: `#include` でのシミュレータ側パス参照が検出される。"""
+    fake_hpp = '#include "../../src/trajectory_sim/drivetrain.hpp"\n'
+    assert find_simulator_source_reference(fake_hpp) != []
+
+
+def test_detects_simulator_string_literal_reference_in_crafted_input() -> None:
+    """違反ケース: 文字列リテラルでのシミュレータ側パス参照が検出される。"""
+    fake_cpp = 'const char* kPath = "src/trajectory_sim/drivetrain.py";\n'
+    assert find_simulator_source_reference(fake_cpp) != []
+
+
+def test_does_not_flag_semantic_parity_comment_mentioning_simulator_in_crafted_input() -> None:
+    """誤検知回避: `config.hpp` 実物と同種の「意味論対応の説明」コメントは検出しない（要件17.1）。"""
+    fake_hpp = (
+        "float max_body_speed_mm_s;  "
+        "// trajectory_sim.DrivetrainParams.max_speed_mm_s と同一定義\n"
+    )
+    assert find_simulator_source_reference(fake_hpp) == []
