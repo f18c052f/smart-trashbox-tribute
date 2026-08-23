@@ -21,15 +21,16 @@
 // 3.2, 3.4, 3.5, 3.6, 6.5, 12.4, 13.5, 13.6, 14.1, 14.2, 14.3, 15.4, 15.5,
 // 17.1, 17.2, 17.7。
 //
-// ⚠️ `CommandInput::submit()` / `setOutputEnabled()` はタスク6.5まで
-// `DrivetrainController` の公開面に無いため、タスク6.3/6.4のテスト（I〜M）
-// は `ControllerStepTestHooks` の friend アクセサ経由で内部の
-// `CommandInput` へ直接指令を投入する。タスク6.4で `status()` が内部の
-// 計測速度・エンコーダ基準値・オドメトリを公開する読み出し手段になった
-// ため、friend アクセサからはそれらに対応する3メソッド（旧
-// lastMeasuredMmS/lastEncoderCounts/odometryState）を削除し、テストF/Gは
-// `status()` を使うよう置き換えた（friend の残り4メソッドが必要な理由は
-// friend struct 定義直前のコメント参照）。
+// タスク6.5で `DrivetrainController::submit()` / `setOutputEnabled()` が
+// 公開されたため、タスク6.3/6.4由来のテスト（I〜M）は以降これらの公開
+// メソッドを直接使う（`controller.submit(...)` / `controller.setOutputEnabled(...)`）。
+// タスク6.4で `status()` が内部の計測速度・エンコーダ基準値・オドメトリを
+// 公開する読み出し手段になったため、`ControllerStepTestHooks` の friend
+// アクセサからはそれらに対応する3メソッド（旧
+// lastMeasuredMmS/lastEncoderCounts/odometryState）を既に削除しており、
+// テストF/Gは `status()` を使う。friend に残る2メソッド
+// （lastCommandedDuty/pidIntegral）が必要な理由は friend struct 定義直前の
+// コメント参照。
 //
 // 以下を検証する:
 //   A. configure() 前（未設定）の step() は、ポートに一切触れず、
@@ -122,12 +123,15 @@ namespace drivetrain_control {
 // タスク6.4時点: status() が計測速度・エンコーダ基準値・オドメトリを公開
 // する読み出し手段になったため、旧 lastMeasuredMmS/lastEncoderCounts/
 // odometryState はこの friend から削除した（呼び出し側は controller.status()
-// を使う）。一方 submit()/setOutputEnabled()（タスク6.5）はまだ無く、
-// applyWheelOutputs() の「上限適用後・遮断前」の値（status().wheel_duty
-// とは異なる最終値以外の内部値）や PID の内部積分は DrivetrainStatus に
-// 含まれないフィールドであるため、これらは引き続き controller.hpp が宣言
-// する friend を通じて、このテストだけが内部状態を読み・指令を直接投入
-// する（ファイル先頭コメント、controller.hpp の friend 宣言直前コメント
+// を使う）。タスク6.5で公開 submit()/setOutputEnabled() が追加された
+// ことで、内部の CommandInput へ直接委譲していた submitWheelVelocities/
+// setOutputEnabled も不要になり削除した（呼び出し側は controller.submit(...)
+// / controller.setOutputEnabled(...) を使う）。残る2メソッド
+// （lastCommandedDuty/pidIntegral）は、applyWheelOutputs() の「上限適用後・
+// 遮断前」の値（status().wheel_duty とは異なる最終値以外の内部値）や PID
+// の内部積分が DrivetrainStatus に含まれないフィールドであるため、
+// 引き続き controller.hpp が宣言する friend を通じてこのテストだけが
+// 読み取る（ファイル先頭コメント、controller.hpp の friend 宣言直前コメント
 // 参照）。
 struct ControllerStepTestHooks {
   // タスク6.3: applyWheelOutputs() が返した「上限適用後・遮断前」の出力
@@ -140,18 +144,6 @@ struct ControllerStepTestHooks {
   // マスクされない形で確認するために使う。
   static float pidIntegral(const DrivetrainController& c, std::uint8_t wheel) {
     return c.pid_[wheel].get().integral();
-  }
-
-  // タスク6.3のテスト専用: CommandInput::submit(WheelVelocityCommand) へ
-  // 直接委譲する（公開 submit() は task 6.5 まで存在しない）。
-  static CommandAcceptance submitWheelVelocities(DrivetrainController& c, const WheelVelocityCommand& command) {
-    return c.command_input_.get().submit(command);
-  }
-
-  // タスク6.3のテスト専用: CommandInput::setOutputEnabled() へ直接委譲する
-  // （公開 setOutputEnabled() は task 6.5 まで存在しない）。
-  static void setOutputEnabled(DrivetrainController& c, bool enabled, TimeMs now) {
-    c.command_input_.get().setOutputEnabled(enabled, now);
   }
 };
 
@@ -620,14 +612,14 @@ void test_pwm_ceiling_shrinks_all_wheels_by_the_same_ratio(void) {
 
   fx.battery.sample = VoltageSample{/*valid=*/true, /*milli_volts=*/12600};
 
-  ControllerStepTestHooks::setOutputEnabled(controller, /*enabled=*/true, /*now=*/0);
+  controller.setOutputEnabled(true, /*now=*/0);
 
   WheelVelocityCommand command{};
   command.wheel_mm_s[0] = 200.0f;
   command.wheel_mm_s[1] = 400.0f;
   command.wheel_mm_s[2] = 600.0f;
   command.issued_at_ms = 0;
-  const CommandAcceptance acceptance = ControllerStepTestHooks::submitWheelVelocities(controller, command);
+  const CommandAcceptance acceptance = controller.submit(command);
   TEST_ASSERT_TRUE(acceptance.accepted);
   TEST_ASSERT_FALSE(acceptance.clamped);  // max_wheel_speed_mm_s(1000) 以内
 
@@ -697,14 +689,14 @@ void test_watchdog_trip_zeroes_pid_internal_state_not_just_gated_output(void) {
 
   fx.battery.sample = VoltageSample{/*valid=*/true, /*milli_volts=*/12600};
 
-  ControllerStepTestHooks::setOutputEnabled(controller, /*enabled=*/true, /*now=*/0);
+  controller.setOutputEnabled(true, /*now=*/0);
 
   WheelVelocityCommand command{};
   command.wheel_mm_s[0] = 300.0f;
   command.wheel_mm_s[1] = 300.0f;
   command.wheel_mm_s[2] = 300.0f;
   command.issued_at_ms = 0;
-  TEST_ASSERT_TRUE(ControllerStepTestHooks::submitWheelVelocities(controller, command).accepted);
+  TEST_ASSERT_TRUE(controller.submit(command).accepted);
 
   // 1回目: ウォッチドッグのタイムアウト(300ms)以内。指令が実際に PID を
   // 駆動していることを確認する（積分が動き、上限適用後の出力指令が
@@ -791,14 +783,14 @@ void test_motor_lock_gates_only_the_tripped_wheel(void) {
                                                                               // ⇒ ceiling は absolute_max_duty(1.0)
                                                                               // に張り付き、縮小が起きない
 
-  ControllerStepTestHooks::setOutputEnabled(controller, /*enabled=*/true, /*now=*/0);
+  controller.setOutputEnabled(true, /*now=*/0);
 
   WheelVelocityCommand command{};
   command.wheel_mm_s[0] = 300.0f;  // -> raw = 0.6
   command.wheel_mm_s[1] = 100.0f;  // -> raw = 0.2
   command.wheel_mm_s[2] = 100.0f;  // -> raw = 0.2
   command.issued_at_ms = 0;
-  TEST_ASSERT_TRUE(ControllerStepTestHooks::submitWheelVelocities(controller, command).accepted);
+  TEST_ASSERT_TRUE(controller.submit(command).accepted);
 
   // 1回目: 条件が初めて成立し Idle -> Suspect (継続時間の計測が始まる)。
   // duration_ms(300ms) にはまだ満たないので、まだ発火しない。
@@ -878,14 +870,14 @@ void test_status_reflects_final_snapshot_and_does_not_touch_ports(void) {
   fx.encoder.counts.count[1] = 0;
   fx.encoder.counts.count[2] = 0;
 
-  ControllerStepTestHooks::setOutputEnabled(controller, /*enabled=*/true, /*now=*/0);
+  controller.setOutputEnabled(true, /*now=*/0);
 
   WheelVelocityCommand command{};
   command.wheel_mm_s[0] = 100.0f;
   command.wheel_mm_s[1] = 150.0f;
   command.wheel_mm_s[2] = 200.0f;
   command.issued_at_ms = 0;
-  const CommandAcceptance acceptance = ControllerStepTestHooks::submitWheelVelocities(controller, command);
+  const CommandAcceptance acceptance = controller.submit(command);
   TEST_ASSERT_TRUE(acceptance.accepted);
   TEST_ASSERT_FALSE(acceptance.clamped);
 
@@ -1001,7 +993,7 @@ void test_command_apply_latency_computed_on_first_step_and_held_until_next_chang
   command_a.wheel_mm_s[1] = 10.0f;
   command_a.wheel_mm_s[2] = 10.0f;
   command_a.issued_at_ms = 50;
-  TEST_ASSERT_TRUE(ControllerStepTestHooks::submitWheelVelocities(controller, command_a).accepted);
+  TEST_ASSERT_TRUE(controller.submit(command_a).accepted);
 
   // 1回目の実ステップ(now=120): 指令Aがこのステップで初めて反映される。
   // command_apply_latency_ms = now(120) - issued_at_ms(50) = 70。
@@ -1025,14 +1017,14 @@ void test_command_apply_latency_computed_on_first_step_and_held_until_next_chang
   command_b.wheel_mm_s[1] = 20.0f;
   command_b.wheel_mm_s[2] = 20.0f;
   command_b.issued_at_ms = 210;
-  TEST_ASSERT_TRUE(ControllerStepTestHooks::submitWheelVelocities(controller, command_b).accepted);
+  TEST_ASSERT_TRUE(controller.submit(command_b).accepted);
 
   WheelVelocityCommand command_c{};
   command_c.wheel_mm_s[0] = 30.0f;
   command_c.wheel_mm_s[1] = 30.0f;
   command_c.wheel_mm_s[2] = 30.0f;
   command_c.issued_at_ms = 220;
-  TEST_ASSERT_TRUE(ControllerStepTestHooks::submitWheelVelocities(controller, command_c).accepted);
+  TEST_ASSERT_TRUE(controller.submit(command_c).accepted);
 
   // 3回目の実ステップ(now=300): 反映されるのは指令Cのみ。
   // command_apply_latency_ms = now(300) - issued_at_ms(220) = 80。

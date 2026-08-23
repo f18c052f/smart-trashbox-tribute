@@ -231,7 +231,7 @@
   - _Boundary: DrivetrainController_
   - _Depends: 6.3_
 
-- [ ] 6.5 公開入口を確定させる
+- [x] 6.5 公開入口を確定させる
   - 下流 Spec が参照する唯一のヘッダを確定し、型・ポート・設定・累積器・電圧換算・運動学・制御ステップの合成体を再エクスポートする
   - **内部構造（オドメトリ・PID・保護の各検出器・保護の合成・指令入口）を再エクスポートしない。** これらは合成体の内部であり、下流が直接組み立てる対象ではない
   - **上位の位置制御・翻訳処理・無線関連を公開面に一切含めない**
@@ -337,4 +337,5 @@
 - **タスク 6.2**: `DrivetrainController` の copy/move は `= delete` する（参照メンバを持つ内部オブジェクトのメンバワイズコピーは参照先を誤らせるため）。`configure()` は non-null な3ポートの検証も行うが、null ポートに対応する専用の `ConfigField` 列挙子が無いため `ConfigError::kOutOfRange` ＋ `ConfigDiagnostic::index`（0=encoder/1=motor/2=battery）を暫定的に流用している。**タスク6.5で公開エラー診断面を確定する前に、専用の列挙子（例: `kPortsEncoderNull` 等）を追加するか検討すること**
 - **タスク 6.3**: ウォッチドッグ発火中は `compute(0, measured, dt)` ではなく `holdReset()` が compute/commit ペアを**完全に置き換える**（`VelocityPid` の Precondition「holdReset() を呼んだステップでは compute/commit のどちらも呼ばない」と、design.md の「PID を holdReset に置く」という文言から）。`CommandWatchdog` は `has_command==false` のとき無条件に `tripped()==true` になるため、`kNoCommandYet` は常に `kCommandTimeout` と同時に立つ（設計上の帰結であり不具合ではない）
 - **タスク 6.4**: `ProtectionSupervisor` に `averagedBatteryMilliVolts()`/`batteryVoltageValid()`（`DrivetrainStatus.battery_milli_volts`/`battery_valid` を埋めるための読み取り専用転送）を追加し、design.md の Service Interface へも同期済み。**既に承認済みタスクのインターフェースを拡張する場合は、実装と同時に design.md も更新すること**（黙って拡張してレビュー任せにしない）。また `uv run --all-extras --group dev pytest` は WSL ブリッジ経由でのみ到達可能（Windows ネイティブの Bash/PowerShell には `uv` が無い）。ネイティブ側で `uv` が見つからないことを理由に回帰検証を省略しない
+- **タスク 6.5**（タスク5.5の警告を解消）: `DrivetrainController::resetProtections()` を公開し `ProtectionSupervisor::resetProtections()` へ委譲した。タスク5.5が指摘した「`resetProtections()` は直近の `step()` が `updateLock()`/`updateLowVoltage()`/`updateWatchdog()` を先に呼んでいることに依存する」という事前条件を、`controller.hpp` のドキュメントコメントと design.md の `DrivetrainController` Preconditions の両方へ明記した。**`resetProtections()` は必ず直近の `step()` 呼び出しの直後に呼ぶこと**（別スレッドの非同期コマンド処理等から間隔を空けて呼ばない）。この制約は再エクスポートされる公開ヘッダ（`drivetrain_control.hpp`）からも読める唯一の契約面（`controller.hpp` 自身のコメント）に置いてあるため、下流 Spec（`teleop-bringup` 等）はこれを読める
 - **タスク 2.1**: `pio run -e teleop` の並行実行（フォアグラウンドとバックグラウンドを同時に走らせる等）は同一 `.pio/build/teleop` への同時書き込みでファイル破損を招く（`objdump: file format not recognized` 等の紛らわしいエラーになる）。**PlatformIO のビルドは常に1つずつ・フォアグラウンドで実行する**

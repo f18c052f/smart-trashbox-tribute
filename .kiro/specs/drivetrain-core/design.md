@@ -1354,7 +1354,9 @@ class DrivetrainController {
 };
 ```
 
-- Preconditions: `configure()` が `ok()` を返していること。そうでない場合 `step()` は `kNotConfigured` を立てて遮断値を書き出す
+- Preconditions:
+  - `configure()` が `ok()` を返していること。そうでない場合 `step()` は `kNotConfigured` を立てて遮断値を書き出す
+  - **`resetProtections()` は、直近の `step()` 呼び出しの直後にのみ呼ぶこと。** `ProtectionSupervisor::resetProtections()`（要件 14.6）は、同一制御周期内で `step()` が `updateLock()`/`updateLowVoltage()`/`updateWatchdog()` を先に呼んで内部の検出器状態を最新化していることに依存する。`step()` から間隔が空いた状態で呼ぶと、その間に条件が再び成立していても古い状態に基づいて保護を解除してしまう恐れがある
 - Postconditions:
   - **`now <= last_step_ms` のとき、ポートを読まず状態も変えず、前回の `StepResult` をそのまま返す**（要件 3.4）
   - 経過時間は `now - last_step_ms` から求める。**制御周期を固定値として前提にしない**（要件 3.5）

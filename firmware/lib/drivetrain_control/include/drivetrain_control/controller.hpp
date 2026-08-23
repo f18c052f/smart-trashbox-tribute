@@ -4,21 +4,29 @@
 // "DrivetrainController", 要件 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 6.5, 12.4,
 // 15.4, 15.5, 17.1, 17.7).
 //
-// ⚠️ タスク 6.2/6.3/6.4 スコープ: このヘッダは design.md が定義する
-// `DrivetrainController` の完全なインターフェースのうち、「制御ステップの
-// 骨格（設定・時刻・計測、タスク6.2）」「出力段（上限・PID・縮小・遮断・
+// タスク 6.2/6.3/6.4/6.5 スコープ: このヘッダは design.md が定義する
+// `DrivetrainController` の完全なインターフェースを実装する。「制御ステップ
+// の骨格（設定・時刻・計測、タスク6.2）」「出力段（上限・PID・縮小・遮断・
 // 極性、タスク6.3）」「状態スナップショットと下流が使う計測量
-// （status()/DrivetrainStatus、実測周期・指令反映遅れ、タスク6.4）」を
-// 実装する。以下は未実装で、後続タスクが追加する:
-//   - タスク 6.5: submit()/setOutputEnabled()/resetProtections()/
-//     resetOdometry() の公開入口としての配線
-// このため本ヘッダはこれらの公開メソッドをまだ宣言しない
-// （`CommandInput::submit()` へは task 6.5 まで外部から到達できないため、
-// タスク6.3/6.4 のホストテストは friend アクセサ経由で内部の
-// `CommandInput` へ直接指令を投入する。controller.cpp 側のロジックはこの
-// 制約を前提にしない ―― `command_input_.get()` を通じて通常どおり呼ぶ
-// だけであり、将来 6.5 が公開 `submit()` を追加しても controller.cpp の
-// 変更は不要）。
+// （status()/DrivetrainStatus、実測周期・指令反映遅れ、タスク6.4）」に続き、
+// タスク6.5が指令入口・出力許可・保護解除・オドメトリ初期化の公開配線
+// （submit()/setOutputEnabled()/resetProtections()/resetOdometry()）を
+// 追加する。これらはいずれも内部の合成オブジェクト（CommandInput /
+// ProtectionSupervisor / Odometry）へ薄く委譲するだけであり、判断・計算を
+// 一切持たない（design.md "CommandInput"/"ProtectionSupervisor"/"Odometry"
+// が既に持つ契約をそのまま外部へ配線するだけ）。configure() が成功する前
+// （`!configured_`）はこれらの合成オブジェクトが未構築（placement new 未
+// 実行）であるため、status() と同じ方針で「一切触れず安全な既定応答を返す」
+// 短絡を置く（`submit()` は `CommandAcceptance{}`＝拒否、他は no-op）。
+//
+// タスク6.3/6.4 のホストテストは、上記5メソッドがまだ存在しなかった時点で
+// 書かれたため、`ControllerStepTestHooks` の friend アクセサ経由で内部の
+// `CommandInput` へ直接指令を投入していた名残がある。本タスクでそのうち
+// submit(WheelVelocityCommand)/setOutputEnabled() 相当の2メソッドは公開
+// API で代替可能になったため、該当テストの呼び出し箇所を公開メソッド経由に
+// 置き換え、friend からは他のどの読み出し手段も持たない内部専用の2つ
+// （lastCommandedDuty/pidIntegral）だけを残した（test_controller_step.cpp
+// 参照）。
 //
 // configure() の検証（要件 15.4）:
 //   `drivetrain_control::validate()`（config.cpp、タスク2.3）で
@@ -237,6 +245,33 @@ class DrivetrainController {
   bool configured() const noexcept { return configured_; }
   const DrivetrainConfig& effectiveConfig() const noexcept { return config_; }  // 要件 15.5
 
+  // 指令入口（CommandInput への委譲。design.md "PublicApi"/"DrivetrainController"
+  // Service Interface、タスク6.5）。`!configured_` のときは CommandInput が
+  // 未構築のため一切触れず、`CommandAcceptance{}`（accepted=false）を返す。
+  CommandAcceptance submit(const BodyVelocityCommand& command) noexcept;
+  CommandAcceptance submit(const WheelVelocityCommand& command) noexcept;
+  // 出力許可（CommandInput への委譲）。`!configured_` のときは no-op。
+  void setOutputEnabled(bool enabled, TimeMs now) noexcept;
+
+  // 保持されている保護状態のうち、解除条件を満たすものだけを解く
+  // （ProtectionSupervisor::resetProtections() への委譲、要件 14.6）。
+  // `!configured_` のときは ProtectionSupervisor が未構築のため no-op。
+  //
+  // ⚠️ 事前条件: 直近の step() 呼び出しの**直後**にのみ呼ぶこと。
+  // ProtectionSupervisor::resetProtections() は、同一制御周期内で
+  // step() が updateLock()/updateLowVoltage()/updateWatchdog() を先に
+  // 呼んで内部のキャッシュ済み検出器状態を最新化していることに依存する
+  // （保護①・②の「解除条件を満たすかどうか」の判定は、その直前の
+  // step() が観測した条件でしか下せない）。step() から十分に間隔が
+  // 空いた状態（例: 別スレッドからの非同期な「解除」コマンド処理など）
+  // で本メソッドを呼ぶと、その間に条件が再び成立していても古いキャッシュ
+  // に基づいて保護を解除してしまう恐れがある。呼び出し側は、本メソッドを
+  // step() の呼び出しへ密結合させ、両者の間に別の操作を挟まないこと。
+  void resetProtections(TimeMs now) noexcept;
+  // 原点と姿勢を再初期化する（Odometry::reset() への委譲、要件 8.3）。
+  // `!configured_` のときは Odometry が未構築のため no-op。
+  void resetOdometry(const Pose2D& pose, TimeMs now) noexcept;
+
   // 制御ステップ。状態を変える公開メソッドはすべて now を取る（要件 3.6）。
   // タスク 6.2「骨格」（configure 未完了時の遮断・過去時刻の短絡・dt
   // 計算・計測速度算出・Odometry 更新）に、タスク 6.3「出力段」
@@ -257,18 +292,17 @@ class DrivetrainController {
   // （旧 lastMeasuredMmS / lastEncoderCounts / odometryState）を削除
   // 済み（test_controller_step.cpp 側で status() 呼び出しへ置き換え）。
   //
-  // 一方 `CommandInput::submit()` / `setOutputEnabled()` は task 6.5 まで
-  // 公開されず、`applyWheelOutputs()` が返す「上限適用後・遮断前」の値
-  // （last_commanded_duty_。status().wheel_duty は最終値でありこれとは別
-  // ―― 本ヘッダ冒頭 status() コメント参照）や VelocityPid の内部積分
-  // （pid_[wheel].get().integral()）は DrivetrainStatus に含まれるフィールド
-  // ではない（design.md が意図的に PID 内部状態を再エクスポート対象から
-  // 外している）ため、status() では代替できない。この4点
-  // （submitWheelVelocities / setOutputEnabled / lastCommandedDuty /
-  // pidIntegral）のためだけに、このテスト専用 friend アクセサを引き続き
-  // 保持する。タスク6.5が公開 submit()/setOutputEnabled() を追加した後は
-  // 前者2つが不要になり、friend 自体の要否を再検討できる想定
-  // （レビュー時に要判断）。
+  // タスク6.5が公開 submit()/setOutputEnabled() を追加したことで、この
+  // friend が仲介していた4点のうち submitWheelVelocities/setOutputEnabled
+  // の2つは公開 API で代替可能になり、test_controller_step.cpp 側の呼び
+  // 出し箇所を置き換えたうえでこの friend からは削除した。残る2点
+  // （lastCommandedDuty/pidIntegral）は、`applyWheelOutputs()` が返す
+  // 「上限適用後・遮断前」の値（last_commanded_duty_。status().wheel_duty
+  // は最終値でありこれとは別 ―― 本ヘッダ冒頭 status() コメント参照）や
+  // VelocityPid の内部積分（pid_[wheel].get().integral()）が
+  // DrivetrainStatus に含まれるフィールドではない（design.md が意図的に
+  // PID 内部状態を再エクスポート対象から外している）ため、公開 API では
+  // 代替できず、このテスト専用 friend アクセサを引き続き保持する。
   friend struct ControllerStepTestHooks;
 
   // ヒープを使わず、既定構築子を持たない型 T を「未構築 or 構築済み」の

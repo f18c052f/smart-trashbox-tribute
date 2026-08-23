@@ -99,6 +99,43 @@ ConfigDiagnostic DrivetrainController::configure(const DrivetrainConfig& config,
   return diagnostic_;  // ok()
 }
 
+CommandAcceptance DrivetrainController::submit(const BodyVelocityCommand& command) noexcept {
+  // 未構築の CommandInput へは一切触れない（status() と同じ方針。
+  // controller.hpp 冒頭コメント参照）。
+  if (!configured_) {
+    return CommandAcceptance{};
+  }
+  return command_input_.get().submit(command);
+}
+
+CommandAcceptance DrivetrainController::submit(const WheelVelocityCommand& command) noexcept {
+  if (!configured_) {
+    return CommandAcceptance{};
+  }
+  return command_input_.get().submit(command);
+}
+
+void DrivetrainController::setOutputEnabled(bool enabled, TimeMs now) noexcept {
+  if (!configured_) {
+    return;
+  }
+  command_input_.get().setOutputEnabled(enabled, now);
+}
+
+void DrivetrainController::resetProtections(TimeMs now) noexcept {
+  if (!configured_) {
+    return;
+  }
+  protection_.get().resetProtections(now);
+}
+
+void DrivetrainController::resetOdometry(const Pose2D& pose, TimeMs now) noexcept {
+  if (!configured_) {
+    return;
+  }
+  odometry_.get().reset(pose, now);
+}
+
 StepResult DrivetrainController::step(TimeMs now) noexcept {
   if (!configured_) {
     // ポートを一切読まない（設定が無い状態でポートへ触れない）。専用の
