@@ -174,7 +174,7 @@
   - _Requirements: 13.1, 13.2, 13.3, 13.4, 13.7, 13.8_
   - _Boundary: CommandWatchdog_
 
-- [ ] 5.5 保護の合成・遮断値の決定・復帰操作を実装する
+- [x] 5.5 保護の合成・遮断値の決定・復帰操作を実装する
   - 保護①②④の検出器を保持し、**「検出器を1回進める」呼び出しと「直近の結果を合成する」呼び出しを別メソッドに分離**する。合成側は検出器を呼び直さない
   - **⚠️ 保護③（出力上限）はここに含めない。** 状態を持たない純関数であり、かつ上限値はPIDの算出直後（合成より前）に必要になるため、制御ステップ側が直接扱う
   - 合成では、設定未完了・出力未許可・指令未着・ウォッチドッグ・低電圧・電圧欠測を**機体全体の遮断理由**として、モータロックのみを**輪ごとの遮断理由**として立てる
@@ -331,4 +331,6 @@
 - **タスク 5.1**: `MotorLockDetector::reset()` は無条件（発火条件が現在も成立しているかを再判定しない）で実装する。design.md の署名が `now` のみを取り、電流の条件を渡さないため構造的に自己判定できない。「解除条件を満たす保護だけを解く」（要件14.6）は `ProtectionSupervisor::resetProtections()`（タスク5.5）の責務。**タスク5.5実装時は、輪の拘束条件が現在も成立しているときに `MotorLockDetector::reset()` を呼ばないことを必ず確認する**
 - **タスク 5.1**: `tests/firmware/test_firmware_boundaries.py` の `_actual_lib_source_paths()` が非再帰的な `glob("*.cpp")` を使っており、サブディレクトリ（`src/protection/` 等）の `.cpp` を検出できていなかった。`rglob("*.cpp")` に修正済み。design.md の File Structure Plan は L7 以降のソースを `protection/` 等のサブディレクトリに置くと定めているため、この修正はタスク5.1が最初に踏んだだけで以降のどのタスクでも必要だった
 - **タスク 5.2**: `LowVoltageProtector` の `Unavailable → Normal` 復帰には `Tripped → Normal` と異なり `latching` の制約が無い（design.md の状態遷移図で確認済み: `Tripped --> Normal` のみ「保持設定が自動解除」の条件を持つ）。`latching=true` でも有効な読み値が復帰し移動平均が復帰閾値以上になれば `kUnavailable` は自己解除する。タスク5.5でこの非対称性を前提に実装すること
+- **タスク 5.5**: `MotorLockDetector::reset()`/`LowVoltageProtector::reset()` はどちらも無条件（自己判定できない）ため、`ProtectionSupervisor::resetProtections()` が「解除条件を満たす保護だけを解く」（要件14.6）というゲーティングを担う。`MotorLockDetector` は latching=true で Tripped に入ると条件の再評価自体を止め、かつ生条件を読むアクセサを持たないため、`ProtectionSupervisor::updateLock()` が同一の閾値判定を**独自に再計算**して `last_lock_condition_[]` にキャッシュしている。これは design.md でロック済みの `MotorLockDetector` インターフェース（4メソッドのみ）を拡張できないための回避策であり、**将来 `motor_lock.cpp` の判定式を変更する際は `supervisor.cpp` の重複箇所も同時に直す必要がある**（コンパイラは同期を強制しない）。将来の design.md 改訂で `MotorLockDetector` に読み取り専用アクセサ（例: `conditionActive()`）を追加しこの重複を解消する余地がある
+- **タスク 5.5**: `resetProtections()` の安全性は、同一制御ステップ内で `updateLock()`/`updateLowVoltage()` が**先に**呼ばれ `last_lock_condition_[]`/`last_voltage_sample_valid_` が最新化されていることに依存する。この呼び出し順序の事前条件は現状コード上に明記されていない。**タスク6（DrivetrainController）で `resetProtections()` を呼ぶ際は、必ず同一ステップの `updateLock()`/`updateLowVoltage()`/`updateWatchdog()` より後に呼ぶこと**（`compose()` と同じ呼び出し順序の制約）
 - **タスク 2.1**: `pio run -e teleop` の並行実行（フォアグラウンドとバックグラウンドを同時に走らせる等）は同一 `.pio/build/teleop` への同時書き込みでファイル破損を招く（`objdump: file format not recognized` 等の紛らわしいエラーになる）。**PlatformIO のビルドは常に1つずつ・フォアグラウンドで実行する**
