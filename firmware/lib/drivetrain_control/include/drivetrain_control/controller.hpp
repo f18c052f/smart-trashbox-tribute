@@ -4,19 +4,21 @@
 // "DrivetrainController", 要件 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 6.5, 12.4,
 // 15.4, 15.5, 17.1, 17.7).
 //
-// ⚠️ タスク 6.2/6.3 スコープ: このヘッダは design.md が定義する
+// ⚠️ タスク 6.2/6.3/6.4 スコープ: このヘッダは design.md が定義する
 // `DrivetrainController` の完全なインターフェースのうち、「制御ステップの
-// 骨格（設定・時刻・計測、タスク6.2）」と「出力段（上限・PID・縮小・遮断・
-// 極性、タスク6.3）」を実装する。以下は未実装で、後続タスクが追加する:
-//   - タスク 6.4: status()/DrivetrainStatus、実測周期・指令反映遅れ
+// 骨格（設定・時刻・計測、タスク6.2）」「出力段（上限・PID・縮小・遮断・
+// 極性、タスク6.3）」「状態スナップショットと下流が使う計測量
+// （status()/DrivetrainStatus、実測周期・指令反映遅れ、タスク6.4）」を
+// 実装する。以下は未実装で、後続タスクが追加する:
 //   - タスク 6.5: submit()/setOutputEnabled()/resetProtections()/
 //     resetOdometry() の公開入口としての配線
 // このため本ヘッダはこれらの公開メソッドをまだ宣言しない
 // （`CommandInput::submit()` へは task 6.5 まで外部から到達できないため、
-// タスク6.3 のホストテストは friend アクセサ経由で内部の `CommandInput` へ
-// 直接指令を投入する。controller.cpp 側のロジックはこの制約を前提にしない
-// ―― `command_input_.get()` を通じて通常どおり呼ぶだけであり、将来 6.5 が
-// 公開 `submit()` を追加しても controller.cpp の変更は不要）。
+// タスク6.3/6.4 のホストテストは friend アクセサ経由で内部の
+// `CommandInput` へ直接指令を投入する。controller.cpp 側のロジックはこの
+// 制約を前提にしない ―― `command_input_.get()` を通じて通常どおり呼ぶ
+// だけであり、将来 6.5 が公開 `submit()` を追加しても controller.cpp の
+// 変更は不要）。
 //
 // configure() の検証（要件 15.4）:
 //   `drivetrain_control::validate()`（config.cpp、タスク2.3）で
@@ -81,6 +83,61 @@
 //   `applyWheelOutputs()` の外に作らない（design.md "DrivetrainController"
 //   Implementation Notes: 2段プロトコルの誤用防止）。
 //
+// status()（タスク 6.4。要件 15.5, 17.1, 17.2, 17.7）:
+//   制御ステップをブロックせず、ポートを読まず、ロックも取らない読み出し
+//   専用のスナップショットを返す `const` メソッド。単一スレッド前提であり、
+//   別タスクから読む場合の同期は呼び出し側の責務（design.md
+//   "DrivetrainController" Invariants）。`!configured_` のときは合成
+//   オブジェクトが未構築（placement new 未実行）のため、これらへ一切
+//   触れずに `DrivetrainStatus{}`（既定値。`configured=false`）を返す。
+//
+//   `last_step_interval_ms`（要件 17.1 実測の制御周期。既存の運動モデルと
+//   同一の単位と定義で扱う対象の1つ）: `step()` が実ステップで計算する
+//   `dt_ms` をそのまま `last_step_interval_ms_` へキャッシュしたものを
+//   返すだけ（新たな計算は持たない）。
+//
+//   `command_apply_latency_ms`（要件 17.1。design.md
+//   "DrivetrainController" Postconditions を正確に踏襲）:
+//   `CommandInput::latched().issued_at_ms` を、毎実ステップ内部で保持して
+//   いる直前値 `last_applied_command_issued_at_ms_` と比較する。
+//     - 変化していれば（＝新しい指令がこのステップで初めて適用された）
+//       `now - latched().issued_at_ms` を計算して `command_apply_latency_ms_`
+//       を更新し、比較用の内部値も新しい `issued_at_ms` へ更新する。
+//     - 変化していなければ、前回の `command_apply_latency_ms_` をそのまま
+//       保持する（次に新しい指令が反映されるまでの遷移の記録として扱う）。
+//   `step()` の呼び出し間隔より短い周期で複数の指令が届いても、比較対象は
+//   常に「その実ステップ時点で `latched()` が返す最新の `issued_at_ms`」
+//   1個だけであるため、途中で上書きされた指令は自然に無視され、最後の
+//   遷移の遅れだけが報告される（design.md "DrivetrainController"
+//   Implementation Notes の3つ目の回帰シナリオ）。
+//   ⚠️ この内部比較値は `DrivetrainStatus` には出さない（design.md
+//   "DrivetrainController" State Management: 「`command_apply_latency_ms`
+//   の遷移検出用に `TimeMs last_applied_command_issued_at_ms_` を内部にのみ
+//   保持する」）。
+//   ⚠️ 実測値から既存の運動モデルのパラメータへの翻訳そのものは持たない
+//   （要件 17.2）。`last_step_interval_ms` / `command_apply_latency_ms`
+//   は単位と定義を揃えた計測素材をそのまま外へ出すだけであり、
+//   `trajectory_sim.DrivetrainParams` への変換は下流（`m2-motion-validation`）
+//   の責務（design.md 対応表 17.1 参照）。
+//
+//   `wheel_duty` は「ゲート適用後・出力極性適用後」の最終値
+//   （`last_result_.outputs.duty[i]`。実際に `MotorOutputPort::write()`
+//   へ渡した値と同一）を報告する。`applyWheelOutputs()` が返す「上限適用後・
+//   遮断前」の値（`last_commanded_duty_`）とは異なる ―― 後者は
+//   `MotorLockDetector::update()` の判定入力としてのみ使う内部専用の値で
+//   あり、`DrivetrainStatus` には現れない（design.md の `DrivetrainStatus`
+//   フィールド一覧にこの区別は明記されていないが、`global_reasons` /
+//   `wheel_reasons` と対にして「実際に何が起きたか」を一貫して報告する
+//   ため、最終値を採用する）。
+//
+//   `battery_milli_volts` / `battery_valid`（平滑後の電圧と妥当性）:
+//   design.md の `ProtectionSupervisor` Service Interface はこの2値を外部へ
+//   転送するアクセサを定義していなかった（`resetProtections()` が内部で
+//   同じ2値を読んでいるだけで、public には出ていなかった）。本タスクは
+//   `ProtectionSupervisor::averagedBatteryMilliVolts()` /
+//   `batteryVoltageValid()` という読み取り専用の転送アクセサを追加し
+//   （supervisor.hpp 参照）、これを経由して取得する。
+//
 // Preconditions: `configure()` が `ok()` を返していること。そうでない場合
 // `step()` は `kNotConfigured` を立てて遮断値を書き出す。
 // Postconditions: `now <= last_step_ms_` のとき、ポートを読まず状態も
@@ -126,12 +183,46 @@
 #include "drivetrain_control/kinematics.hpp"
 #include "drivetrain_control/odometry.hpp"
 #include "drivetrain_control/ports.hpp"
+#include "drivetrain_control/protection/low_voltage.hpp"
 #include "drivetrain_control/protection/pwm_ceiling.hpp"
 #include "drivetrain_control/protection/supervisor.hpp"
 #include "drivetrain_control/types.hpp"
 #include "drivetrain_control/velocity_pid.hpp"
 
 namespace drivetrain_control {
+
+// 読み出し専用スナップショット（design.md "DrivetrainController" State
+// Management、要件 15.5, 17.1, 17.2, 17.7）。L10 にのみ存在する ――
+// `OdometryState`（L6）/ `LowVoltageState`（L7）へ依存するため、L1
+// `types.hpp` には置けない（design.md "Dependency Direction"）。すべて
+// POD・動的確保無し・値でコピー可能（State model）。
+struct DrivetrainStatus {
+  TimeMs      now_ms = 0;
+  bool        configured = false;
+  bool        output_enabled = false;
+  bool        has_valid_command = false;
+  bool        last_command_clamped = false;
+  TimeMs      last_command_at_ms = 0;
+
+  float       wheel_target_mm_s[kWheelCount]   = {0.0f, 0.0f, 0.0f};
+  float       wheel_measured_mm_s[kWheelCount] = {0.0f, 0.0f, 0.0f};
+  float       wheel_duty[kWheelCount]          = {0.0f, 0.0f, 0.0f};
+  std::int64_t encoder_count[kWheelCount]      = {0, 0, 0};
+
+  float           pwm_ceiling = 0.0f;
+  std::int32_t    battery_milli_volts = 0;  // 移動平均後
+  bool            battery_valid = false;
+  LowVoltageState low_voltage_state = LowVoltageState::kNormal;
+
+  BlockMask   global_reasons = 0;
+  BlockMask   wheel_reasons[kWheelCount] = {0, 0, 0};
+
+  OdometryState odometry{};
+
+  // trajectory_sim.DrivetrainParams との対応（要件 17.1）
+  DurationMs  last_step_interval_ms = 0;     // 実測の制御周期
+  DurationMs  command_apply_latency_ms = 0;  // 指令の有効時刻から実際に適用されるまで
+};
 
 class DrivetrainController {
  public:
@@ -153,17 +244,31 @@ class DrivetrainController {
   // MotorOutputPort への書き出し）を続けて実装する。
   StepResult step(TimeMs now) noexcept;
 
+  // 副作用を持たず、ポートを読まず、ロックを取らないスナップショット
+  // （要件 17.7）。単一スレッド前提であり、別タスクから読む場合の同期は
+  // 呼び出し側の責務（本ヘッダ冒頭コメント参照）。
+  DrivetrainStatus status() const noexcept;
+
  private:
-  // タスク6.2/6.3 時点では status()（タスク6.4）が無く、dt→計測速度→
-  // Odometry 更新や出力段（PID/上限/保護/極性）の配線を外部から観測する
-  // 公開手段が無い。同じく `CommandInput::submit()` も公開されていない
-  // （task 6.5）。test_controller_step だけがこの内部状態
-  // （last_measured_mm_s_ / last_encoder_counts_ / odometry_ /
-  // last_commanded_duty_ / command_input_ / pid_ の状態）を読み・指令を
-  // 直接投入できるようにする、テスト専用の friend アクセサ。status() の
-  // 先取り実装ではない（DrivetrainStatus 型もそのフィールドもここでは一切
-  // 定義しない）。タスク6.4/6.5 が該当メソッドを追加した後は不要になる
-  // 想定。
+  // タスク6.4時点で status() が公開する内部状態（last_measured_mm_s_ /
+  // last_encoder_counts_ / odometry_ の値・last_result_ の遮断理由と
+  // 出力）は status() 経由で観測できるようになったため、
+  // ControllerStepTestHooks からこれらに対応する専用アクセサ
+  // （旧 lastMeasuredMmS / lastEncoderCounts / odometryState）を削除
+  // 済み（test_controller_step.cpp 側で status() 呼び出しへ置き換え）。
+  //
+  // 一方 `CommandInput::submit()` / `setOutputEnabled()` は task 6.5 まで
+  // 公開されず、`applyWheelOutputs()` が返す「上限適用後・遮断前」の値
+  // （last_commanded_duty_。status().wheel_duty は最終値でありこれとは別
+  // ―― 本ヘッダ冒頭 status() コメント参照）や VelocityPid の内部積分
+  // （pid_[wheel].get().integral()）は DrivetrainStatus に含まれるフィールド
+  // ではない（design.md が意図的に PID 内部状態を再エクスポート対象から
+  // 外している）ため、status() では代替できない。この4点
+  // （submitWheelVelocities / setOutputEnabled / lastCommandedDuty /
+  // pidIntegral）のためだけに、このテスト専用 friend アクセサを引き続き
+  // 保持する。タスク6.5が公開 submit()/setOutputEnabled() を追加した後は
+  // 前者2つが不要になり、friend 自体の要否を再検討できる想定
+  // （レビュー時に要判断）。
   friend struct ControllerStepTestHooks;
 
   // ヒープを使わず、既定構築子を持たない型 T を「未構築 or 構築済み」の
@@ -286,6 +391,32 @@ class DrivetrainController {
   // マスクされずに検証できるようにするため、メンバとして保持する
   // （friend アクセサ経由。他のどのコンポーネントもこの値を保持しない）。
   float last_commanded_duty_[kWheelCount] = {0.0f, 0.0f, 0.0f};
+
+  // --- タスク 6.4: status() が使う固有状態 -------------------------------
+  // 直近の実ステップの経過時間（要件 17.1「実測の制御周期」）。step() が
+  // 実際に計算した dt_ms をそのままキャッシュするだけであり、ここで新たな
+  // 計算は行わない。
+  DurationMs last_step_interval_ms_ = 0;
+
+  // 指令反映遅れ（要件 17.1）とその遷移検出用の内部値。design.md
+  // "DrivetrainController" State Management: 「command_apply_latency_ms
+  // の遷移検出用に TimeMs last_applied_command_issued_at_ms_ を内部にのみ
+  // 保持する（DrivetrainStatus には出さない）」。configure() が両方を
+  // 0 へ初期化する（WheelTargets の既定値 issued_at_ms=0 と揃える。本
+  // ヘッダ冒頭 status() コメント参照）。
+  TimeMs last_applied_command_issued_at_ms_ = 0;
+  DurationMs command_apply_latency_ms_ = 0;
+
+  // 直近ステップで PwmCeiling::evaluate() が返した上限値。PwmCeiling
+  // 自身は状態を持たない純関数であり戻り値を保持しないため、status() の
+  // pwm_ceiling フィールド用にここでキャッシュする。
+  float last_pwm_ceiling_ = 0.0f;
+
+  // 直近の ProtectionSupervisor::updateLowVoltage() の戻り値。design.md
+  // "ProtectionSupervisor" Implementation Notes: 「DrivetrainStatus.
+  // low_voltage_state は updateLowVoltage() の戻り値を DrivetrainController
+  // がそのまま保存する。GateOutcome に重複して持たせない」。
+  LowVoltageState last_low_voltage_state_ = LowVoltageState::kNormal;
 
   // --- 合成オブジェクト（configure() 成功時のみ構築） --------------------
   // 宣言順 = 構築の依存順（Kinematics が先。Odometry/CommandInput は

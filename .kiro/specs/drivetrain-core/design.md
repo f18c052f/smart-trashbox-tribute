@@ -1238,6 +1238,12 @@ class ProtectionSupervisor {
   // configured / output_enabled / has_command を合成する。検出器は呼び直さない。
   GateOutcome compose(bool configured, bool output_enabled, bool has_command) const noexcept;
 
+  // 内部の LowVoltageProtector が保持する平滑後電圧と妥当性の読み出し専用転送。
+  // DrivetrainStatus.battery_milli_volts / battery_valid を埋めるために
+  // DrivetrainController が使う（要件 17.7）。状態を変更しない。
+  std::int32_t averagedBatteryMilliVolts() const noexcept;
+  bool batteryVoltageValid() const noexcept;
+
   // 保持されている保護状態を解除する。解除条件を満たす保護のみが解ける（要件 14.6）
   void resetProtections(TimeMs now) noexcept;
   // 遮断値の適用。理由が立っている輪のデューティを 0 にする（要件 14.1, 14.2）
@@ -1261,6 +1267,7 @@ class ProtectionSupervisor {
 **Implementation Notes**
 
 - Integration: `DrivetrainStatus.low_voltage_state` は `updateLowVoltage()` の戻り値を `DrivetrainController` がそのまま保存する。`GateOutcome` に重複して持たせない
+- Integration: `averagedBatteryMilliVolts()` / `batteryVoltageValid()` は `DrivetrainStatus.battery_milli_volts` / `battery_valid`（要件 17.7）を埋めるためだけに存在する読み出し専用の転送であり、判定ロジックを持たない。`GateOutcome` には含めない（保護③ PwmCeiling が別途 `DrivetrainController` から直接呼ばれるのと同じ理由で、これらは「保護の合成」ではなく「観測値の中継」に属する）
 - Validation: `updateLock()` を輪ごとに呼ぶ順序（0→1→2）は結果に影響しない（3輪は独立、要件 10.3）。呼び忘れ・二重呼び出しの検出はホストテストの回帰項目とする（`protection_supervisor/`）
 
 ---

@@ -110,6 +110,18 @@ class ProtectionSupervisor {
   // 表現するだけである。
   static void applyGate(const GateOutcome& outcome, WheelOutputs& outputs) noexcept;
 
+  // design.md の ProtectionSupervisor Service Interface（タスク 6.4 で
+  // 追加・同期済み）に定義された読み取り専用の転送アクセサ。
+  // `DrivetrainStatus::battery_milli_volts` / `battery_valid`（要件 17.7）
+  // が要求する「平滑後の電圧と妥当性」は内部の `LowVoltageProtector
+  // low_voltage_`（private）が保持しており、これを `DrivetrainController
+  // ::status()` 用に外部へ転送するためだけに存在する。判定ロジックは
+  // 持たず「保護の合成」ではなく「観測値の中継」に属する（design.md
+  // Implementation Notes 参照）。検出器を進めない・状態を変えない点は
+  // 他の読み取り専用アクセサ（`compose()` 等）と同じ。
+  std::int32_t averagedBatteryMilliVolts() const noexcept { return low_voltage_.averaged_milli_volts(); }
+  bool batteryVoltageValid() const noexcept { return low_voltage_.voltage_valid(); }
+
  private:
   // resetProtections() のゲーティングに使う設定値のキャッシュ
   // （config.lock / config.low_voltage の latching と閾値）。

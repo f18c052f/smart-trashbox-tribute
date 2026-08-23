@@ -11,18 +11,25 @@
 #include "drivetrain_control/types.hpp"
 #include "drivetrain_control/units.hpp"
 
-// drivetrain-core task 6.2/6.3: 制御ステップの骨格（設定・時刻・計測、
-// 6.2）と出力段（上限・PID・縮小・遮断・極性、6.3）を検証するホスト
-// テスト。
+// drivetrain-core task 6.2/6.3/6.4: 制御ステップの骨格（設定・時刻・計測、
+// 6.2）・出力段（上限・PID・縮小・遮断・極性、6.3）・状態スナップショット
+// と下流が使う計測量（status()/DrivetrainStatus、実測周期・指令反映遅れ、
+// 6.4）を検証するホストテスト。
 //
 // design.md "DrivetrainController"（L10）の Preconditions/Postconditions/
-// Invariants のうち、これら2タスクが実装する部分を対象にする。要件 3.1,
-// 3.2, 3.4, 3.5, 3.6, 6.5, 12.4, 13.5, 13.6, 14.1, 14.2, 14.3, 15.4。
+// Invariants のうち、これら3タスクが実装する部分を対象にする。要件 3.1,
+// 3.2, 3.4, 3.5, 3.6, 6.5, 12.4, 13.5, 13.6, 14.1, 14.2, 14.3, 15.4, 15.5,
+// 17.1, 17.2, 17.7。
 //
 // ⚠️ `CommandInput::submit()` / `setOutputEnabled()` はタスク6.5まで
-// `DrivetrainController` の公開面に無いため、タスク6.3のテスト（I〜K）は
-// `ControllerStepTestHooks` の friend アクセサ経由で内部の `CommandInput`
-// へ直接指令を投入する。
+// `DrivetrainController` の公開面に無いため、タスク6.3/6.4のテスト（I〜M）
+// は `ControllerStepTestHooks` の friend アクセサ経由で内部の
+// `CommandInput` へ直接指令を投入する。タスク6.4で `status()` が内部の
+// 計測速度・エンコーダ基準値・オドメトリを公開する読み出し手段になった
+// ため、friend アクセサからはそれらに対応する3メソッド（旧
+// lastMeasuredMmS/lastEncoderCounts/odometryState）を削除し、テストF/Gは
+// `status()` を使うよう置き換えた（friend の残り4メソッドが必要な理由は
+// friend struct 定義直前のコメント参照）。
 //
 // 以下を検証する:
 //   A. configure() 前（未設定）の step() は、ポートに一切触れず、
@@ -68,6 +75,22 @@
 //   K. 1輪だけがモータロック条件（出力指令が閾値以上・計測速度が閾値
 //      以下）の継続で発火したとき、発火した輪だけが遮断値になり、
 //      他の2輪は非ゼロのデューティを保つこと（要件 14.1, 14.2, 14.3）
+//   L. status() は未設定状態では合成オブジェクトへ一切触れず既定値
+//      （configured=false）を返すこと。設定済み状態では最終出力
+//      （wheel_duty・global_reasons・wheel_reasons）・計測速度・エンコーダ
+//      累積カウント・PWM上限・平滑後電圧と妥当性・低電圧状態・オドメトリが
+//      直近の step() の結果と一致し、かつ status() の呼び出し自体がポート
+//      へ一切触れない（読み出し回数が増えない）こと（要件 15.5 の
+//      effectiveConfig 以外の全フィールド、17.7）
+//   M. 指令反映遅れ（command_apply_latency_ms）が、新しい指令が反映された
+//      最初の制御ステップで「現在時刻 - 指令の有効時刻」として算出され、
+//      次に反映が切り替わるまで値が保持されること。また
+//      step() の呼び出し間隔より短い周期で複数の指令が届いても、最後の
+//      遷移の遅れだけが報告されること（要件 17.1。design.md
+//      "DrivetrainController" Implementation Notes の回帰シナリオ）。
+//      実測の制御周期（last_step_interval_ms）が各実ステップの dt と
+//      一致することも併せて確認する（要件 17.1。command_apply_latency_ms
+//      と同じく「既存の運動モデルと同一の単位と定義で扱う」対象）
 
 using drivetrain_control::BlockMask;
 using drivetrain_control::BlockReason;
@@ -76,11 +99,14 @@ using drivetrain_control::ConfigDiagnostic;
 using drivetrain_control::ConfigError;
 using drivetrain_control::DrivetrainConfig;
 using drivetrain_control::DrivetrainController;
+using drivetrain_control::DrivetrainStatus;
+using drivetrain_control::DurationMs;
 using drivetrain_control::EncoderCounts;
 using drivetrain_control::EncoderPort;
 using drivetrain_control::GeometryParams;
 using drivetrain_control::Kinematics;
 using drivetrain_control::kWheelCount;
+using drivetrain_control::LowVoltageState;
 using drivetrain_control::MotorOutputPort;
 using drivetrain_control::BatteryVoltagePort;
 using drivetrain_control::Ports;
@@ -93,16 +119,17 @@ using drivetrain_control::units::kPi;
 
 namespace drivetrain_control {
 
-// タスク6.2/6.3 時点では status()（タスク6.4）も submit()/
-// setOutputEnabled()（タスク6.5）も無く、dt→計測速度→Odometry 更新や
-// 出力段（PID/上限/保護/極性）の配線を外部から観測・駆動する公開手段が
-// 無い。controller.hpp が宣言する friend を通じて、このテストだけが
-// 内部状態を読み・指令を直接投入する（ファイル先頭コメント参照）。
+// タスク6.4時点: status() が計測速度・エンコーダ基準値・オドメトリを公開
+// する読み出し手段になったため、旧 lastMeasuredMmS/lastEncoderCounts/
+// odometryState はこの friend から削除した（呼び出し側は controller.status()
+// を使う）。一方 submit()/setOutputEnabled()（タスク6.5）はまだ無く、
+// applyWheelOutputs() の「上限適用後・遮断前」の値（status().wheel_duty
+// とは異なる最終値以外の内部値）や PID の内部積分は DrivetrainStatus に
+// 含まれないフィールドであるため、これらは引き続き controller.hpp が宣言
+// する friend を通じて、このテストだけが内部状態を読み・指令を直接投入
+// する（ファイル先頭コメント、controller.hpp の friend 宣言直前コメント
+// 参照）。
 struct ControllerStepTestHooks {
-  static const float* lastMeasuredMmS(const DrivetrainController& c) { return c.last_measured_mm_s_; }
-  static const EncoderCounts& lastEncoderCounts(const DrivetrainController& c) { return c.last_encoder_counts_; }
-  static const OdometryState& odometryState(const DrivetrainController& c) { return c.odometry_.get().state(); }
-
   // タスク6.3: applyWheelOutputs() が返した「上限適用後・遮断前」の出力
   // 指令（極性適用前）。
   static const float* lastCommandedDuty(const DrivetrainController& c) { return c.last_commanded_duty_; }
@@ -406,10 +433,13 @@ void test_step_advances_time_computes_measured_speed_and_updates_odometry(void) 
   TEST_ASSERT_TRUE(controller.configure(config, fx.ports(), /*now=*/0).ok());
 
   // configure() 時点のエンコーダ基準値はゼロ初期化されたモック
-  // （MockEncoderPort::counts の既定値）。
-  const EncoderCounts& baseline = ControllerStepTestHooks::lastEncoderCounts(controller);
-  for (std::uint8_t i = 0; i < kWheelCount; ++i) {
-    TEST_ASSERT_EQUAL_INT64(0, baseline.count[i]);
+  // （MockEncoderPort::counts の既定値）。status() 経由で確認する（タスク
+  // 6.4。要件 17.7 の裏取りも兼ねる）。
+  {
+    const DrivetrainStatus baseline_status = controller.status();
+    for (std::uint8_t i = 0; i < kWheelCount; ++i) {
+      TEST_ASSERT_EQUAL_INT64(0, baseline_status.encoder_count[i]);
+    }
   }
 
   // 輪0: 1回転ぶん正転、輪1: 1回転ぶん逆転（polarity=-1 で吸収されて
@@ -443,18 +473,19 @@ void test_step_advances_time_computes_measured_speed_and_updates_odometry(void) 
 
   // カウント差と dt=1.0s から求まる計測速度。1回転 = pi * wheel_diameter_mm
   // ぶんの距離。輪1は生の変位が負だが polarity=-1 で符号が反転し、輪0と
-  // 同じ正の値になる（A/B 逆結線の吸収、要件 6.6）。
+  // 同じ正の値になる（A/B 逆結線の吸収、要件 6.6）。status() 経由で確認
+  // する（タスク6.4）。
   const float expected_speed = kPi * config.encoder.wheel_diameter_mm;  // ≈188.4956 mm/s (dt=1.0s)
-  const float* measured = ControllerStepTestHooks::lastMeasuredMmS(controller);
+  const DrivetrainStatus status_after_step = controller.status();
+  const float* measured = status_after_step.wheel_measured_mm_s;
   TEST_ASSERT_FLOAT_WITHIN(kTight, expected_speed, measured[0]);
   TEST_ASSERT_FLOAT_WITHIN(kTight, expected_speed, measured[1]);
   TEST_ASSERT_FLOAT_WITHIN(kTight, 0.0f, measured[2]);
 
   // エンコーダ基準値が更新されている。
-  const EncoderCounts& after = ControllerStepTestHooks::lastEncoderCounts(controller);
-  TEST_ASSERT_EQUAL_INT64(fx.encoder.counts.count[0], after.count[0]);
-  TEST_ASSERT_EQUAL_INT64(fx.encoder.counts.count[1], after.count[1]);
-  TEST_ASSERT_EQUAL_INT64(fx.encoder.counts.count[2], after.count[2]);
+  TEST_ASSERT_EQUAL_INT64(fx.encoder.counts.count[0], status_after_step.encoder_count[0]);
+  TEST_ASSERT_EQUAL_INT64(fx.encoder.counts.count[1], status_after_step.encoder_count[1]);
+  TEST_ASSERT_EQUAL_INT64(fx.encoder.counts.count[2], status_after_step.encoder_count[2]);
 
   // Odometry が実際に更新されている: 同じ計測速度配列を独立に構築した
   // Kinematics::forward() へ渡した結果と、controller 内部の Odometry が
@@ -462,11 +493,15 @@ void test_step_advances_time_computes_measured_speed_and_updates_odometry(void) 
   // Odometry::update() を正しく呼んでいることの裏取り）。
   const Kinematics reference_kinematics(config.geometry);
   const auto expected_body_velocity = reference_kinematics.forward(measured);
-  const OdometryState& odom = ControllerStepTestHooks::odometryState(controller);
+  const OdometryState& odom = status_after_step.odometry;
   TEST_ASSERT_FLOAT_WITHIN(kTight, expected_body_velocity.vx_mm_s, odom.body_velocity.vx_mm_s);
   TEST_ASSERT_FLOAT_WITHIN(kTight, expected_body_velocity.vy_mm_s, odom.body_velocity.vy_mm_s);
   TEST_ASSERT_FLOAT_WITHIN(kTight, expected_body_velocity.omega_rad_s, odom.body_velocity.omega_rad_s);
   TEST_ASSERT_TRUE(odom.traveled_mm > 0.0f);
+
+  // 実測の制御周期（要件 17.1）: dt = now(1000) - configure()時のnow(0) =
+  // 1000ms がそのまま status() へ反映されている。
+  TEST_ASSERT_EQUAL_INT32(1000, status_after_step.last_step_interval_ms);
 
   TEST_ASSERT_EQUAL_INT(2, fx.encoder.read_count);  // configure() の1回 + このステップの1回
 }
@@ -491,8 +526,15 @@ void test_step_with_same_time_after_a_real_step_does_not_reread_ports(void) {
   TEST_ASSERT_EQUAL_INT(1, battery_read_count_after_first);
   TEST_ASSERT_EQUAL_INT(1, motor_write_count_after_first);
 
-  const float measured0_after_first = ControllerStepTestHooks::lastMeasuredMmS(controller)[0];
-  const EncoderCounts baseline_after_first = ControllerStepTestHooks::lastEncoderCounts(controller);
+  const DrivetrainStatus status_after_first = controller.status();
+  const float measured0_after_first = status_after_first.wheel_measured_mm_s[0];
+  const EncoderCounts baseline_after_first = [&] {
+    EncoderCounts counts{};
+    for (std::uint8_t i = 0; i < kWheelCount; ++i) {
+      counts.count[i] = status_after_first.encoder_count[i];
+    }
+    return counts;
+  }();
 
   // ポートの中身を変える（本来なら次の実ステップで反映されるはずの変化）。
   fx.encoder.counts.count[0] = config.encoder.counts_per_wheel_rev * 100;
@@ -503,8 +545,16 @@ void test_step_with_same_time_after_a_real_step_does_not_reread_ports(void) {
   TEST_ASSERT_EQUAL_INT(2, fx.encoder.read_count);  // 増えていない = 読んでいない
   TEST_ASSERT_EQUAL_INT(battery_read_count_after_first, fx.battery.read_count);  // ReadBatt も短絡で増えない
   TEST_ASSERT_EQUAL_INT(motor_write_count_after_first, fx.motor.write_count);    // Write も短絡で増えない
-  TEST_ASSERT_FLOAT_WITHIN(kTight, measured0_after_first, ControllerStepTestHooks::lastMeasuredMmS(controller)[0]);
-  TEST_ASSERT_EQUAL_INT64(baseline_after_first.count[0], ControllerStepTestHooks::lastEncoderCounts(controller).count[0]);
+  const DrivetrainStatus status_after_second = controller.status();
+  TEST_ASSERT_FLOAT_WITHIN(kTight, measured0_after_first, status_after_second.wheel_measured_mm_s[0]);
+  TEST_ASSERT_EQUAL_INT64(baseline_after_first.count[0], status_after_second.encoder_count[0]);
+  // status() 自体もポートへ触れていないこと（要件 17.7）。
+  TEST_ASSERT_EQUAL_INT(2, fx.encoder.read_count);
+  TEST_ASSERT_EQUAL_INT(battery_read_count_after_first, fx.battery.read_count);
+  TEST_ASSERT_EQUAL_INT(motor_write_count_after_first, fx.motor.write_count);
+  // status() の last_step_interval_ms は短絡では再計算されず、直近の実
+  // ステップ（now=1000, configure()時=now=0）の dt=1000ms のまま。
+  TEST_ASSERT_EQUAL_INT32(1000, status_after_second.last_step_interval_ms);
 
   // StepResult の全フィールドが一致する（要件 3.3 の決定性・要件 3.4 の
   // 「前回の結果をそのまま返す」の直接的な確認）。
@@ -776,6 +826,226 @@ void test_motor_lock_gates_only_the_tripped_wheel(void) {
   TEST_ASSERT_EQUAL_UINT16(0, second.global_reasons);
 }
 
+// ---------------------------------------------------------------------------
+// L: status() は未設定状態では合成オブジェクトへ一切触れず既定値を返し、
+//    設定済み状態では直近の step() の結果と一致するスナップショットを、
+//    ポートへ一切触れずに返す（要件 15.5 以外の DrivetrainStatus 全フィー
+//    ルド、17.7）。
+// ---------------------------------------------------------------------------
+
+void test_status_before_configure_returns_defaults(void) {
+  DrivetrainController controller;
+
+  // configure() を一度も呼んでいない ―― 合成オブジェクトは未構築。
+  // status() がこれらへ触れれば未定義動作になるはずだが、既定値
+  // （configured=false）を返すだけで済むことを確認する。
+  const DrivetrainStatus status = controller.status();
+  TEST_ASSERT_FALSE(status.configured);
+  TEST_ASSERT_FALSE(status.output_enabled);
+  TEST_ASSERT_FALSE(status.has_valid_command);
+  TEST_ASSERT_EQUAL_UINT16(0, status.global_reasons);
+}
+
+void test_status_reflects_final_snapshot_and_does_not_touch_ports(void) {
+  DrivetrainController controller;
+  Fixture fx;
+
+  DrivetrainConfig config = makeValidConfig();
+  // ki=kd=0 にし、raw = kp * (target - measured) が厳密に求まるようにする
+  // （test_pwm_ceiling_shrinks_all_wheels_by_the_same_ratio と同じ流儀）。
+  for (std::uint8_t i = 0; i < kWheelCount; ++i) {
+    config.pid[i] = {/*kp=*/0.001f, /*ki=*/0.0f, /*kd=*/0.0f, /*integral_limit=*/1.0f};
+  }
+  config.output.polarity[0] = 1;
+  config.output.polarity[1] = 1;
+  config.output.polarity[2] = 1;
+  // ceiling = min(absolute_max_duty, reference/measured) = min(1.0, 6300/12600)
+  // = 0.5 ちょうど。以下の raw の絶対値最大(0.2)より大きいので縮小は起きない
+  // （縮小そのものは test_pwm_ceiling_shrinks_all_wheels_by_the_same_ratio が
+  // 別途検証済み。ここでは pwm_ceiling フィールドの配線だけを見る）。
+  config.pwm_ceiling.reference_milli_volts = 6300;
+  // このテストの関心はロック・ウォッチドッグではないため、条件に触れない
+  // 値へ離しておく。
+  config.watchdog.timeout_ms = 100000;
+
+  TEST_ASSERT_TRUE(controller.configure(config, fx.ports(), /*now=*/0).ok());
+
+  fx.battery.sample = VoltageSample{/*valid=*/true, /*milli_volts=*/12600};
+  // 輪0だけ1回転ぶん正転させ、計測速度とオドメトリの配線を同時に確認する
+  // （test_step_advances_time_computes_measured_speed_and_updates_odometry
+  // と同じ値）。
+  fx.encoder.counts.count[0] = config.encoder.counts_per_wheel_rev;  // 836
+  fx.encoder.counts.count[1] = 0;
+  fx.encoder.counts.count[2] = 0;
+
+  ControllerStepTestHooks::setOutputEnabled(controller, /*enabled=*/true, /*now=*/0);
+
+  WheelVelocityCommand command{};
+  command.wheel_mm_s[0] = 100.0f;
+  command.wheel_mm_s[1] = 150.0f;
+  command.wheel_mm_s[2] = 200.0f;
+  command.issued_at_ms = 0;
+  const CommandAcceptance acceptance = ControllerStepTestHooks::submitWheelVelocities(controller, command);
+  TEST_ASSERT_TRUE(acceptance.accepted);
+  TEST_ASSERT_FALSE(acceptance.clamped);
+
+  const StepResult result = controller.step(/*now=*/1000);
+
+  // このシナリオでは理由が一切立たない前提（後続の status() 比較の土台）。
+  TEST_ASSERT_EQUAL_UINT16(0, result.global_reasons);
+  for (std::uint8_t i = 0; i < kWheelCount; ++i) {
+    TEST_ASSERT_EQUAL_UINT16(0, result.wheel_reasons[i]);
+  }
+
+  const int encoder_read_count_after_step = fx.encoder.read_count;
+  const int motor_write_count_after_step = fx.motor.write_count;
+  const int battery_read_count_after_step = fx.battery.read_count;
+
+  const DrivetrainStatus status = controller.status();
+
+  // status() 自体はポートへ一切触れない（要件 17.7。複数回呼んでも同じ）。
+  (void)controller.status();
+  (void)controller.status();
+  TEST_ASSERT_EQUAL_INT(encoder_read_count_after_step, fx.encoder.read_count);
+  TEST_ASSERT_EQUAL_INT(motor_write_count_after_step, fx.motor.write_count);
+  TEST_ASSERT_EQUAL_INT(battery_read_count_after_step, fx.battery.read_count);
+
+  TEST_ASSERT_TRUE(status.configured);
+  TEST_ASSERT_TRUE(status.output_enabled);
+  TEST_ASSERT_TRUE(status.has_valid_command);
+  TEST_ASSERT_FALSE(status.last_command_clamped);
+  TEST_ASSERT_EQUAL_INT64(0, status.last_command_at_ms);
+  TEST_ASSERT_EQUAL_INT64(1000, status.now_ms);
+
+  // 輪ごとの目標速度は指令のまま（クランプ無し）。
+  TEST_ASSERT_FLOAT_WITHIN(kTight, 100.0f, status.wheel_target_mm_s[0]);
+  TEST_ASSERT_FLOAT_WITHIN(kTight, 150.0f, status.wheel_target_mm_s[1]);
+  TEST_ASSERT_FLOAT_WITHIN(kTight, 200.0f, status.wheel_target_mm_s[2]);
+
+  // 計測速度: 輪0だけ1回転ぶん(dt=1.0s)。
+  const float expected_speed0 = kPi * config.encoder.wheel_diameter_mm;
+  TEST_ASSERT_FLOAT_WITHIN(kTight, expected_speed0, status.wheel_measured_mm_s[0]);
+  TEST_ASSERT_FLOAT_WITHIN(kTight, 0.0f, status.wheel_measured_mm_s[1]);
+  TEST_ASSERT_FLOAT_WITHIN(kTight, 0.0f, status.wheel_measured_mm_s[2]);
+
+  // デューティ: status().wheel_duty は「ゲート適用後・出力極性適用後」の
+  // 最終値であり、StepResult.outputs.duty と一致する（要件 17.7 の裏取り。
+  // wheel_duty はここでは result.outputs.duty を正としてそのまま比較する
+  // ―― raw = kp*(target-measured) の手計算は他テストで既に検証済み）。
+  for (std::uint8_t i = 0; i < kWheelCount; ++i) {
+    TEST_ASSERT_EQUAL_FLOAT(result.outputs.duty[i], status.wheel_duty[i]);
+  }
+  // 実際に PID が駆動していること（このテストが何も検証していない状態を
+  // 避けるための最低限の裏取り）。
+  TEST_ASSERT_TRUE(status.wheel_duty[1] > 0.0f);
+
+  // エンコーダ累積カウント。
+  TEST_ASSERT_EQUAL_INT64(fx.encoder.counts.count[0], status.encoder_count[0]);
+  TEST_ASSERT_EQUAL_INT64(fx.encoder.counts.count[1], status.encoder_count[1]);
+  TEST_ASSERT_EQUAL_INT64(fx.encoder.counts.count[2], status.encoder_count[2]);
+
+  // PWM 上限: min(1.0, 6300/12600) = 0.5。
+  TEST_ASSERT_FLOAT_WITHIN(kTight, 0.5f, status.pwm_ceiling);
+
+  // 平滑後の電圧と妥当性: 単一サンプルの移動平均はサンプル自身に一致する。
+  TEST_ASSERT_EQUAL_INT32(12600, status.battery_milli_volts);
+  TEST_ASSERT_TRUE(status.battery_valid);
+  TEST_ASSERT_TRUE(status.low_voltage_state == LowVoltageState::kNormal);
+
+  // 遮断理由: StepResult と一致する（このシナリオでは両方ゼロ）。
+  TEST_ASSERT_EQUAL_UINT16(result.global_reasons, status.global_reasons);
+  for (std::uint8_t i = 0; i < kWheelCount; ++i) {
+    TEST_ASSERT_EQUAL_UINT16(result.wheel_reasons[i], status.wheel_reasons[i]);
+  }
+
+  // オドメトリ: 同じ計測速度配列を独立に構築した Kinematics::forward() の
+  // 結果と一致する。
+  const Kinematics reference_kinematics(config.geometry);
+  const auto expected_body_velocity = reference_kinematics.forward(status.wheel_measured_mm_s);
+  TEST_ASSERT_FLOAT_WITHIN(kTight, expected_body_velocity.vx_mm_s, status.odometry.body_velocity.vx_mm_s);
+  TEST_ASSERT_FLOAT_WITHIN(kTight, expected_body_velocity.vy_mm_s, status.odometry.body_velocity.vy_mm_s);
+  TEST_ASSERT_FLOAT_WITHIN(kTight, expected_body_velocity.omega_rad_s, status.odometry.body_velocity.omega_rad_s);
+  TEST_ASSERT_TRUE(status.odometry.traveled_mm > 0.0f);
+
+  // 実測の制御周期（要件 17.1）: dt = 1000 - 0。
+  TEST_ASSERT_EQUAL_INT32(1000, status.last_step_interval_ms);
+}
+
+// ---------------------------------------------------------------------------
+// M: 指令反映遅れ（command_apply_latency_ms）は、指令が latched() へ反映
+//    された最初の制御ステップで算出され、次の反映まで保持される。
+//    step() の呼び出し間隔より短い周期で複数の指令が届いても、最後の遷移
+//    の遅れだけが報告される（要件 17.1）。実測の制御周期（同じく要件
+//    17.1）も併せて確認する。
+// ---------------------------------------------------------------------------
+
+void test_command_apply_latency_computed_on_first_step_and_held_until_next_change(void) {
+  DrivetrainController controller;
+  Fixture fx;
+
+  DrivetrainConfig config = makeValidConfig();
+  // ロック・ウォッチドッグがこのテストの関心を横取りしないよう離しておく。
+  config.watchdog.timeout_ms = 100000;
+  fx.battery.sample = VoltageSample{/*valid=*/true, /*milli_volts=*/12600};
+
+  TEST_ASSERT_TRUE(controller.configure(config, fx.ports(), /*now=*/0).ok());
+
+  // configure() 直後（実ステップ未経過）: まだ一度も指令が反映されていない
+  // ため、command_apply_latency_ms は既定値のまま。
+  TEST_ASSERT_EQUAL_INT32(0, controller.status().command_apply_latency_ms);
+
+  // 指令Aを issued_at_ms=50 で投入する（起動後最初の指令なので無条件で
+  // 受理される）。
+  WheelVelocityCommand command_a{};
+  command_a.wheel_mm_s[0] = 10.0f;
+  command_a.wheel_mm_s[1] = 10.0f;
+  command_a.wheel_mm_s[2] = 10.0f;
+  command_a.issued_at_ms = 50;
+  TEST_ASSERT_TRUE(ControllerStepTestHooks::submitWheelVelocities(controller, command_a).accepted);
+
+  // 1回目の実ステップ(now=120): 指令Aがこのステップで初めて反映される。
+  // command_apply_latency_ms = now(120) - issued_at_ms(50) = 70。
+  controller.step(/*now=*/120);
+  DrivetrainStatus status = controller.status();
+  TEST_ASSERT_EQUAL_INT32(70, status.command_apply_latency_ms);
+  TEST_ASSERT_EQUAL_INT32(120, status.last_step_interval_ms);  // dt = 120 - 0(configure時)
+
+  // 2回目の実ステップ(now=200): 新しい指令を投入していないため、
+  // latched().issued_at_ms は変化しない ―― 値が保持される。
+  controller.step(/*now=*/200);
+  status = controller.status();
+  TEST_ASSERT_EQUAL_INT32(70, status.command_apply_latency_ms);  // 保持
+  TEST_ASSERT_EQUAL_INT32(80, status.last_step_interval_ms);     // dt = 200 - 120
+
+  // step() の呼び出し間隔(200→300)より短い周期で指令B(issued_at_ms=210)・
+  // 指令C(issued_at_ms=220)が届く ―― どちらも step() を経由せずに latched()
+  // を上書きする。次の実ステップで latched() が返すのは指令Cだけである。
+  WheelVelocityCommand command_b{};
+  command_b.wheel_mm_s[0] = 20.0f;
+  command_b.wheel_mm_s[1] = 20.0f;
+  command_b.wheel_mm_s[2] = 20.0f;
+  command_b.issued_at_ms = 210;
+  TEST_ASSERT_TRUE(ControllerStepTestHooks::submitWheelVelocities(controller, command_b).accepted);
+
+  WheelVelocityCommand command_c{};
+  command_c.wheel_mm_s[0] = 30.0f;
+  command_c.wheel_mm_s[1] = 30.0f;
+  command_c.wheel_mm_s[2] = 30.0f;
+  command_c.issued_at_ms = 220;
+  TEST_ASSERT_TRUE(ControllerStepTestHooks::submitWheelVelocities(controller, command_c).accepted);
+
+  // 3回目の実ステップ(now=300): 反映されるのは指令Cのみ。
+  // command_apply_latency_ms = now(300) - issued_at_ms(220) = 80。
+  // 指令Bの遅れ(300-210=90)ではないこと、保持されていた70でもないことを
+  // 確認する ―― 「最後の遷移の遅れ」だけが報告される（design.md
+  // "DrivetrainController" Implementation Notes 3つ目の回帰シナリオ）。
+  controller.step(/*now=*/300);
+  status = controller.status();
+  TEST_ASSERT_EQUAL_INT32(80, status.command_apply_latency_ms);
+  TEST_ASSERT_EQUAL_INT32(100, status.last_step_interval_ms);  // dt = 300 - 200
+  TEST_ASSERT_EQUAL_INT64(220, status.last_command_at_ms);
+}
+
 int main(int argc, char **argv) {
   (void)argc;
   (void)argv;
@@ -794,6 +1064,9 @@ int main(int argc, char **argv) {
   RUN_TEST(test_pwm_ceiling_shrinks_all_wheels_by_the_same_ratio);
   RUN_TEST(test_watchdog_trip_zeroes_pid_internal_state_not_just_gated_output);
   RUN_TEST(test_motor_lock_gates_only_the_tripped_wheel);
+  RUN_TEST(test_status_before_configure_returns_defaults);
+  RUN_TEST(test_status_reflects_final_snapshot_and_does_not_touch_ports);
+  RUN_TEST(test_command_apply_latency_computed_on_first_step_and_held_until_next_change);
 
   return UNITY_END();
 }

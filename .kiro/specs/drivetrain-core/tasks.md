@@ -220,7 +220,7 @@
   - _Boundary: DrivetrainController_
   - _Depends: 4.2, 5.3, 5.5_
 
-- [ ] 6.4 状態スナップショットと下流が使う計測量を実装する
+- [x] 6.4 状態スナップショットと下流が使う計測量を実装する
   - 制御ステップをブロックせず、ポートを読まず、ロックも取らない読み出し専用のスナップショットを提供する。単一スレッド前提であり、別タスクから読む場合の同期は呼び出し側の責務であることを契約として明記する
   - スナップショットに、輪ごとの目標速度・計測速度・デューティ・累積カウント、出力上限、平滑後の電圧と妥当性、低電圧の状態、遮断理由、オドメトリの状態を含める
   - **実効的に適用されているパラメータを実行開始時に確認できる**読み出しを設ける
@@ -336,4 +336,5 @@
 - **タスク 6.2**: `Kinematics`/`Odometry`/`CommandInput`/`ProtectionSupervisor`/`VelocityPid` はデフォルトコンストラクタを持たないため、`DrivetrainController`（デフォルト構築可能・`configure()` 成功後にこれらを構築）は `alignas(T) std::byte storage_[sizeof(T)]` へのプレースメント new で遅延構築する `LazySlot<T>` ヘルパーを使う。**`get()` は必ず `std::launder(reinterpret_cast<T*>(&storage_))` を経由すること**（`Odometry`/`CommandInput` は `const Kinematics&` 参照メンバを持つため、再構築後のアクセスに `std::launder` を欠くと `[basic.life]p8` 違反の未定義動作になる。`emplace()` 直後の placement-new が返すポインタ自体は例外でランダリング不要）。`storage_` は `unsigned char[]` ではなく `std::byte[]` を使う（`unsigned ` の字面がタスク8の固定幅整数トークン検査と衝突するため）
 - **タスク 6.2**: `DrivetrainController` の copy/move は `= delete` する（参照メンバを持つ内部オブジェクトのメンバワイズコピーは参照先を誤らせるため）。`configure()` は non-null な3ポートの検証も行うが、null ポートに対応する専用の `ConfigField` 列挙子が無いため `ConfigError::kOutOfRange` ＋ `ConfigDiagnostic::index`（0=encoder/1=motor/2=battery）を暫定的に流用している。**タスク6.5で公開エラー診断面を確定する前に、専用の列挙子（例: `kPortsEncoderNull` 等）を追加するか検討すること**
 - **タスク 6.3**: ウォッチドッグ発火中は `compute(0, measured, dt)` ではなく `holdReset()` が compute/commit ペアを**完全に置き換える**（`VelocityPid` の Precondition「holdReset() を呼んだステップでは compute/commit のどちらも呼ばない」と、design.md の「PID を holdReset に置く」という文言から）。`CommandWatchdog` は `has_command==false` のとき無条件に `tripped()==true` になるため、`kNoCommandYet` は常に `kCommandTimeout` と同時に立つ（設計上の帰結であり不具合ではない）
+- **タスク 6.4**: `ProtectionSupervisor` に `averagedBatteryMilliVolts()`/`batteryVoltageValid()`（`DrivetrainStatus.battery_milli_volts`/`battery_valid` を埋めるための読み取り専用転送）を追加し、design.md の Service Interface へも同期済み。**既に承認済みタスクのインターフェースを拡張する場合は、実装と同時に design.md も更新すること**（黙って拡張してレビュー任せにしない）。また `uv run --all-extras --group dev pytest` は WSL ブリッジ経由でのみ到達可能（Windows ネイティブの Bash/PowerShell には `uv` が無い）。ネイティブ側で `uv` が見つからないことを理由に回帰検証を省略しない
 - **タスク 2.1**: `pio run -e teleop` の並行実行（フォアグラウンドとバックグラウンドを同時に走らせる等）は同一 `.pio/build/teleop` への同時書き込みでファイル破損を招く（`objdump: file format not recognized` 等の紛らわしいエラーになる）。**PlatformIO のビルドは常に1つずつ・フォアグラウンドで実行する**
