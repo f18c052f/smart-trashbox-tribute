@@ -45,8 +45,9 @@
 //   ポインタ」という定義域の外）を流用し、`ConfigField` は該当が無いため
 //   `kNone` のまま、`ConfigDiagnostic::index` でどのポートが null かを
 //   表す（0=encoder, 1=motor, 2=battery）。専用の enum 値
-//   （例: `ConfigField::kPortsEncoder` 等）を `errors.hpp` へ追加すること
-//   は本タスクの範囲外と判断し、行っていない（レビュー時に要判断）。
+//   （例: `ConfigField::kPortsEncoder` 等）の追加は、機能上の実害がなく
+//   具体的な下流ニーズも無いため、feature 検証時点で「現状維持」と最終
+//   判断した（追加しない）。
 //
 // 時刻駆動（要件 3.1, 3.2, 3.6）:
 //   状態を変えるすべての公開入口は `TimeMs now` を引数に取り、現在時刻を

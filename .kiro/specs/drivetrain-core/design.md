@@ -217,8 +217,7 @@ L0 units, errors
 firmware/
 ├── platformio.ini                       # 3環境の唯一の定義元。プラットフォームを zip URL で pin
 ├── CMakeLists.txt                       # IDF ルート。EXTRA_COMPONENT_DIRS で純ロジックを直接指す
-├── sdkconfig.defaults                   # 両ファーム共通
-├── sdkconfig.defaults.teleop            # BT 有効（実際の有効化は teleop-bringup）
+├── sdkconfig.defaults                   # 両ファーム共通。teleop はこれ単独を使う（専用ファイルは作らない、下記注記参照）
 ├── sdkconfig.defaults.production        # BT / Wi-Fi を無効化（要件 1.4）
 ├── lib/
 │   ├── drivetrain_control/              # ★純ロジック。3環境すべてから同一ソースとしてリンクされる
@@ -300,6 +299,7 @@ tests/
 - ルート `CMakeLists.txt` の `EXTRA_COMPONENT_DIRS` は **`lib/drivetrain_control` を直接指す**。`lib/` 全体を指さないことで `lib/test_support/` がファームウェアへ混入する経路が存在しなくなる（要件 16.3）
 - `build_profile.hpp` は `src/`（アプリ層）に置く。**`lib/drivetrain_control/` にビルド構成の `#ifdef` を1つも置かない**ことで、要件 1.2 の「3構成すべてから同一のソース」を字義どおり満たす
 - ヘッダのみで完結する部品（`units` / `errors` / `types` / `ports`）に `.cpp` を作らない。`CMakeLists.txt` の `SRCS` と `src/*.cpp` の集合が一致することを静的検査で回帰させる
+- `sdkconfig.defaults.teleop` は作らない。`[env:teleop]` は `SDKCONFIG_DEFAULTS` を上書きせず `sdkconfig.defaults` 単独を使う（無線は無効のまま）。Bluetooth の有効化は本 Spec の境界外であり `teleop-bringup` の責務（`platformio.ini` の `[env:teleop]` コメントに明記）
 
 ### Modified Files
 
