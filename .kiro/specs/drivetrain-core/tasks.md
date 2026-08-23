@@ -99,7 +99,7 @@
   - _Requirements: 11.7, 15.6_
   - _Boundary: VoltageScaler_
 
-- [ ] 3.3 (P) 3輪オムニの逆運動学と順運動学を実装する
+- [x] 3.3 (P) 3輪オムニの逆運動学と順運動学を実装する
   - 各輪の取付角と機体中心からの距離をパラメータとして受け取り、設定時に**逆運動学の行列とその逆行列を1度だけ構築**する。三角関数の評価はこの1回に閉じ、制御ループ内では行列積のみを行う
   - **輪番号と符号の対応をここで定義し、実装内に重複させない**
   - 120度等配置を安全に組み立てる補助を用意し、三角関数の手書きを不要にする
@@ -325,4 +325,5 @@
 - **タスク 1.3**: `tests/firmware/test_firmware_boundaries.py` を追加。この環境の `uv` venv は既定（`--group dev` のみ）だと `numpy` を要する既存26ファイル（`sensing_foundation`/`flying_object_tracking`/`world_frame_calibration`）の収集に失敗する。**リポジトリ全体のリグレッションは `uv run --all-extras --group dev pytest tests -q` で回す**（`tests/firmware` 単体は `--all-extras` 不要）。これは本 Spec が持ち込んだ問題ではなく既存の環境構成に起因する
 - **タスク 1.3**: design.md の FirmwareBoundaryCheck が挙げる残りの項目（禁止 include・禁止トークン・型トークン・依存方向・`test_support` 参照検出）はタスク8の範囲。タスク1.3はビルド構成（`platformio.ini`/`CMakeLists.txt`/`sdkconfig.defaults*`）のみを検査する
 - **タスク 3.2**: `VoltageScaler::toMilliVolts` は `float`/`double` を一切使わず `int64_t` の整数演算のみで区分線形補間する（非等分割の内挿点は「四捨五入（0から遠い方へ）」）。テーブル点上での厳密一致を構造的に保証する
+- **タスク 3.3**: `config.cpp`（タスク2.3）は `[-sinα, cosα, R]` 行と行列式の非退化判定を独自にインライン実装している。これは design.md の依存方向（L2 は L0-L1 のみに依存、L5 kinematics は L0-L2 に依存）により `config.cpp` が `Kinematics` を呼べないための**設計上やむを得ない重複**であり、タスク3.3の欠陥ではない。将来、両者が依存できる層に行列式計算を共有関数として括り出す余地はあるが、それは新規の設計変更であり本タスクの範囲外
 - **タスク 2.1**: `pio run -e teleop` の並行実行（フォアグラウンドとバックグラウンドを同時に走らせる等）は同一 `.pio/build/teleop` への同時書き込みでファイル破損を招く（`objdump: file format not recognized` 等の紛らわしいエラーになる）。**PlatformIO のビルドは常に1つずつ・フォアグラウンドで実行する**
