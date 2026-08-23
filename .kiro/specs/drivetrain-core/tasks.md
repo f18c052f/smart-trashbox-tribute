@@ -19,7 +19,7 @@
   - 観測可能な完了状態: ホストテストが完走し、**かつ**テレオペ用・本番用の両ファームウェアがリンクまで到達することの3点すべてが揃う
   - _Requirements: 1.1, 1.2, 1.5, 1.6, 1.7, 16.7_
 
-- [ ] 1.2 テレオペ用ビルドと本番用ビルドを排他にし、本番から無線を排除する
+- [x] 1.2 テレオペ用ビルドと本番用ビルドを排他にし、本番から無線を排除する
   - アプリ層に、ビルド構成マクロが「ちょうど1つだけ定義されている」ことを検査するヘッダを置く。両方定義／どちらも未定義のときはコンパイル時に失敗させる
   - 各環境のビルドフラグで、対応するビルド構成マクロを1つだけ定義する
   - 本番用ビルドの設定で無線機能を無効化し、無線関連の外部依存を1つも持たせない。テレオペ専用ソースの置き場をビルド対象から除外する設定を入れる
@@ -319,3 +319,6 @@
 - **タスク 1.1**: `pio test` はディレクトリ名が `test_` で始まるものだけをテストスイートとして認識する（`platformio/test/helpers.py` の `list_test_names` で確認済み）。design.md の File Structure Plan が示す `test/native/units/` `test/native/kinematics/` 等のディレクトリ名は**このままでは `pio test` に一切収集されない**。以降のタスク（2.x〜7.x）で `test/native/` `test/embedded/` 配下にディレクトリを作る際は、design.md の名称の先頭に `test_` を補う（例: `units/` → `test_units/`）。テストが「収集されず0件パスした」形の静かな失敗になり得るため要注意
 - **タスク 1.1**: `firmware/CMakeLists.txt` で `EXTRA_COMPONENT_DIRS` を設定する際は `set(...)` ではなく `list(APPEND EXTRA_COMPONENT_DIRS ...)` を使うこと。PlatformIO の espidf ビルダーが `PROJECT_SRC_DIR`（`firmware/src`）を含む `-DEXTRA_COMPONENT_DIRS` を独自に注入しており、`set()` で上書きすると `Couldn't find the main target of the project!` で失敗する
 - **タスク 1.1**: `firmware/test/embedded/` 配下の Unity テストは `extern "C" void app_main(void)` を定義する（`native` 側の素の `main()` とは異なる。FreeRTOS の起動コードが `app_main()` を直接呼ぶため）
+- **タスク 1.2**: `CONFIG_ESP_WIFI_ENABLED` は classic ESP32 では実プロンプトを持たない Kconfig シンボル（`default y if SOC_WIFI_SUPPORTED` で無条件 `y`）であり、`sdkconfig.defaults*` へどう書いても無効。**本番ビルドから Wi-Fi を実際に除外するのは `firmware/CMakeLists.txt` の `COMPONENTS` allowlist**（`production` 環境限定で `list(APPEND COMPONENTS "src" "drivetrain_control" "__pio_env")`）であり、`sdkconfig.defaults.production` の `CONFIG_BT_ENABLED=n` は Bluetooth には効くが Wi-Fi には効かない別経路。`EXCLUDE_COMPONENTS` は `wpa_supplicant` 等の推移的 `PRIV_REQUIRES` により実際には除外できないことを実測済み（採用せず）
+- **タスク 1.2**: `build_src_filter` は `framework = espidf` では PlatformIO のビルドスクリプトが無視する（未サポート）。テレオペ専用ソースの除外は代わりに、ビルドプロファイルの環境変数を `firmware/src/CMakeLists.txt` が読んで `src/teleop/*.cpp` の glob を出し入れする方式（`firmware/scripts/set_build_profile_cmake_env.py`）で実現している
+- **タスク 1.2**: `production` の `COMPONENTS` allowlist は現在 `src` / `drivetrain_control` / `__pio_env`（PlatformIO 内部の必須ダミーコンポーネント）の3つのみ。**以降のタスクで `production` 側に実ペリフェラル（`esp_driver_pcnt` 等）を使うコードが増えたら、このリストへ明示的に追加する必要がある**（positive list のため、追加しないと該当コンポーネントがビルドから静かに落ちる）。`teleop` 環境はこの allowlist の対象外（デフォルトのコンポーネント自動探索のまま）

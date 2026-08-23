@@ -1,3 +1,4 @@
+#include "build_profile.hpp"
 #include "drivetrain_control/drivetrain_control.hpp"
 
 // Minimal app-layer entry point for drivetrain-core task 1.1
