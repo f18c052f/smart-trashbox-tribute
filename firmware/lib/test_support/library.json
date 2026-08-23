@@ -1,0 +1,9 @@
+{
+  "name": "test_support",
+  "version": "0.1.0",
+  "description": "drivetrain-core task 7.1: host-only wheel-response plant model and fake Ports (native environment only). Deliberately has NO CMakeLists.txt, so ESP-IDF's component search (EXTRA_COMPONENT_DIRS -> lib/drivetrain_control only) never discovers this directory and it is never linked into any firmware build. See requirements.md 16.3 and design.md 'File Structure Plan'.",
+  "build": {
+    "srcDir": "src"
+  },
+  "includeDir": "include"
+}

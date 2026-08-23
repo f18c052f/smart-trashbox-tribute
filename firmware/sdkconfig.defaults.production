@@ -1,0 +1,49 @@
+# drivetrain-core task 1.2: production-only ESP-IDF sdkconfig defaults.
+# Disables the radio stack so the production build never links Bluetooth
+# (requirements.md 1.4; design.md BuildSkeleton state row "本番へ無線を
+# 入れない（要件 1.4）").
+#
+# Applied on top of the shared sdkconfig.defaults via platformio.ini
+# [env:production] board_build.cmake_extra_args
+# (-DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.production").
+#
+# CONFIG_BT_ENABLED=n: verified effective. bt/Kconfig declares a real
+# user-visible prompt (`bool "Bluetooth"`), so this default is honored;
+# the bt component registers with zero sources
+# (esp-idf/tools/cmake/component.cmake register_config_only_component
+# path) and firmware.map for the production build contains zero
+# references to libbt.a. Verified by grepping the merged
+# firmware/sdkconfig.production for "CONFIG_BT_ENABLED" (shows "# ...  is
+# not set") and firmware/.pio/build/production/firmware.map for "libbt.a"
+# (zero matches) after a clean `pio run -e production`.
+#
+# ⚠️ CONFIG_ESP_WIFI_ENABLED=n is deliberately NOT set here, unlike what
+# design.md's BuildSkeleton state row literally names. Verified empirically
+# against the pinned pioarduino platform-espressif32 55.03.311 (ESP-IDF
+# 5.5.5) toolchain: esp_wifi/Kconfig declares
+# `config ESP_WIFI_ENABLED` / `bool` / `default y if SOC_WIFI_SUPPORTED`
+# with NO prompt, and soc/esp32/include/soc/Kconfig.soc_caps.in declares
+# `config SOC_WIFI_SUPPORTED` / `bool` / `default y` unconditionally (also
+# no prompt) for the classic ESP32 target. Per standard Kconfig semantics,
+# a symbol without a prompt has its value derived entirely from its
+# `default` expression -- any sdkconfig.defaults/.config assignment to it
+# is silently ignored.
+#
+# The actual fix lives at the CMake level instead: firmware/CMakeLists.txt
+# sets a `COMPONENTS` allowlist for [env:production] (requirements.md 1.4).
+# See the comment there for why a positive allowlist was needed (a
+# `EXCLUDE_COMPONENTS` attempt was verified NOT to work: unrelated
+# still-seeded components such as wpa_supplicant unconditionally
+# `PRIV_REQUIRES ... esp_wifi`, so ESP-IDF's requirement-expansion re-adds
+# esp_wifi regardless of the exclusion). With that allowlist in place,
+# firmware.map for the production build has zero libesp_wifi.a / libbt.a /
+# libwpa_supplicant.a / libesp_phy.a references.
+#
+# CONFIG_BT_ENABLED=n is kept below as-is: it is what keeps the `bt`
+# component config-only (zero sources) on the rare path where something
+# ever adds `bt` back to the production COMPONENTS allowlist, and it is
+# also directly required by requirements.md 1.4 wording. It is not, by
+# itself, sufficient for Wi-Fi (see above) or even for keeping `bt`'s own
+# component *out* of the build entirely -- that part is now the
+# COMPONENTS allowlist's job.
+CONFIG_BT_ENABLED=n

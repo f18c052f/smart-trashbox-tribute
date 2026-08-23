@@ -123,6 +123,22 @@ NFR-1 / NFR-2 のみに適用されていた規律を **NFR-3 / NFR-4 / NFR-5 �
 | **理由** | [open-questions.md](./open-questions.md) OQ-33 が「最初は最小限とし、M1・M2 の実測で不足が分かってから足す」としていた方針をそのまま実装に落とし込んだ。要因を含めない場合は**その旨を出力に明示する**ことで、「入れていないものが入っているように見える」誤った安心を防ぐ（`trajectory-simulator` requirements.md 要件1.5 / 2.8 / 4.6 / 5.7 / 9.7） |
 | **現在の扱い** | `trajectory_sim.MODEL_EXCLUSIONS`（`src/trajectory_sim/results.py`）として実装・テスト済み。掃引結果の出力 JSON には `model_exclusions` キーとして必ず含まれ、較正段階・パラメータ出所と並んで「この結果がどこまで信用できるか」を読み手に伝える必須項目になっている。追加が必要になる契機は M1・M2 の実測であり、その時点で改めて `MODEL_EXCLUSIONS` を見直す（要因の増減は `trajectory-simulator` design.md の Revalidation Trigger に該当する） |
 
+### D-10 リポジトリのディレクトリ構成を確定した（OQ-40 決着）
+
+| | |
+|---|---|
+| **決定** | 移動体側のコードは `firmware/` 以下に置く。`firmware/lib/drivetrain_control/` に純ロジック（`include/` + `src/`）を置き、**`CMakeLists.txt`（`idf_component_register`）と `library.json`（PlatformIO ライブラリマニフェスト）を同一ディレクトリに同居させる**。`firmware/lib/test_support/` はホストテスト専用のフェイクポート・プラントモデルを置くが、**`library.json` のみを持ち `CMakeLists.txt` を意図的に持たない**。ルート `firmware/CMakeLists.txt` は `list(APPEND EXTRA_COMPONENT_DIRS "lib/drivetrain_control")` で**このディレクトリのみを直接指す**（`lib/` 全体は指さない）。アプリ層は `firmware/src/`（`build_profile.hpp`・`main.cpp`・`CMakeLists.txt`）、テストは `firmware/test/native/`（ホスト、`test_` 接頭辞必須）と `firmware/test/embedded/` に分離する |
+| **理由** | `framework = espidf` では PlatformIO 自身のライブラリ依存探索（LDF）が IDF コンポーネントを発見できない（PlatformIO は `native` 環境でのみ `library.json` を見る）。一方 IDF 側のビルドは `EXTRA_COMPONENT_DIRS` に列挙されたディレクトリしかコンポーネントとして発見しない。**同一の純ロジックを2つのビルドシステムのどちらからも発見させる**必要があり、かつ `tech.md` 開発標準3（二重実装の禁止）によりソースを2箇所へコピーする案は採れない。そこで2つのマニフェストを同一ディレクトリへ同居させ、`native` からは `library.json` として、ファーム2環境（`teleop`/`production`）からは `EXTRA_COMPONENT_DIRS` 経由の `CMakeLists.txt` として、それぞれ発見させる方式にした（詳細な比較検討は [research.md](../.kiro/specs/drivetrain-core/research.md) "Decision: 純ロジックを「2マニフェスト同居ディレクトリ」として配置する" を参照）。`EXTRA_COMPONENT_DIRS` が `lib/` 全体ではなく `lib/drivetrain_control` を**直接**指すのは、`lib/test_support/`（`CMakeLists.txt` を持たない）がファームウェアへ混入する経路を構造的に消すため |
+| **現在の扱い** | 実装・テスト済み（`drivetrain-core` spec 全27タスク完了）。`firmware/CMakeLists.txt` / `firmware/lib/drivetrain_control/{CMakeLists.txt,library.json}` / `firmware/lib/test_support/library.json` として存在し、`teleop`・`production`・`native` の3環境すべてでビルド・テストが通ることを確認済み |
+
+### D-11 テレオペ用と本番用ファームウェアの排他方法を確定した（OQ-21 決着）
+
+| | |
+|---|---|
+| **決定** | ビルドプロファイルはコンパイル時マクロ `DRIVETRAIN_BUILD_TELEOP` / `DRIVETRAIN_BUILD_PRODUCTION`（`platformio.ini` の `[env:teleop]`/`[env:production]` `build_flags`）で表現する。`firmware/src/build_profile.hpp` が `#error` により「どちらか一方のみが定義されていること」を強制する。テレオペ専用ソース（`src/teleop/*.cpp`）は `firmware/src/CMakeLists.txt` が同名のビルドプロファイル**環境変数**（`firmware/scripts/set_build_profile_cmake_env.py` が設定）を読んで glob を出し入れすることで除外する。加えて `production` 環境限定で `firmware/CMakeLists.txt` に `COMPONENTS` allowlist（`src`/`drivetrain_control`/`__pio_env` の3つのみ）を適用し、`sdkconfig.defaults.production` で `CONFIG_BT_ENABLED=n` を設定する |
+| **理由** | 独立した2つの根拠がある。**(1) 2.4GHz 共存**: テレオペの Bluetooth（BT Classic／Bluepad32・DualSense）と本番想定の無線が同一 2.4GHz 帯を使うため、同一ファームに同居させると干渉・リソース競合の懸念がある（[drivetrain-spec.md §10.1.2](../drivetrain-spec.md#1012-テレオペ用ファームウェアは分離する)）。**(2) 非オープンソース部品の封じ込め**: Bluepad32 本体は Apache-2.0 だが依存する BTstack は「個人的利益のためのみ。商用目的・金銭的利得のためには使用不可」という条項付きでオープンソースではない。**テレオペビルドにのみ**この encumbrance を封じ込めることで、本番ファームウェアの成果物をライセンスクリーンに保てる（GitHub 公開時にトップレベル LICENSE が BT 版ファームまで自由に再利用可能だと誤読させないため。→ [OQ-42](./open-questions.md#g-観測基盤独自機能)）。実装時に判明した点として、`CONFIG_BT_ENABLED=n` は Bluetooth には効くが、classic ESP32 では `CONFIG_ESP_WIFI_ENABLED` が実プロンプトを持たない Kconfig シンボル（`default y if SOC_WIFI_SUPPORTED`）であるため `sdkconfig.defaults*` への設定は Wi-Fi に対して無効であり、また `EXCLUDE_COMPONENTS` も `wpa_supplicant` 等の推移的 `PRIV_REQUIRES` により無線コンポーネントを再度引き込むため機能しない（いずれも実測で確認）。**実際に本番ビルドから無線を除外しているのは `COMPONENTS` allowlist**である |
+| **現在の扱い** | 実装・検証済み。`production` 環境の `firmware.map` に `libesp_wifi.a`/`libbt.a`/`libwpa_supplicant.a`/`libesp_phy.a` への参照がゼロであることを確認済み（flash image は 161985 → 135557 バイトへ縮小）。BTstack ライセンスの取り扱い自体は本決定の対象外であり、新規の未決事項として → [OQ-42](./open-questions.md#g-観測基盤独自機能) へ登録した |
+
 ---
 
 ## 2. 採用しなかった案: 駆動系

@@ -467,7 +467,7 @@ Pi で得た**実データ**は WSL へ持ち帰り、Replay で繰り返し解�
 - RealSense 依存部と処理部を疎結合にする方針
 - §13.1 の実測項目は**構造化ロギングで収集する**（→ [§13.3](#133-これらをどう収集するか)）
 
-**未確定事項は本ドキュメントに列挙しない。** 全40件を [open-questions.md](./open-questions.md) に集約している。
+**未確定事項は本ドキュメントに列挙しない。** [open-questions.md](./open-questions.md) に集約している。
 
 ### 固定側・開発環境に直接関わるもの
 
@@ -483,7 +483,6 @@ Pi で得た**実データ**は WSL へ持ち帰り、Replay で繰り返し解�
 | [OQ-30](./open-questions.md#f-通信) | 通信メッセージの最終フォーマット（→ §9.1） |
 | [OQ-32](./open-questions.md#g-観測基盤独自機能) | Record・Replay のデータ形式（Throw Record スキーマ自体は `prediction-core` が確定済み → [decisions.md D-8](./decisions.md#d-8-throw-record-最小スキーマを-prediction-core-で確定した-oq-31-決着)） |
 | [OQ-35](./open-questions.md#g-観測基盤独自機能) | ログの保存形式 |
-| [OQ-40](./open-questions.md#g-観測基盤独自機能) | リポジトリのディレクトリ構成（→ §7.1） |
 
 ---
 

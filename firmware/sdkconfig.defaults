@@ -1,0 +1,17 @@
+# drivetrain-core task 1.2: shared ESP-IDF sdkconfig defaults for BOTH the
+# teleop and production firmware environments (design.md File Structure
+# Plan: "sdkconfig.defaults # 両ファーム共通").
+#
+# Intentionally empty of settings for now -- no requirement in this Spec
+# calls for a value shared by both firmware builds. This file exists so
+# that:
+#   - [env:teleop] can rely on ESP-IDF's implicit single-file fallback
+#     (tools/cmake/project.cmake picks up ${CMAKE_SOURCE_DIR}/sdkconfig.
+#     defaults automatically when no SDKCONFIG_DEFAULTS override is given).
+#   - [env:production] layers sdkconfig.defaults.production on top of this
+#     file via an explicit -DSDKCONFIG_DEFAULTS list (see platformio.ini
+#     [env:production] board_build.cmake_extra_args).
+#
+# Do not add teleop-only or production-only settings here -- those belong
+# in sdkconfig.defaults.<env> instead (requirement 1.4;
+# design.md BuildSkeleton).
