@@ -14,6 +14,6 @@
 # update here is the classic way for `native` to stay green while the
 # firmware link silently drops a source file (research.md Risk R2).
 idf_component_register(
-    SRCS "src/drivetrain_control.cpp" "src/config.cpp" "src/wrap_accumulator.cpp"
+    SRCS "src/drivetrain_control.cpp" "src/config.cpp" "src/wrap_accumulator.cpp" "src/voltage_scaler.cpp"
     INCLUDE_DIRS "include"
 )

@@ -91,7 +91,7 @@
   - _Requirements: 4.4, 4.5, 7.1, 7.2, 7.3, 7.4_
   - _Boundary: WrapAccumulator_
 
-- [ ] 3.2 (P) 生の電圧読み値からバッテリ電圧への換算を実装する
+- [x] 3.2 (P) 生の電圧読み値からバッテリ電圧への換算を実装する
   - 校正作業の出力（複数点で実測した「生値と実電圧の対」）をそのまま受け取れる区分線形テーブルとして換算する。点が2つだけのときは分圧比のみの線形換算へ自然に縮退させる
   - テーブル範囲外は両端の区間の傾きで外挿する
   - **分圧比や補正係数を実装内に固定値として持たない**
@@ -324,4 +324,5 @@
 - **タスク 1.2**: `production` の `COMPONENTS` allowlist は現在 `src` / `drivetrain_control` / `__pio_env`（PlatformIO 内部の必須ダミーコンポーネント）の3つのみ。**以降のタスクで `production` 側に実ペリフェラル（`esp_driver_pcnt` 等）を使うコードが増えたら、このリストへ明示的に追加する必要がある**（positive list のため、追加しないと該当コンポーネントがビルドから静かに落ちる）。`teleop` 環境はこの allowlist の対象外（デフォルトのコンポーネント自動探索のまま）
 - **タスク 1.3**: `tests/firmware/test_firmware_boundaries.py` を追加。この環境の `uv` venv は既定（`--group dev` のみ）だと `numpy` を要する既存26ファイル（`sensing_foundation`/`flying_object_tracking`/`world_frame_calibration`）の収集に失敗する。**リポジトリ全体のリグレッションは `uv run --all-extras --group dev pytest tests -q` で回す**（`tests/firmware` 単体は `--all-extras` 不要）。これは本 Spec が持ち込んだ問題ではなく既存の環境構成に起因する
 - **タスク 1.3**: design.md の FirmwareBoundaryCheck が挙げる残りの項目（禁止 include・禁止トークン・型トークン・依存方向・`test_support` 参照検出）はタスク8の範囲。タスク1.3はビルド構成（`platformio.ini`/`CMakeLists.txt`/`sdkconfig.defaults*`）のみを検査する
+- **タスク 3.2**: `VoltageScaler::toMilliVolts` は `float`/`double` を一切使わず `int64_t` の整数演算のみで区分線形補間する（非等分割の内挿点は「四捨五入（0から遠い方へ）」）。テーブル点上での厳密一致を構造的に保証する
 - **タスク 2.1**: `pio run -e teleop` の並行実行（フォアグラウンドとバックグラウンドを同時に走らせる等）は同一 `.pio/build/teleop` への同時書き込みでファイル破損を招く（`objdump: file format not recognized` 等の紛らわしいエラーになる）。**PlatformIO のビルドは常に1つずつ・フォアグラウンドで実行する**
