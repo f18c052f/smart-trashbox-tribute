@@ -45,7 +45,7 @@
 
 - [ ] 2. 基盤層: 単位・型・設定・ポート
 
-- [ ] 2.1 単位換算の集約と設定エラーの型を定義する
+- [x] 2.1 単位換算の集約と設定エラーの型を定義する
   - 距離ミリメートル・時刻ミリ秒・電圧ミリボルトの換算係数と円周率を1箇所へ集約する。裸の数値定数を他のどのファイルにも書かない方針をここで確立する
   - 時刻から秒への換算、エンコーダ累積カウント差から距離への換算、角度の正規化を提供する。**カウントから距離への換算を行うのはこの1箇所だけ**にする
   - 設定検証の失敗を、例外を使わずに「原因の種別」「違反したパラメータ」「輪番号やテーブル位置の添字」の3点で返せる型を定義する
@@ -324,3 +324,4 @@
 - **タスク 1.2**: `production` の `COMPONENTS` allowlist は現在 `src` / `drivetrain_control` / `__pio_env`（PlatformIO 内部の必須ダミーコンポーネント）の3つのみ。**以降のタスクで `production` 側に実ペリフェラル（`esp_driver_pcnt` 等）を使うコードが増えたら、このリストへ明示的に追加する必要がある**（positive list のため、追加しないと該当コンポーネントがビルドから静かに落ちる）。`teleop` 環境はこの allowlist の対象外（デフォルトのコンポーネント自動探索のまま）
 - **タスク 1.3**: `tests/firmware/test_firmware_boundaries.py` を追加。この環境の `uv` venv は既定（`--group dev` のみ）だと `numpy` を要する既存26ファイル（`sensing_foundation`/`flying_object_tracking`/`world_frame_calibration`）の収集に失敗する。**リポジトリ全体のリグレッションは `uv run --all-extras --group dev pytest tests -q` で回す**（`tests/firmware` 単体は `--all-extras` 不要）。これは本 Spec が持ち込んだ問題ではなく既存の環境構成に起因する
 - **タスク 1.3**: design.md の FirmwareBoundaryCheck が挙げる残りの項目（禁止 include・禁止トークン・型トークン・依存方向・`test_support` 参照検出）はタスク8の範囲。タスク1.3はビルド構成（`platformio.ini`/`CMakeLists.txt`/`sdkconfig.defaults*`）のみを検査する
+- **タスク 2.1**: `pio run -e teleop` の並行実行（フォアグラウンドとバックグラウンドを同時に走らせる等）は同一 `.pio/build/teleop` への同時書き込みでファイル破損を招く（`objdump: file format not recognized` 等の紛らわしいエラーになる）。**PlatformIO のビルドは常に1つずつ・フォアグラウンドで実行する**
