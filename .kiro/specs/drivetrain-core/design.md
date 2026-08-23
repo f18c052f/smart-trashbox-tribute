@@ -105,7 +105,7 @@ graph TB
         Kinematics[Kinematics 逆運動学と順運動学]
         Odometry[Odometry 位置姿勢推定]
         Pid[VelocityPid 各輪速度制御]
-        Supervisor[ProtectionSupervisor 保護の合成と遮断]
+        Supervisor[ProtectionSupervisor 保護1と2と4の検出器保持と合成]
         Lock[MotorLockDetector]
         LowV[LowVoltageProtector]
         Ceiling[PwmCeiling]
@@ -135,9 +135,9 @@ graph TB
     Controller --> Odometry
     Controller --> Pid
     Controller --> Supervisor
+    Controller --> Ceiling
     Supervisor --> Lock
     Supervisor --> LowV
-    Supervisor --> Ceiling
     Supervisor --> Watchdog
     Controller --> EncPort
     Controller --> MotorPort
@@ -153,6 +153,7 @@ graph TB
 
 - **責務の分離**: 「判定」は核、「実行」はアダプタ。ただし要件 14.1 が求めるとおり、**遮断されるべき状態のときに出力指令が既に遮断値になっている**ところまでを核が確定させる。アダプタは受け取った値をそのまま書き出すだけであり、判断を持たない（要件 2.5）
 - **累積器と電圧換算の位置**: この2つは**アダプタが呼ぶ核の部品**である。ポートは物理量（64bit 累積カウント / mV）を返す契約なので、そこへ至る最も壊れやすい算術（折り返しの桁上げ、分圧比、非線形補正）がアダプタ側へ沈まないよう、核が提供して利用させる（A-2 / A-11）
+- **`PwmCeiling` は `ProtectionSupervisor` を介さず `DrivetrainController` が直接保持し呼び出す。** `PwmCeiling` は状態を持たない純関数であり、保護①②④のような「継続時間を伴う成立／解除の状態機械」ではないため、`ProtectionSupervisor` が合成する対象に含めない。上限値は等比縮小（PID の `compute` と `commit` の間）で使うために PID より前に確定している必要があり、`Supervisor.compose()`（PID `commit` より後に呼ばれる）の出力へ含めると呼び出し順序が矛盾する（→ System Flows「制御ステップ1回のフロー」）
 - **時刻はポートではない**: 状態を変える公開メソッドはすべて `TimeMs now` を引数に取る。`ClockPort` は作らない（→ `research.md` Design Decisions）
 - **無線のポートを持たない**（要件 2.6）。指令は入口から「押し込まれる」ものであり、核が取りに行くものではない
 - **Steering compliance**: `tech.md` 開発標準1（未実測の数値を合否条件にしない）＝ 数値パラメータに既定値を与えない。標準2（安全系はその段階に入る前に実装）＝ 保護①〜④を本 Spec で完結させる（要件 14.8）。標準3（二重実装しない）＝ シミュレータとコードを共有せず、意味論だけを揃える
@@ -326,17 +327,17 @@ flowchart TB
     ReadEnc --> Speed[カウント差 と 経過時間 から各輪の計測速度]
     Speed --> Odom[Odometry 更新 中点法で位置姿勢を積分]
     Odom --> ReadBatt[BatteryVoltagePort から電圧サンプル]
-    ReadBatt --> LowV[LowVoltageProtector 更新 移動平均 継続時間 ヒステリシス]
-    LowV --> Ceil[PwmCeiling 上限を決定 欠測時は安全側の既定上限]
-    Ceil --> Wd[CommandWatchdog 更新 最後の有効指令からの経過時間]
+    ReadBatt --> LowV[Supervisor updateLowVoltage 移動平均 継続時間 ヒステリシス]
+    LowV --> Ceil[Controller が PwmCeiling evaluate を直接呼ぶ 欠測時は安全側の既定上限]
+    Ceil --> Wd[Supervisor updateWatchdog 最後の有効指令からの経過時間]
     Wd --> Target[CommandInput から輪目標速度を取得]
     Target --> Pid[VelocityPid compute 各輪の生の出力を算出 クランプしない]
     Pid --> Scale{いずれかの輪が上限を超えるか}
     Scale -- はい --> Shrink[全輪を等比縮小し方向を保つ]
     Scale -- いいえ --> Commit
     Shrink --> Commit[VelocityPid commit 実際に適用された値で積分を巻き戻す]
-    Commit --> Lock[MotorLockDetector 更新 上限適用後 遮断前の出力指令と計測速度]
-    Lock --> Sup[ProtectionSupervisor 機体全体と輪ごとの遮断理由を合成]
+    Commit --> Lock[Supervisor updateLock 輪ごと 上限適用後 遮断前の出力指令と計測速度]
+    Lock --> Sup[Supervisor compose 直近の updateLowVoltage updateWatchdog updateLock の結果を合成]
     Sup --> Gate[遮断理由が立つ輪のデューティを遮断値にする]
     Gate --> Polarity[出力極性パラメータを適用]
     Polarity --> Write[MotorOutputPort へ書き出す]
@@ -345,6 +346,8 @@ flowchart TB
 
 **フローの決定事項**
 
+- **`ProtectionSupervisor` は「検出器を呼ぶメソッド」と「結果を合成するメソッド」を分離する。** `updateLowVoltage()` / `updateWatchdog()` / `updateLock()` はそれぞれの Flow ノードの位置で `DrivetrainController` が呼び、内部の `LowVoltageProtector` / `CommandWatchdog` / `MotorLockDetector` を1回だけ進める。**`compose()` はこれら3つの直近の結果（と `configured` / `output_enabled` / `has_command`）を読むだけで、検出器を呼び直さない。** こうしないと「合成メソッドがもう一度検出器を呼ぶのか」が曖昧になり、`LowVoltageProtector` の移動平均・継続時間のような「1ステップにつき1回」を前提にした状態機械が二重に進んでしまう
+- **`PwmCeiling` は `ProtectionSupervisor` に属さず、`DrivetrainController` が直接保持して呼ぶ。** 状態を持たない純関数であり、①②④のような「継続時間を伴う成立／解除」の対象ではないため、`Supervisor` の合成対象に含めない。上限は等比縮小（`Pid compute` の直後）で使うために PID より前に確定している必要があり、`Supervisor.compose()`（PID の `commit` より後に呼ばれる）の出力に含めると呼び出し順序が破綻する
 - **PWM 上限は「輪ごとのクリップ」ではなく「3輪まとめての等比縮小」として適用する。** 輪ごとに個別クリップすると、1輪だけ飽和した瞬間に指令された運動の方向が崩れる。要件 12.4 が求める「すべての輪の出力指令に同一の上限を適用し、指令された運動の方向を保つ」は、**デューティのベクトルを一様にスケールする**ことでしか満たせない
 - **PID は2段（`compute` → `commit`）にする。** `compute()` は上限でクランプしない生の出力を返し、等比縮小の後に `commit(実際に適用された値)` を呼ぶ。**縮小によって実現されなかった分を積分項へ溜め込まない**（要件 9.4）。1段の PID に飽和値を渡す形では、群としての縮小と個々のアンチワインドアップが噛み合わない
 - **ロックの判定は上限適用の後・遮断の前の出力指令に対して行う**。遮断後の値で判定すると、いったん遮断された瞬間に「出力が低い」となって条件が崩れ、ロック状態が自己解除してしまう。逆に上限適用の前の生の出力で判定すると、上限が下がっている状況で実際には出ていない大きな指令を根拠に発火してしまう
@@ -473,7 +476,7 @@ stateDiagram-v2
 | 16.2, 16.3, 16.4 | プラントモデルの配備・本体からの分離・仮値の明示 | WheelPlant, PlantCoefficients, FirmwareBoundaryCheck | `lib/test_support/` | — |
 | 16.6 | ホスト結果を実機性能の主張にしない旨の明示 | PlantCoefficients, NativeTestSuite | テスト出力の宣言 | — |
 | 16.7 | ホストテストと実機テストの区別 | BuildSkeleton | `test_filter` | — |
-| 17.1 | 5量を既存モデルと同一の単位・定義で扱う | Types, MotionLimits, DrivetrainStatus | `DrivetrainParams` 対応表 | — |
+| 17.1 | 5量を既存モデルと同一の単位・定義で扱う | Types, MotionLimits, DrivetrainStatus, DrivetrainController | `DrivetrainParams` 対応表、`command_apply_latency_ms` の算出式 | 制御ステップ |
 | 17.2, 17.3, 17.4 | 翻訳を持たない・シミュレータを変更しない・共有しない | （Boundary Commitments に明記） | — | — |
 | 17.5 | 実装を伴わない契約の提供 | Ports, PublicApi | `drivetrain_control.hpp` | — |
 | 17.6 | 指令元の差し替えのみで本番経路へ | CommandInput | `submitBodyVelocity` | 指令受付 |
@@ -505,7 +508,7 @@ stateDiagram-v2
 | LowVoltageProtector | L7 | 保護② | 11 | Config (P0) | Service, State |
 | PwmCeiling | L7 | 保護③ 上限決定 | 12 | Config (P0) | Service |
 | CommandWatchdog | L7 | 保護④ | 13 | Config (P0) | Service, State |
-| ProtectionSupervisor | L8 | 保護の合成と遮断理由 | 14 | 保護4部品 (P0) | Service, State |
+| ProtectionSupervisor | L8 | 保護①②④の検出器を保持し遮断理由を合成 | 14 | MotorLockDetector×3, LowVoltageProtector, CommandWatchdog (P0) | Service, State |
 | CommandInput | L9 | 3つの指令入口と保持 | 5, 17.6 | Kinematics (P0) | Service, State |
 | DrivetrainController | L10 | 制御ステップの合成 | 3, 6.5, 12.4, 15.4, 15.5, 17.7 | L0–L9 (P0), Ports (P0) | Service, State |
 | PublicApi | L11 | 下流が参照する唯一の入口 | 17.5 | L0–L10 (P0) | Service |
@@ -1165,6 +1168,10 @@ class PwmCeiling {
 - Invariants: 状態を持たない純関数的な部品。**遮断ではなく上限**なので `BlockReason` のビットを持たない
 - **全輪への適用と方向の保存**（要件 12.4）は `DrivetrainController` が `scaleToLimit()` で行う。輪ごとに個別にクリップすると指令された運動の方向が崩れる
 
+**Implementation Notes**
+
+- Integration: **`DrivetrainController` がこのインスタンスを直接保持し、`ProtectionSupervisor` を介さずに `evaluate()` を呼ぶ**（→ System Flows「制御ステップ1回のフロー」の `Ceil` ノード）。状態を持たない純関数であるため、①②④のような「継続時間を伴う成立／解除」を合成する `ProtectionSupervisor` の対象に含めない。上限値は PID の `compute` の直後（等比縮小）で使うために確定している必要があり、`Supervisor.compose()`（PID の `commit` より後に呼ばれる）の出力へ含めると呼び出し順序が破綻する
+
 #### CommandWatchdog
 
 | Field | Detail |
@@ -1197,33 +1204,40 @@ class CommandWatchdog {
 
 | Field | Detail |
 |-------|--------|
-| Intent | 4つの保護と2つのゲート条件を合成し、遮断理由と遮断後の出力値を確定させる |
+| Intent | 保護①②④の検出器を内部に保持し、それぞれの更新呼び出しを個別メソッドとして公開したうえで、直近の結果を遮断理由へ合成する |
 | Requirements | 14.1, 14.2, 14.3, 14.4, 14.5, 14.6, 14.7, 14.8, 14.9, 14.10 |
+
+**Responsibilities & Constraints**
+
+- **「検出器を進める」と「結果を合成する」を別メソッドに分離する。** `updateLowVoltage()` / `updateWatchdog()` / `updateLock()` は `DrivetrainController` が System Flows の対応する Flow ノードの位置でそれぞれ1回だけ呼ぶ。**`compose()` はこれら3つの直近の結果を読むだけであり、検出器を呼び直さない**（→ System Flows「フローの決定事項」）
+- **`PwmCeiling` は保持しない**（→ 上記 PwmCeiling Implementation Notes）。本コンポーネントが扱うのは①②④のみ
 
 ##### Service Interface
 
 ```cpp
-struct GateInputs {
-  bool          configured = false;
-  bool          output_enabled = false;
-  bool          has_command = false;
-  TimeMs        last_command_at_ms = 0;
-  VoltageSample battery{};
-  float         commanded_duty[kWheelCount] = {0.0f, 0.0f, 0.0f};  // 上限適用後・遮断前の出力指令
-  float         measured_mm_s[kWheelCount]  = {0.0f, 0.0f, 0.0f};
-};
-
 struct GateOutcome {
   BlockMask global_reasons = 0;
   BlockMask wheel_reasons[kWheelCount] = {0, 0, 0};
-  float     pwm_ceiling = 0.0f;
-  LowVoltageState low_voltage_state = LowVoltageState::kNormal;
 };
 
 class ProtectionSupervisor {
  public:
   explicit ProtectionSupervisor(const DrivetrainConfig& config) noexcept;
-  GateOutcome update(const GateInputs& inputs, TimeMs now) noexcept;
+
+  // 保護②。内部の LowVoltageProtector を1回進める（要件 11）。
+  LowVoltageState updateLowVoltage(const VoltageSample& battery, TimeMs now) noexcept;
+
+  // 保護④。内部の CommandWatchdog を1回進める（要件 13）。
+  bool updateWatchdog(TimeMs now, TimeMs last_command_at_ms, bool has_command) noexcept;
+
+  // 保護①。輪ごとに1回、内部の MotorLockDetector[wheel] を進める（要件 10）。
+  // commanded_duty: 上限適用の後・遮断の前の出力指令。
+  bool updateLock(std::uint8_t wheel, float commanded_duty, float measured_mm_s, TimeMs now) noexcept;
+
+  // 直近の updateLowVoltage / updateWatchdog / updateLock の結果と、
+  // configured / output_enabled / has_command を合成する。検出器は呼び直さない。
+  GateOutcome compose(bool configured, bool output_enabled, bool has_command) const noexcept;
+
   // 保持されている保護状態を解除する。解除条件を満たす保護のみが解ける（要件 14.6）
   void resetProtections(TimeMs now) noexcept;
   // 遮断値の適用。理由が立っている輪のデューティを 0 にする（要件 14.1, 14.2）
@@ -1231,7 +1245,9 @@ class ProtectionSupervisor {
 };
 ```
 
-- Preconditions: `now` は単調増加
+- Preconditions:
+  - `now` は単調増加
+  - **1ステップにつき、`updateLowVoltage()` / `updateWatchdog()` / 輪ごとの `updateLock()` をそれぞれ厳密に1回呼んだ後に `compose()` を呼ぶ。** `compose()` を検出器の再更新の代わりに使わない。これらの内部検出器は「1ステップにつき1回」を前提にした継続時間の状態機械であり、二重に呼ぶと `LowVoltageProtector` の移動平均・継続時間や `MotorLockDetector` の継続時間が実際の経過時間からずれる
 - Postconditions:
   - **いずれか一つでも理由が立っていれば、その輪の出力指令は遮断値（デューティ 0）になる**（要件 14.1, 14.3）
   - `kNotConfigured` / `kOutputDisabled` / `kNoCommandYet` / `kCommandTimeout` / `kLowVoltage` / `kVoltageUnavailable` は**機体全体**の理由。`kMotorLock` のみ**輪ごと**の理由（要件 14.4）
@@ -1239,8 +1255,13 @@ class ProtectionSupervisor {
 - Invariants:
   - **物理的な遮断そのものは責務に含めない**（要件 14.2）。核が確定させるのは「ポートへ渡す値が遮断値になっていること」まで
   - 保持／自動解除の別は保護ごとの設定（`latching`）で決まる（要件 14.5）
-  - 保護①〜④のすべてが本 Spec の中に存在し、下流へ先送りしない（要件 14.8）
-- **要件 14.9 / 14.10 の位置づけ**: 出力未許可と指令未着は「保護」ではないが、遮断値になるという結果は同じである。**同じゲートで扱い、別のビットを立てる**ことで、テレオペ運転中に出力が出ない理由を1つの状態表示で切り分けられる
+  - 保護①〜④のすべてが本 Spec の中に存在し、下流へ先送りしない（要件 14.8）。④のうち `PwmCeiling`（③）は別コンポーネントだが、`DrivetrainConfig` に含まれ本 Spec の範囲内で実装される
+- **要件 14.9 / 14.10 の位置づけ**: 出力未許可と指令未着は「保護」ではないが、遮断値になるという結果は同じである。**`compose()` の中で同じゲートとして扱い、別のビットを立てる**ことで、テレオペ運転中に出力が出ない理由を1つの状態表示で切り分けられる
+
+**Implementation Notes**
+
+- Integration: `DrivetrainStatus.low_voltage_state` は `updateLowVoltage()` の戻り値を `DrivetrainController` がそのまま保存する。`GateOutcome` に重複して持たせない
+- Validation: `updateLock()` を輪ごとに呼ぶ順序（0→1→2）は結果に影響しない（3輪は独立、要件 10.3）。呼び忘れ・二重呼び出しの検出はホストテストの回帰項目とする（`protection_supervisor/`）
 
 ---
 
@@ -1296,7 +1317,7 @@ class CommandInput {
 | Field | Detail |
 |-------|--------|
 | Intent | 制御ステップを合成し、外部へ渡す出力指令を確定させる |
-| Requirements | 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 6.5, 12.4, 15.4, 15.5, 17.7 |
+| Requirements | 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 6.5, 12.4, 15.4, 15.5, 17.1, 17.7 |
 
 ##### Service Interface
 
@@ -1332,6 +1353,7 @@ class DrivetrainController {
   - 経過時間は `now - last_step_ms` から求める。**制御周期を固定値として前提にしない**（要件 3.5）
   - 同一の時刻列と入力列に対して同一の出力列を返す（要件 3.3、同一プラットフォーム上）
   - PWM 上限の適用と等比縮小は**遮断より前**に行う（要件 12.4, 6.5）
+  - **`command_apply_latency_ms` の算出**（要件 17.1）: `CommandInput::latched().issued_at_ms` を毎ステップ内部で保持している直前値と比較し、**変化していれば**（＝新しい指令がこのステップで初めて適用された）`now - latched().issued_at_ms` を計算して `command_apply_latency_ms` を更新し、比較用の内部値もその `issued_at_ms` へ更新する。**変化していなければ前回の `command_apply_latency_ms` を保持する**（次の新しい指令が来るまでの遷移の記録として扱う）。この定義は「指令が投入されてから、その指令が制御ステップで初めて反映されるまでの遅れ」であり、`trajectory_sim.DrivetrainParams.command_latency_ms`（指令反映遅れ）と同じ概念を指す
 - Invariants:
   - **自らループを回さない**（要件 3.2）。呼び出し側（`teleop-bringup` の制御タスク）が周期を決める
   - **現在時刻を内部で取得しない**（要件 3.1）。`<ctime>` / `<chrono>` / `millis` / `esp_timer_*` を核から参照しない
@@ -1369,14 +1391,16 @@ struct DrivetrainStatus {
 };
 ```
 
-- State model: すべて POD。動的確保を持たず、値でコピーできる
+- State model: すべて POD。動的確保を持たず、値でコピーできる。`DrivetrainController` は上記に加え、`command_apply_latency_ms` の遷移検出用に `TimeMs last_applied_command_issued_at_ms_` を内部にのみ保持する（`DrivetrainStatus` には出さない）
 - Persistence & consistency: 永続化しない。電源投入ごとに初期状態から始まる
 - Concurrency strategy: **核はロックを持たない単一スレッド前提**。`status()` は `step()` を妨げないが、別タスクからの読み出しにおける原子性は保証しない
 
 **Implementation Notes**
 
 - Integration: `configure()` は `Ports` の 3 つが非 null であることも検証する。null は設定エラーとして拒否する
+- Integration: `VelocityPid::compute()` → 等比縮小 → `commit()` の呼び出し順序は `controller.cpp` 内の非公開ヘルパー（例: `applyWheelOutputs()`）へ閉じ込め、`compute()`/`commit()` を直接呼ぶコードパスを `controller.cpp` の外に作らない。2段プロトコルの誤用（`commit()` の呼び忘れ・二重 `compute()`）を、呼び出し箇所を1つに限定することで防ぐ
 - Validation: 決定性テストは「同じ時刻列と入力列で2回回して `StepResult` の全フィールドが一致すること」で行う（要件 3.3, 16.5）
+- Validation: `command_apply_latency_ms` は、指令投入から複数ステップ後に反映された場合（`step()` の呼び出し間隔より短い周期で複数の指令が届いた場合を含む）でも「最後に反映が切り替わった時点の遅れ」を報告することを回帰させる
 - Risks: `now` の単調性はアダプタが保証する。`esp_timer_get_time()`（µs, `int64_t`）を 1000 で割って渡すのが想定であり、**Arduino の `millis()`（`uint32_t`、約 49.7 日で折り返す）をそのまま渡さない**ことを `teleop-bringup` の期待として明記する
 
 #### PublicApi
@@ -1518,9 +1542,10 @@ class FakeBatteryPort  : public drivetrain_control::BatteryVoltagePort { /* 時�
 |---|---|---|
 | **指令**（`CommandInput`） | 最後の有効な輪目標速度とその有効時刻、出力許可 | 有効時刻は単調増加。未着状態と「速度ゼロの指令」を区別する |
 | **推定**（`Odometry` ＋ `WrapAccumulator` ×3） | 累積カウント、姿勢、累積走行距離、初期化時刻 | 累積カウントは `int64_t`。姿勢角は `(-π, +π]` |
-| **保護**（`ProtectionSupervisor` ＋ 保護4部品） | 各保護の状態と継続時間の起点、移動平均の窓 | 保持設定の保護は解除条件を満たすまで解けない |
+| **保護**（`ProtectionSupervisor` ＋ `MotorLockDetector`×3／`LowVoltageProtector`／`CommandWatchdog`） | 各保護の状態と継続時間の起点、移動平均の窓 | 保持設定の保護は解除条件を満たすまで解けない |
+| **PWM上限**（`PwmCeiling`。`DrivetrainController` が直接保持） | なし（状態を持たない純関数） | 戻り値は常に `absolute_max_duty` 以下 |
 
-`DrivetrainController` はこの3集約と `Kinematics` / `VelocityPid` ×3 を保持する合成体であり、それ自身の固有状態は「最後のステップ時刻」「最後の `StepResult`」「実効設定」のみである。
+`DrivetrainController` はこの4行（指令・推定・保護・PWM上限）と `Kinematics` / `VelocityPid` ×3 を保持する合成体であり、それ自身の固有状態は「最後のステップ時刻」「最後の `StepResult`」「実効設定」「最後に適用した指令の有効時刻」（`command_apply_latency_ms` 算出用。後述）のみである。
 
 #### 累積量と表現範囲（要件 4.4, 4.5）
 
@@ -1598,6 +1623,8 @@ class FakeBatteryPort  : public drivetrain_control::BatteryVoltagePort { /* 時�
 3. **保護の合成と理由の判別**（`protection_supervisor/`）— 低電圧と1輪ロックを同時に成立させ、機体全体の理由と輪ごとの理由が正しく分かれて立つこと。`resetProtections()` が**条件の継続している保護を解かない**こと（要件 14.3, 14.4, 14.6）
 4. **出力許可と指令未着の遮断**（`controller_step/`）— `configure()` 直後（指令未着）に `step()` を回して `kNoCommandYet` で遮断値になること。指令を与えても `setOutputEnabled(true)` が無ければ `kOutputDisabled` で遮断値のままであること（要件 14.9, 14.10, 5.6）
 5. **決定性**（`controller_step/`）— 同一の時刻列・指令列・ポート応答列で2回回し、`StepResult` と `DrivetrainStatus` の全フィールドが一致すること（要件 3.3, 16.5）
+6. **Supervisor の呼び出し順序**（`protection_supervisor/`）— `updateLowVoltage()` / `updateWatchdog()` / `updateLock()` を1ステップにつき1回ずつ呼んでから `compose()` を呼ぶ実装（`controller_step/` 経由）で、`LowVoltageProtector` の継続時間判定が実際の経過時間と一致すること。**同一ステップ内で `updateLowVoltage()` を2回呼ぶ誤用**が継続時間を実際より早く進めることを回帰テストで固定し、実装がこの誤用をしていないことの間接証拠とする（要件 11.2, 11.5, 14.7）
+7. **指令反映遅れの算出**（`command_input/` ＋ `controller_step/`）— 新しい指令が `latched()` へ反映された最初の `step()` で `command_apply_latency_ms` が `now - issued_at_ms` になること、次の指令が反映されるまで値が保持されること、`step()` の呼び出し間隔より短い周期で複数の指令が届いても最後の遷移の遅れを報告すること（要件 17.1）
 
 ### 閉ループテスト（`firmware/test/native/controller_closed_loop/`）
 
@@ -1629,5 +1656,6 @@ class FakeBatteryPort  : public drivetrain_control::BatteryVoltagePort { /* 時�
 | 4 | pin した pioarduino 55.03.311（IDF 5.5.5）が Bluepad32 と噛み合うか | 核は無線を持たないため影響は骨組みのみ。`teleop-bringup` が版を下げる可能性を再検証トリガに挙げてある |
 | 5 | 別タスクから `status()` を読む場合の原子性 | 核はロックを持たない。同期は呼び出し側の責務として Out of Boundary に明記 |
 | 6 | ホストと実機の浮動小数点結果のビット一致 | **主張しない。** 決定性の範囲は「同一プラットフォーム上での再現性」（要件 3.3 / 16.5 の文言どおり）。三角関数の評価は設定時1回に閉じてある |
+| 7 | `ProtectionSupervisor` の「検出器を進める」呼び出しと「合成する」呼び出しが分かれたことによる呼び出し順序ミス（`compose()` の前に3つの `update*()` を呼び忘れる等） | `controller.cpp` 内の1箇所にステップの合成手順をカプセル化し、`Supervisor` を直接叩くコードパスを他に作らない（→ `DrivetrainController` Implementation Notes）。誤用の検出はホストテスト `protection_supervisor/` の回帰項目とする |
 
 **新規の未決事項として登録するのは OQ-42（BTstack ライセンス）1件のみ**である（要件 18.4）。上記のうち 1〜6 はいずれも「決め方が書けない」ものではなく、実装・観測・下流 Spec の作業で決まる事項であるため、`open-questions.md` の運用ルールに照らして課題として登録しない（要件 18.7）。
