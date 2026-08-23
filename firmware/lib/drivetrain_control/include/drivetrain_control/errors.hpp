@@ -28,9 +28,60 @@ enum class ConfigError : std::uint16_t {
 
 enum class ConfigField : std::uint16_t {
   kNone = 0,
-  // 各パラメータ構造体を定義するタスク（2.3 以降）で、パラメータへ 1:1 で
-  // 対応する列挙子をここへ追加する。本タスク（2.1）ではまだどのパラメータ
-  // 構造体も存在しないため、型の骨格（kNone のみ）を確定させるにとどめる。
+  // タスク 2.3（config.hpp / DrivetrainConfig）が定義する各パラメータ構造体
+  // のフィールドへ、概ね 1:1 で対応する列挙子。ConfigDiagnostic::index が
+  // 輪番号やテーブル位置を補う（要件 15.4）。
+
+  // GeometryParams（要件 6.2, 6.6）
+  kGeometryWheelAngle,
+  kGeometryBaseRadius,
+  kGeometryDegenerate,  // 逆運動学行列の非退化判定（個別フィールドではなく幾何全体）
+
+  // EncoderParams（要件 7.6, 7.7）
+  kEncoderCountsPerWheelRev,
+  kEncoderWheelDiameter,
+  kEncoderRawModulus,
+  kEncoderPolarity,
+
+  // OutputParams
+  kOutputPolarity,
+  kOutputAbsoluteMaxDuty,
+
+  // MotionLimits
+  kLimitsMaxBodySpeed,
+  kLimitsMaxBodyOmega,
+  kLimitsMaxWheelSpeed,
+
+  // PidParams（要件 9.2, 9.4, 9.6。輪ごと）
+  kPidKp,
+  kPidKi,
+  kPidKd,
+  kPidIntegralLimit,
+
+  // LockParams（保護①。要件 10.2, 10.5）
+  kLockDutyThreshold,
+  kLockSpeedThreshold,
+  kLockDuration,
+  kLockClearDuration,
+
+  // LowVoltageParams（保護②。要件 11.6）
+  kLowVoltageWarn,
+  kLowVoltageStop,
+  kLowVoltageRecover,
+  kLowVoltageAverageWindow,
+  kLowVoltageStopDuration,
+  kLowVoltageUnavailableDuration,
+
+  // VoltageScalerParams（要件 11.7）
+  kVoltageScalerPointCount,
+  kVoltageScalerTable,
+
+  // PwmCeilingParams（保護③。要件 12.2, 12.5, 12.6）
+  kPwmCeilingReferenceMilliVolts,
+  kPwmCeilingFallbackDuty,
+
+  // WatchdogParams（保護④。要件 13.3）
+  kWatchdogTimeout,
 };
 
 struct ConfigDiagnostic {
