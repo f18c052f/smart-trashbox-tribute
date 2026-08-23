@@ -1,0 +1,9 @@
+# PlatformIO / ESP-IDF build output. Regenerated on every build; never a
+# source of truth.
+.pio/
+
+# ESP-IDF's per-environment generated sdkconfig (merged from
+# sdkconfig.defaults* + board defaults). Only the sdkconfig.defaults*
+# inputs are tracked; the generated sdkconfig.<env> files are build output.
+sdkconfig.teleop
+sdkconfig.production

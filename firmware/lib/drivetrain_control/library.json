@@ -1,0 +1,9 @@
+{
+  "name": "drivetrain_control",
+  "version": "0.1.0",
+  "description": "3輪オムニ移動体の駆動中核ロジック（実機・ペリフェラル非依存の純ロジック）",
+  "build": {
+    "srcDir": "src"
+  },
+  "includeDir": "include"
+}
