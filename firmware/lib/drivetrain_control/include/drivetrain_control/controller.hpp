@@ -212,6 +212,9 @@ struct DrivetrainStatus {
   bool        has_valid_command = false;
   bool        last_command_clamped = false;
   TimeMs      last_command_at_ms = 0;
+  // 有効な制御経路（速度PID を経由するか経由しないか）。利用側が判別
+  // できる形で外部へ提供する（要件 5.15。2026-08-24 追加）。
+  ControlPath control_path = ControlPath::kVelocityPid;
 
   float       wheel_target_mm_s[kWheelCount]   = {0.0f, 0.0f, 0.0f};
   float       wheel_measured_mm_s[kWheelCount] = {0.0f, 0.0f, 0.0f};
@@ -251,6 +254,10 @@ class DrivetrainController {
   // 未構築のため一切触れず、`CommandAcceptance{}`（accepted=false）を返す。
   CommandAcceptance submit(const BodyVelocityCommand& command) noexcept;
   CommandAcceptance submit(const WheelVelocityCommand& command) noexcept;
+  // 開ループ指令（CommandInput への委譲。要件 5.10。2026-08-24 追加）。
+  // `!configured_` のときは CommandInput が未構築のため一切触れず、
+  // `CommandAcceptance{}`（accepted=false）を返す（上記2つと同じ方針）。
+  CommandAcceptance submit(const WheelDutyCommand& command) noexcept;
   // 出力許可（CommandInput への委譲）。`!configured_` のときは no-op。
   void setOutputEnabled(bool enabled, TimeMs now) noexcept;
 
@@ -367,24 +374,43 @@ class DrivetrainController {
   // （Kinematics）を後に破棄する（宣言順の逆 = 依存の逆順）。
   void resetComposedState() noexcept;
 
-  // タスク 6.3: `VelocityPid::compute()` → `scaleToLimit()`（PWM 上限で
+  // タスク 6.3/10.2: `VelocityPid::compute()` → `scaleToLimit()`（PWM 上限で
   // 3輪まとめての等比縮小） → `VelocityPid::commit()` の呼び出し順序を
   // この1箇所へ閉じ込める非公開ヘルパー（design.md "DrivetrainController"
   // Implementation Notes）。`compute()`/`commit()` を直接呼ぶコードパスは
   // これ以外に作らない。
   //
-  // ウォッチドッグ発火中（`watchdog_tripped == true`）は、
-  // `targets_mm_s` を無視し、3輪すべてで `compute()`/`commit()` の代わりに
+  // `targets` は `CommandInput::latched()` が返す `WheelTargets` そのもの
+  // （`mm_s[]`・`duty[]`・`path` の3つを1回の呼び出しで渡す。呼び出し側の
+  // 単一呼び出し箇所という規律を崩さないため）。分岐はこの関数の内部だけに
+  // 置き、外側（Lock 以降の遮断・極性適用・書き出し）は経路を一切知らない
+  // （要件 5.11、design.md「フローの決定事項」2026-08-24 追加分）。
+  //
+  // ウォッチドッグ発火中（`watchdog_tripped == true`、`path` によらず
+  // 最優先）: 3輪すべてで `compute()`/`commit()` の代わりに
   // `VelocityPid::holdReset()` を呼び、`out_applied_duty` を全輪 0 にする
   // （design.md「フローの決定事項」: 「発火中は CommandInput の保持する
-  // 輪目標速度が PID へ渡らない（目標を 0 とし、PID を holdReset に
-  // 置く）」。`VelocityPid` の Preconditions は同一ステップ内での
-  // compute/commit と holdReset の混在を禁じる）。
+  // 輪目標が PID へ渡らない（目標を 0 とし、PID を holdReset に置く）」。
+  // `VelocityPid` の Preconditions は同一ステップ内での compute/commit と
+  // holdReset の混在を禁じる）。
   //
-  // `out_applied_duty` は「上限適用後・遮断前」の出力指令であり、
-  // `ProtectionSupervisor::updateLock()` の判定入力にそのまま使う
-  // （design.md「フローの決定事項」）。
-  void applyWheelOutputs(const float targets_mm_s[kWheelCount], DurationMs dt_ms, float ceiling,
+  // `path == kVelocityPid`: 既存の `compute()` → `scaleToLimit()` →
+  // `commit()`。
+  //
+  // `path == kOpenLoop`: 指令された `duty[]` を生の出力として扱い、
+  // `scaleToLimit()` で3輪まとめての等比縮小のみを適用する
+  // （輪ごとの個別クリップではない。要件 5.11）。`compute()`/`commit()` は
+  // 一切呼ばず、毎ステップ全輪で `holdReset()` を呼ぶ（積分の持ち越し
+  // 防止。「切り替えを検出して状態をクリアする」専用の遷移処理は設けない
+  // ―― `kOpenLoop` の間は毎ステップ holdReset() が呼ばれ続けるため、
+  // `kVelocityPid` へ戻った最初のステップの PID は必ず清浄な状態から
+  // 始まる。要件 5.14）。
+  //
+  // `out_applied_duty` は経路によらず「上限適用後・遮断前」の出力指令で
+  // あり、`ProtectionSupervisor::updateLock()` の判定入力にそのまま使う
+  // （design.md「フローの決定事項」。モータロック判定は出力指令の出自に
+  // 依存しない）。
+  void applyWheelOutputs(const WheelTargets& targets, DurationMs dt_ms, float ceiling,
                          bool watchdog_tripped, float out_applied_duty[kWheelCount]) noexcept;
 
   // --- 実効設定・診断・configured フラグ -------------------------------

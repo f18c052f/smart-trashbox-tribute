@@ -57,6 +57,7 @@ using drivetrain_control::BlockMask;
 using drivetrain_control::BlockReason;
 using drivetrain_control::BodyVelocity;
 using drivetrain_control::BodyVelocityCommand;
+using drivetrain_control::ControlPath;
 using drivetrain_control::DrivetrainConfig;
 using drivetrain_control::DrivetrainController;
 using drivetrain_control::DrivetrainStatus;
@@ -69,6 +70,7 @@ using drivetrain_control::Ports;
 using drivetrain_control::StepResult;
 using drivetrain_control::TimeMs;
 using drivetrain_control::VoltageSample;
+using drivetrain_control::WheelDutyCommand;
 using drivetrain_control::WheelOutputs;
 using drivetrain_control::WheelVelocityCommand;
 using test_support::FakeBatteryPort;
@@ -655,6 +657,128 @@ void test_odometry_recovers_commanded_body_velocity_from_wheel_speeds_matching_i
   TEST_ASSERT_FLOAT_WITHIN(kAngularTol, target_body.omega_rad_s, status.odometry.body_velocity.omega_rad_s);
 }
 
+// ---------------------------------------------------------------------------
+// 6. タスク 10.2: 開ループ経路（WheelDutyCommand）で走行中も、保護①
+//    （モータロック）が速度PID 経路と同一に発火し、拘束された輪だけが
+//    遮断されること（要件 5.11, 5.14。閉ループで実際にプラントを回し、
+//    拘束されていない輪は加速して速度閾値を自然に超えることを土台にする
+//    ―― test_motor_lock_trips_only_the_stalled_wheel_after_duration_elapses
+//    と全く同じ流儀で、指令だけを WheelVelocityCommand から
+//    WheelDutyCommand へ置き換える）。
+// ---------------------------------------------------------------------------
+
+void test_motor_lock_trips_only_the_stalled_wheel_when_driving_open_loop(void) {
+  DrivetrainController controller;
+  DrivetrainConfig config = makeValidConfig();
+  config.lock.duty_threshold = 0.3f;
+  config.lock.speed_threshold_mm_s = 10.0f;
+  config.lock.duration_ms = 300;
+  config.lock.clear_duration_ms = 200;
+  config.lock.latching = true;
+  const PlantCoefficients coeffs = makeCoefficients();
+  ClosedLoopFixture fx(coeffs, config);
+
+  TEST_ASSERT_TRUE(controller.configure(config, fx.ports(), /*now=*/0).ok());
+
+  fx.battery.setSample(12600);
+  controller.setOutputEnabled(true, /*now=*/0);
+
+  // 開ループ指令: 各輪のデューティを直接 0.6 に指定する
+  // (>= duty_threshold(0.3))。速度PID を経由しないため target_mm_s ではなく
+  // duty そのものが判定対象になる。
+  WheelDutyCommand command{};
+  command.wheel_duty[0] = 0.6f;
+  command.wheel_duty[1] = 0.6f;
+  command.wheel_duty[2] = 0.6f;
+  command.issued_at_ms = 0;
+  const auto acceptance = controller.submit(command);
+  TEST_ASSERT_TRUE(acceptance.accepted);
+  TEST_ASSERT_TRUE(controller.status().control_path == ControlPath::kOpenLoop);
+
+  constexpr std::uint8_t kStalledWheel = 1;
+  fx.encoder.plant(kStalledWheel).setStalled(true);
+
+  const BlockMask kMotorLockBit = static_cast<BlockMask>(BlockReason::kMotorLock);
+  constexpr DurationMs kDt = 50;
+  TimeMs now = 0;
+  bool tripped_wheel_seen = false;
+  StepResult result{};
+
+  for (int i = 0; i < 8; ++i) {  // now: 50, 100, ..., 400ms (> duration_ms=300)
+    now += kDt;
+    result = controller.step(now);
+    fx.advanceAllWheels(kDt);
+
+    if ((result.wheel_reasons[kStalledWheel] & kMotorLockBit) != 0) {
+      tripped_wheel_seen = true;
+    }
+    // 拘束されていない輪は、実際にプラントで加速して速度閾値を超えるため、
+    // この閉ループ全体を通じてロックが一度も立たないはずである
+    // （速度PID 経路の同名テストと同一の裏取り）。
+    TEST_ASSERT_EQUAL_UINT16(0, result.wheel_reasons[0]);
+    TEST_ASSERT_EQUAL_UINT16(0, result.wheel_reasons[2]);
+  }
+
+  TEST_ASSERT_TRUE_MESSAGE(tripped_wheel_seen,
+                            "expected the stalled wheel to trip MotorLock while driving open-loop");
+  TEST_ASSERT_EQUAL_UINT16(kMotorLockBit, result.wheel_reasons[kStalledWheel]);
+  TEST_ASSERT_EQUAL_UINT16(0, result.wheel_reasons[0]);
+  TEST_ASSERT_EQUAL_UINT16(0, result.wheel_reasons[2]);
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, result.outputs.duty[kStalledWheel]);
+  // 拘束されていない輪は非ゼロのデューティを保つ（発火した輪だけが
+  // 遮断される。要件 14.1〜14.3 の裏取りを開ループでも取る）。
+  TEST_ASSERT_TRUE(result.outputs.duty[0] != 0.0f);
+  TEST_ASSERT_TRUE(result.outputs.duty[2] != 0.0f);
+}
+
+// ---------------------------------------------------------------------------
+// 7. タスク 10.2: 開ループ経路で走行中に出力許可を落とすと、速度PID 経路と
+//    同一に遮断値（デューティ0、BlockReason::kOutputDisabled）になること
+//    （要件 5.11）。
+// ---------------------------------------------------------------------------
+
+void test_output_disabled_blocks_open_loop_duty_command(void) {
+  DrivetrainController controller;
+  const DrivetrainConfig config = makeValidConfig();
+  const PlantCoefficients coeffs = makeCoefficients();
+  ClosedLoopFixture fx(coeffs, config);
+
+  TEST_ASSERT_TRUE(controller.configure(config, fx.ports(), /*now=*/0).ok());
+
+  fx.battery.setSample(12600);
+  controller.setOutputEnabled(true, /*now=*/0);
+
+  WheelDutyCommand command{};
+  command.wheel_duty[0] = 0.5f;
+  command.wheel_duty[1] = 0.5f;
+  command.wheel_duty[2] = 0.5f;
+  command.issued_at_ms = 0;
+  TEST_ASSERT_TRUE(controller.submit(command).accepted);
+
+  // 出力許可済みの間は実際に非ゼロのデューティが流れることを先に確認する
+  // （このテストが何も検証していない状態を避ける）。
+  const StepResult enabled_result = controller.step(/*now=*/50);
+  bool any_nonzero = false;
+  for (std::uint8_t w = 0; w < kWheelCount; ++w) {
+    if (enabled_result.outputs.duty[w] != 0.0f) {
+      any_nonzero = true;
+    }
+  }
+  TEST_ASSERT_TRUE(any_nonzero);
+  TEST_ASSERT_EQUAL_UINT16(0, enabled_result.global_reasons);
+
+  // 出力許可を落とす。指令は開ループのまま(latched().path は変わらない)。
+  controller.setOutputEnabled(false, /*now=*/50);
+  const StepResult disabled_result = controller.step(/*now=*/100);
+
+  const BlockMask kOutputDisabledBit = static_cast<BlockMask>(BlockReason::kOutputDisabled);
+  TEST_ASSERT_TRUE((disabled_result.global_reasons & kOutputDisabledBit) != 0);
+  for (std::uint8_t w = 0; w < kWheelCount; ++w) {
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, disabled_result.outputs.duty[w]);
+  }
+  TEST_ASSERT_TRUE(controller.status().control_path == ControlPath::kOpenLoop);
+}
+
 int main(int argc, char** argv) {
   (void)argc;
   (void)argv;
@@ -667,6 +791,8 @@ int main(int argc, char** argv) {
   RUN_TEST(test_pwm_ceiling_high_voltage_lowers_ceiling_uniformly_across_wheels);
   RUN_TEST(test_pwm_ceiling_uses_fallback_duty_when_voltage_missing);
   RUN_TEST(test_odometry_recovers_commanded_body_velocity_from_wheel_speeds_matching_inverse_kinematics);
+  RUN_TEST(test_motor_lock_trips_only_the_stalled_wheel_when_driving_open_loop);
+  RUN_TEST(test_output_disabled_blocks_open_loop_duty_command);
 
   return UNITY_END();
 }
