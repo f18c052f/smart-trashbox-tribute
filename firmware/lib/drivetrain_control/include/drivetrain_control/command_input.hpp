@@ -1,23 +1,32 @@
 #pragma once
 
 // drivetrain_control CommandInput (design.md L9 "CommandInput", 要件 5.1,
-// 5.2, 5.3, 5.4, 5.5, 5.6, 5.7, 5.8, 5.9, 6.5, 17.6).
+// 5.2, 5.3, 5.4, 5.5, 5.6, 5.7, 5.8, 5.9, 5.10, 5.12, 5.13, 6.5, 17.6).
 //
-// 3つの指令入口（機体速度指令・輪単体指令・出力許可）を受け、投入時点で
-// 輪目標速度（WheelTargets）へ正規化して保持する。
+// 4つの指令入口（機体速度指令・輪単体指令・開ループ指令・出力許可）を受け、
+// 投入時点で輪目標（WheelTargets）へ正規化して保持する。
 //
 // - `submit(BodyVelocityCommand)`: 運動上限（max_body_speed_mm_s /
 //   max_body_omega_rad_s、それぞれ独立にクランプ）でクランプしたうえで
 //   `Kinematics::inverse()` を通し、いずれかの輪速度が
 //   `max_wheel_speed_mm_s` を超える場合は `scaleToLimit()` で方向を保った
-//   まま全輪を等比縮小する（要件 6.5）。
+//   まま全輪を等比縮小する（要件 6.5）。成功時 `latched_.path` を
+//   `ControlPath::kVelocityPid` にする。
 // - `submit(WheelVelocityCommand)`: 逆運動学を経由せず、各輪を個別に
 //   `[-max_wheel_speed_mm_s, +max_wheel_speed_mm_s]` へ飽和させる。1輪だけ
 //   回す用途（M2a-0 の輪単体テスト）には保存すべき運動方向が存在しない
-//   ため、`scaleToLimit()` のような等比縮小は掛けない（要件 5.8）。
-// - どちらの入口も同じ `WheelTargets` に落ちる。**以降の層（保護①〜④・
-//   PID）は指令の形も出自も知らない**。これにより輪単体指令にも保護が
-//   同一適用されることが実装の注意深さではなく構造で成立する（要件 5.9）。
+//   ため、`scaleToLimit()` のような等比縮小は掛けない（要件 5.8）。成功時
+//   `latched_.path` を `ControlPath::kVelocityPid` にする。
+// - `submit(WheelDutyCommand)`: 速度PID を経由しない開ループ指令。各輪の
+//   デューティを個別に `[-1, +1]` へ飽和させる（`WheelVelocityCommand` と
+//   同様、単輪駆動には保存すべき方向が存在しないため等比縮小は掛けない）。
+//   電圧由来の出力上限（PwmCeiling）はここでは適用しない（要件 5.10）。
+//   成功時 `latched_.path` を `ControlPath::kOpenLoop` にする。
+// - 3つの submit() いずれも同じ `WheelTargets` に落ちる。**以降の層
+//   （保護①〜④・PID）は指令の形も出自も知らない**。これにより輪単体指令・
+//   開ループ指令にも保護が同一適用されることが実装の注意深さではなく構造で
+//   成立する（要件 5.9, 5.12）。経路が変わったこと自体は受理・拒否の条件
+//   にならない（下記「過去時刻の拒否」参照）。
 // - `setOutputEnabled()` は指令の投入と完全に独立した入口である。指令を
 //   受け取ったこと自体は出力許可の条件にならない（要件 5.6, 5.7）。
 //
@@ -42,9 +51,11 @@
 namespace drivetrain_control {
 
 struct WheelTargets {
-  float  mm_s[kWheelCount] = {0.0f, 0.0f, 0.0f};
-  TimeMs issued_at_ms = 0;
-  bool   valid = false;  // 起動後まだ一度も有効指令が無ければ false（要件 14.10）
+  float       mm_s[kWheelCount] = {0.0f, 0.0f, 0.0f};   // path == kVelocityPid のとき有効
+  float       duty[kWheelCount] = {0.0f, 0.0f, 0.0f};   // path == kOpenLoop のとき有効（要件 5.10）
+  ControlPath path = ControlPath::kVelocityPid;
+  TimeMs      issued_at_ms = 0;
+  bool        valid = false;  // 起動後まだ一度も有効指令が無ければ false（要件 14.10）
 };
 
 class CommandInput {
@@ -62,6 +73,12 @@ class CommandInput {
 
   // 輪単体指令（要件 5.8）。逆運動学を経由せず、各輪を個別に飽和させる。
   CommandAcceptance submit(const WheelVelocityCommand& command) noexcept;
+
+  // 開ループ指令（要件 5.10）。各輪のデューティをデューティの定義域
+  // [-1, +1] へ個別に飽和させる。電圧由来の出力上限（PwmCeiling）はここで
+  // は適用しない（上限は毎ステップ変わる量であり、投入時点で焼き付けると
+  // 電圧降下に追従しなくなるため。適用は controller の step 側の責務）。
+  CommandAcceptance submit(const WheelDutyCommand& command) noexcept;
 
   // 出力許可（要件 5.7）。指令の投入とは完全に独立しており、これ自体は
   // `latched()` を変更しない。

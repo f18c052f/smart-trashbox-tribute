@@ -66,6 +66,7 @@ CommandAcceptance CommandInput::submit(const BodyVelocityCommand& command) noexc
   for (std::uint8_t i = 0; i < kWheelCount; ++i) {
     latched_.mm_s[i] = wheel_mm_s[i];
   }
+  latched_.path = ControlPath::kVelocityPid;
   latched_.issued_at_ms = command.issued_at_ms;
   latched_.valid = true;
   last_command_clamped_ = clamped;
@@ -98,6 +99,46 @@ CommandAcceptance CommandInput::submit(const WheelVelocityCommand& command) noex
   for (std::uint8_t i = 0; i < kWheelCount; ++i) {
     latched_.mm_s[i] = wheel_mm_s[i];
   }
+  latched_.path = ControlPath::kVelocityPid;
+  latched_.issued_at_ms = command.issued_at_ms;
+  latched_.valid = true;
+  last_command_clamped_ = clamped;
+
+  return CommandAcceptance{/*accepted=*/true, /*clamped=*/clamped};
+}
+
+CommandAcceptance CommandInput::submit(const WheelDutyCommand& command) noexcept {
+  if (isStale(command.issued_at_ms)) {
+    return CommandAcceptance{/*accepted=*/false, /*clamped=*/false};
+  }
+
+  // 各輪を個別にデューティの定義域 [-1, +1] へ飽和させる（等比縮小では
+  // ない。WheelVelocityCommand と同じ理由 — 単輪駆動には保存すべき方向が
+  // 存在しないため）。電圧由来の出力上限（PwmCeiling）はここでは適用し
+  // ない（要件 5.10。上限は毎ステップ変わる量であり、投入時点で焼き付け
+  // ると電圧降下に追従しなくなるため。適用は controller の step 側の
+  // 責務）。
+  bool clamped = false;
+  float wheel_duty[kWheelCount];
+  for (std::uint8_t i = 0; i < kWheelCount; ++i) {
+    float d = command.wheel_duty[i];
+    if (d > 1.0f) {
+      d = 1.0f;
+      clamped = true;
+    } else if (d < -1.0f) {
+      d = -1.0f;
+      clamped = true;
+    }
+    wheel_duty[i] = d;
+  }
+
+  // 3つ目の入口も同じ WheelTargets へ落とす（要件 5.9, 5.12）。既存と同一
+  // の入れ物へ落とすことで、過去時刻の拒否・「起動後まだ一度も有効指令が
+  // 無い」の判定・途絶判定が経路によらず同じロジックで成立する。
+  for (std::uint8_t i = 0; i < kWheelCount; ++i) {
+    latched_.duty[i] = wheel_duty[i];
+  }
+  latched_.path = ControlPath::kOpenLoop;
   latched_.issued_at_ms = command.issued_at_ms;
   latched_.valid = true;
   last_command_clamped_ = clamped;
