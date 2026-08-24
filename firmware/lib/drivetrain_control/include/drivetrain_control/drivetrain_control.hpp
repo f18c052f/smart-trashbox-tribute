@@ -8,9 +8,10 @@
 // （design.md "PublicApi" を正確に踏襲。列挙順もそこに合わせてある）:
 //
 // - 型: TimeMs / DurationMs / BodyVelocityCommand / WheelVelocityCommand /
-//   CommandAcceptance / WheelOutputs / VoltageSample / EncoderCounts /
-//   Pose2D / BodyVelocity / BlockReason / BlockMask / StepResult /
-//   DrivetrainStatus / OdometryState / LowVoltageState
+//   WheelDutyCommand / ControlPath / CommandAcceptance / WheelOutputs /
+//   VoltageSample / EncoderCounts / Pose2D / BodyVelocity / BlockReason /
+//   BlockMask / StepResult / DrivetrainStatus / OdometryState /
+//   LowVoltageState
 // - ポート: EncoderPort / MotorOutputPort / BatteryVoltagePort / Ports
 // - 設定: DrivetrainConfig と各 *Params / ConfigError / ConfigField /
 //   ConfigDiagnostic / validate
@@ -40,6 +41,20 @@
 //   自身のメンバであり、DrivetrainController が再エクスポートされていれば
 //   個別に列挙するまでもなく到達可能である（design.md はメソッド単位では
 //   なく型単位で再エクスポート対象を列挙している）。
+//
+// WheelDutyCommand / ControlPath について（要件 5.10, 5.15、タスク 10.3。
+// 2026-08-24 追加）:
+//   両方とも types.hpp（L1）が定義しており、本ヘッダは types.hpp を元々
+//   #include している（上記リスト参照）ため、include リストへの変更は
+//   不要だった（すでに直接可視だった）。本タスクの変更は、この2つの型が
+//   意図して公開面へ含まれることを上記「型:」一覧へ明記することのみ
+//   ―― 未列挙のまま推移的に見えていた状態から、契約として明文化された
+//   状態への変更である。DrivetrainController::submit(const
+//   WheelDutyCommand&) は上記と同じ理由（DrivetrainController 自身の
+//   メンバ）で個別列挙なしに到達可能。DrivetrainStatus::control_path
+//   （ControlPath 型）で経路を判別できる（要件 5.15。
+//   test/native/test_public_api/test_public_api.cpp の
+//   test_public_api_open_loop_command_reports_control_path 参照）。
 //
 // ⚠️ 再エクスポートしないもの（design.md "PublicApi"）:
 //   Odometry / VelocityPid / 保護4部品（MotorLockDetector /

@@ -35,7 +35,8 @@
 ### This Spec Owns
 
 - **駆動中核ロジックの全体**: 逆運動学、順運動学とオドメトリ、各輪速度PID、保護①〜④の判定と状態機械、出力遮断値の決定、エンコーダのラップアラウンド累積器、ADC 生値 → バッテリ電圧の換算
-- **指令の入力契約**: 機体速度指令 `(vx, vy, ω)` ＋有効時刻 / 輪ごとの目標速度 ＋有効時刻 / 出力許可。この3つが下位層への唯一の入口である
+- **指令の入力契約**: 機体速度指令 `(vx, vy, ω)` ＋有効時刻 / 輪ごとの目標速度 ＋有効時刻 / **輪ごとの目標出力 ＋有効時刻（開ループ。速度PID を経由しない。2026-08-24 追加）** / 出力許可。この4つが下位層への唯一の入口である
+- **開ループ経路そのもの**（2026-08-24 追加、要件 5.10, 5.11）: 速度PID を迂回しつつ**保護①〜④と PWM 上限は同一に適用する**経路。下流に持たせない理由は、保護一式が `DrivetrainController` の内部構造であり**下流から適用する手段が構造的に無い**ためである。下流が出力ポートへ直接書けば保護をすべて迂回することになり、「M2a より前に保護①〜④を実装する」（`docs/drivetrain-spec.md` §10）の趣旨が失われる
 - **ポートの契約**（宣言のみ・実装を持たない）: エンコーダ読み出し / PWM・方向出力 / 電圧読み出し
 - **数値表現の規約**: 距離 mm、時刻 ms、電圧 mV、角度 rad、デューティ `[-1, +1]` の `float`。累積量と時刻は固定幅整数
 - **設定パラメータの型・不変条件・検証**（値は持たない）と、実効設定の外部提供
@@ -70,13 +71,21 @@
 | 変化 | 再検証が要る理由 |
 |---|---|
 | 3つのポートのシグネチャ・返す物理量・妥当性フラグの意味 | アダプタ実装が直接壊れる |
-| 指令入口の型（`BodyVelocityCommand` / `WheelVelocityCommand` / 出力許可）の形 | テレオペの入力写像と M3 の差し替え口が壊れる |
+| 指令入口の型（`BodyVelocityCommand` / `WheelVelocityCommand` / `WheelDutyCommand` / 出力許可）の形 | テレオペの入力写像と M3 の差し替え口が壊れる |
 | `BlockReason` ビットの追加・意味変更・輪ごと／機体全体の別 | 発火試験の合否判定とログ解釈が変わる |
 | `DrivetrainStatus` に含まれる量の単位・定義（特に `DrivetrainParams` 対応表の5量） | `m2-motion-validation` の翻訳が成立しなくなる |
 | 設定構造体のフィールド追加・不変条件の変更 | `configure()` が既存設定を拒否し得る |
 | 累積器の前提条件（法 M・最短経路仮定）の変更 | エンコーダ読み出しアダプタの周期設計が変わる |
 | ビルド構成の増減、pin した pioarduino 版、排他マクロ名 | `teleop-bringup` のビルド設定が壊れる |
 | 純ロジックのディレクトリ配置と2マニフェスト同居の方式 | ファームウェアと `native` のリンク経路が変わる |
+
+> **2026-08-24: トリガ発火の記録。** 開ループ入口の追加（要件 5.10〜5.15）により、上表の
+> **「指令入口の型の形」**と**「`DrivetrainStatus` に含まれる量」**の2つが発火した。
+> 影響先の状態は次のとおりで、いずれも**再検証の対象となる実装がまだ存在しない**:
+> `teleop-bringup` は requirements フェーズ完了時点（design 未着手）であり、本変更は
+> その要件が前提としている契約そのものである。`m2-motion-validation` は Spec 未生成。
+> なお `DrivetrainStatus` への `control_path` 追加はフィールドの**追加**であり、
+> 既存フィールドの単位・定義は変更していない。
 
 ---
 
@@ -313,6 +322,19 @@ tests/
 
 **⚠️ 未決事項を `open-questions.md` 以外へ複製しない**（要件 18.7、`structure.md` Documentation Rules 1）。本 Spec の文書更新は「決着した行を消す」「新規1件を末尾へ足す」「決定内容を `decisions.md` へ移す」に限る。
 
+#### 開ループ入口の追加で変更するファイル（2026-08-24 追加、要件 5.10〜5.15）
+
+**新規ファイルは作らない。** 既存の4ファイルへの追記のみで閉じる。これは「開ループ経路の分岐を `applyWheelOutputs()` の内部だけに閉じる」という設計判断（System Flows「フローの決定事項」）の帰結である。
+
+| ファイル | 変更内容 |
+|---|---|
+| `lib/drivetrain_control/include/drivetrain_control/types.hpp` | `WheelDutyCommand` と `ControlPath` を追加（要件 5.10, 5.15）。`DrivetrainStatus` へ `control_path` を追加 |
+| `lib/drivetrain_control/include/drivetrain_control/command_input.hpp` ＋ `src/command_input.cpp` | `WheelTargets` へ `duty[]` と `path` を追加。`submit(WheelDutyCommand)` を追加し、`[-1, +1]` の飽和とクランプ報告を行う（要件 5.10, 5.13） |
+| `lib/drivetrain_control/include/drivetrain_control/controller.hpp` ＋ `src/controller.cpp` | `submit(WheelDutyCommand)` の委譲を追加。`applyWheelOutputs()` を3経路へ分岐させる（要件 5.11, 5.14）。`status()` へ `control_path` を反映（要件 5.15） |
+| `lib/drivetrain_control/include/drivetrain_control/drivetrain_control.hpp` | 再エクスポート対象へ `WheelDutyCommand` / `ControlPath` を追加（公開面の更新） |
+
+⚠️ **`protection/*` と `velocity_pid.*` は変更しない。** 保護①〜④と PID の実装に手を入れずに開ループを成立させられることが、この設計が正しく分離できている証拠である。変更が必要になった場合は分岐位置を誤っている。
+
 ---
 
 ## System Flows
@@ -330,12 +352,15 @@ flowchart TB
     ReadBatt --> LowV[Supervisor updateLowVoltage 移動平均 継続時間 ヒステリシス]
     LowV --> Ceil[Controller が PwmCeiling evaluate を直接呼ぶ 欠測時は安全側の既定上限]
     Ceil --> Wd[Supervisor updateWatchdog 最後の有効指令からの経過時間]
-    Wd --> Target[CommandInput から輪目標速度を取得]
-    Target --> Pid[VelocityPid compute 各輪の生の出力を算出 クランプしない]
+    Wd --> Target[CommandInput から保持中の指令を取得 目標速度か目標出力か]
+    Target --> Path{保持中の指令の経路は}
+    Path -- 速度PID 経由 --> Pid[VelocityPid compute 各輪の生の出力を算出 クランプしない]
+    Path -- 開ループ --> Duty[指令された目標出力をそのまま生の出力とする PID を holdReset に置く]
     Pid --> Scale{いずれかの輪が上限を超えるか}
+    Duty --> Scale
     Scale -- はい --> Shrink[全輪を等比縮小し方向を保つ]
     Scale -- いいえ --> Commit
-    Shrink --> Commit[VelocityPid commit 実際に適用された値で積分を巻き戻す]
+    Shrink --> Commit[速度PID 経由のときのみ VelocityPid commit で積分を巻き戻す]
     Commit --> Lock[Supervisor updateLock 輪ごと 上限適用後 遮断前の出力指令と計測速度]
     Lock --> Sup[Supervisor compose 直近の updateLowVoltage updateWatchdog updateLock の結果を合成]
     Sup --> Gate[遮断理由が立つ輪のデューティを遮断値にする]
@@ -354,6 +379,11 @@ flowchart TB
 - **等比縮小は2箇所で起きるが、対象が違う**。指令投入時（`CommandInput`）は**輪目標速度**に対して `max_wheel_speed_mm_s` で（要件 6.5）、制御ステップでは**デューティ**に対して PWM 上限で（要件 12.4）。どちらも `scaleToLimit()` という同じ関数を使う
 - **極性の適用は最後の1箇所のみ**。要件 6.6（輪番号と符号の対応を1箇所で定義）を出力側で担保する
 - `now` が前回以前のとき（要件 3.4）は**ポートも読まず、状態も更新せず、前回の結果を返す**。副作用のない短絡にすることで「内部状態を破壊しない」を字義どおり満たす
+- **開ループ経路の分岐は `applyWheelOutputs()` の内部だけに閉じる**（2026-08-24 追加、要件 5.10, 5.11）。フロー図の `Lock` 以降（`Sup` → `Gate` → `Polarity` → `Write`）は**一切変更しない**。要件 5.11（開ループでも保護①〜④と上限を同一に適用）は、この一点を守ることで**実装の注意深さではなく構造で成立する**。分岐を `step()` 本体へ引き上げると、保護の適用漏れが起こりうる経路が生まれる
+- **開ループ経路でも PWM 上限は「3輪まとめての等比縮小」として適用する**（要件 5.11）。輪ごとの個別クリップにすると、上限が効いた瞬間に指令した方向が歪む。M2a-1 の主目的は**逆運動学の符号の確認**であり、縮小が方向を歪めると確認そのものが成立しない
+- **開ループ経路では毎ステップ `VelocityPid::holdReset(計測速度)` を呼ぶ。** これが要件 5.14（経路の切り替え時に切替前の内部状態を持ち越さない）を**追加の機構なしで**満たす。開ループで走っている間ずっと積分項がゼロに保たれるため、速度PID 経由へ戻った時点の PID は必ず清浄な状態から始まる。逆向き（PID → 開ループ）は、開ループ側が PID の出力を一切参照しないため持ち越しが起こり得ない
+- **開ループ経路ではウォッチドッグ発火時の扱いも速度PID 経由と同一である**（要件 5.12）。`WheelTargets::issued_at_ms` / `valid` は指令の形によらず同じ意味を持つため、`updateWatchdog()` の呼び出しは分岐の**外側**に留まる。発火中は既存の `holdReset` ＋デューティ0の経路がそのまま使われる
+- **モータロック判定の入力は開ループでも「上限適用後・遮断前の出力指令」である**（要件 5.11）。速度PID 経由では「制御が出した値」、開ループでは「操作者が指定した値」と出自は変わるが、①の判定は「出力を出しているのに輪が回っていない」を見るものであり、**出力指令の出自に依存しない**。したがって判定の意味は両経路で保たれる
 
 ### 指令の受付から輪目標速度まで
 
@@ -365,13 +395,17 @@ flowchart LR
     Shrink2 --> Store[輪目標速度 と 有効時刻 を保持]
     Wheel[submitWheelVelocities w0 w1 w2 issued_at] --> Sat[各輪を個別に上限で飽和 し クランプ有無を記録]
     Sat --> Store
+    DutyIn[submitWheelDuties d0 d1 d2 issued_at] --> DutySat[各輪を定義域 -1 +1 で飽和 し クランプ有無を記録]
+    DutySat --> Store
     Store --> Down[以降の層は指令の出自を知らない]
     Enable[setOutputEnabled 許可 issued_at] --> Gate2[出力ゲート 指令とは独立]
 ```
 
-**この分岐が要件 5.2 に反しない理由**: ここで分かれているのは**指令の形**（機体速度か輪速度か）であり、**指令元**（テレオペか本番経路か）ではない。どちらの形も同じ `WheelTargets` に落ちるため、保護①〜④とPIDより下は指令の出自も形も一切知らない。要件 5.9（輪単体指令にも保護を同一に適用）が実装の注意深さではなく構造で成立する。
+**この分岐が要件 5.2 に反しない理由**: ここで分かれているのは**指令の形**（機体速度か・輪速度か・輪出力か）であり、**指令元**（テレオペか本番経路か）ではない。いずれの形も同じ `WheelTargets` に落ちるため、保護①〜④は指令の出自も形も一切知らない。要件 5.9（輪単体指令にも保護を同一に適用）と要件 5.11（開ループにも同一に適用）が、実装の注意深さではなく構造で成立する。
 
 **輪単体指令に等比縮小を掛けない理由**: 1輪だけ回す用途（M2a-0 の輪単体テスト）には保存すべき「運動の方向」が存在しない。各輪を個別に飽和させ、飽和したことを `status()` で報告する。
+
+**開ループ指令を `WheelTargets` へ落とす理由**（2026-08-24 追加、要件 5.10, 5.12）: 別のラッチ変数を設けるのではなく、`WheelTargets` に**どちらの経路の指令を保持しているか**を持たせて同一の入れ物へ落とす。過去時刻の拒否・「起動後まだ一度も有効指令が無い」の判定・`latched().issued_at_ms` を用いたウォッチドッグは、いずれも `WheelTargets` **1つ**を見ることで成立している。ラッチを2本に割ると、要件 5.12（開ループでも途絶判定が同一）が**構造ではなく実装の注意深さ**で成立することになり、しかも「どちらのラッチの時刻を見るか」という分岐がウォッチドッグへ持ち込まれる。これは④を「指令元固有の事情を含まない形」に保つという要件 13.2 / 13.7 の趣旨にも反する。
 
 ### 保護② LiPo 低電圧の状態遷移
 
@@ -430,6 +464,12 @@ stateDiagram-v2
 | 5.5 | 直前の有効指令と時刻の保持 | CommandInput | `CommandInput::latched()` | 指令受付 |
 | 5.6, 5.7 | 指令受領は出力許可ではない・独立した許可入口 | CommandInput, ProtectionSupervisor | `setOutputEnabled` | 制御ステップ |
 | 5.8 | 輪ごとの直接指令入口 | CommandInput | `WheelVelocityCommand` | 指令受付 |
+| 5.10 | 速度PID を経由しない開ループ入口 | CommandInput, DrivetrainController | `WheelDutyCommand`, `ControlPath` | 指令受付・制御ステップ |
+| 5.11 | 開ループでも保護①〜④と上限を同一適用 | DrivetrainController, ProtectionSupervisor, PwmCeiling | `applyWheelOutputs()` の分岐 | 制御ステップ |
+| 5.12 | 開ループでも途絶判定が同一 | CommandInput, CommandWatchdog | `WheelTargets::issued_at_ms` | 制御ステップ |
+| 5.13 | 目標出力の定義域クランプと報告 | CommandInput | `CommandAcceptance` | 指令受付 |
+| 5.14 | 経路切替時に内部状態を持ち越さない | DrivetrainController, VelocityPid | `VelocityPid::holdReset()` | 制御ステップ |
+| 5.15 | 有効な経路を外部へ提供 | DrivetrainController, Types | `DrivetrainStatus::control_path` | 制御ステップ |
 | 6.1, 6.2, 6.6 | 逆運動学・寸法パラメータ・符号の一元化 | Kinematics, GeometryParams | `Kinematics::inverse` | — |
 | 6.3, 6.4 | 純並進の往復一致・純回転で3輪同一 | Kinematics | `Kinematics::forward` | — |
 | 6.5 | 出力範囲超過時の等比縮小 | CommandInput, DrivetrainController | `scaleToLimit` | 制御ステップ／指令受付 |
@@ -510,7 +550,7 @@ stateDiagram-v2
 | PwmCeiling | L7 | 保護③ 上限決定 | 12 | Config (P0) | Service |
 | CommandWatchdog | L7 | 保護④ | 13 | Config (P0) | Service, State |
 | ProtectionSupervisor | L8 | 保護①②④の検出器を保持し遮断理由を合成 | 14 | MotorLockDetector×3, LowVoltageProtector, CommandWatchdog (P0) | Service, State |
-| CommandInput | L9 | 3つの指令入口と保持 | 5, 17.6 | Kinematics (P0) | Service, State |
+| CommandInput | L9 | 4つの指令入口と保持 | 5, 17.6 | Kinematics (P0) | Service, State |
 | DrivetrainController | L10 | 制御ステップの合成 | 3, 6.5, 12.4, 15.4, 15.5, 17.7 | L0–L9 (P0), Ports (P0) | Service, State |
 | PublicApi | L11 | 下流が参照する唯一の入口 | 17.5 | L0–L10 (P0) | Service |
 | WheelPlant / FakePorts | Test | 閉ループ検証用の車輪応答モデルと偽ポート | 16.2, 16.3, 16.4 | PublicApi (P1) | Service |
@@ -644,7 +684,7 @@ struct ConfigDiagnostic {
 | Field | Detail |
 |-------|--------|
 | Intent | 指令・出力・状態・遮断理由の型を、指令元と処理系に依存しない形で定義する |
-| Requirements | 4.1, 4.2, 4.4, 5.1, 5.3, 14.4, 17.1 |
+| Requirements | 4.1, 4.2, 4.4, 5.1, 5.3, 5.10, 5.15, 14.4, 17.1 |
 
 ##### Service Interface
 
@@ -672,6 +712,17 @@ struct BodyVelocityCommand {          // 要件 5.1
 struct WheelVelocityCommand {         // 要件 5.8
   float  wheel_mm_s[kWheelCount] = {0.0f, 0.0f, 0.0f};   // 各輪の周速
   TimeMs issued_at_ms = 0;
+};
+
+struct WheelDutyCommand {             // 要件 5.10（開ループ。速度PID を経由しない）
+  float  wheel_duty[kWheelCount] = {0.0f, 0.0f, 0.0f};   // 各輪のデューティ [-1, +1]
+  TimeMs issued_at_ms = 0;
+};
+
+// 有効な制御経路（要件 5.10, 5.15）。保護①〜④はこれを参照しない。
+enum class ControlPath : std::uint8_t {
+  kVelocityPid = 0,                   // 機体速度指令・輪速度指令
+  kOpenLoop    = 1,                   // 輪出力指令
 };
 
 struct CommandAcceptance {            // 要件 5.4
@@ -1279,16 +1330,24 @@ class ProtectionSupervisor {
 
 | Field | Detail |
 |-------|--------|
-| Intent | 3つの入口を受け、投入時点で輪目標速度へ正規化して保持する |
-| Requirements | 5.1, 5.2, 5.3, 5.4, 5.5, 5.6, 5.7, 5.8, 5.9, 6.5, 17.6 |
+| Intent | 4つの入口を受け、投入時点で輪目標速度または輪目標出力へ正規化して保持する |
+| Requirements | 5.1, 5.2, 5.3, 5.4, 5.5, 5.6, 5.7, 5.8, 5.9, 5.10, 5.12, 5.13, 6.5, 17.6 |
 
 ##### Service Interface
 
 ```cpp
+// どちらの経路の指令を保持しているか（要件 5.10, 5.15）。
+enum class ControlPath : std::uint8_t {
+  kVelocityPid = 0,  // 機体速度指令・輪速度指令。速度PID を経由する
+  kOpenLoop    = 1,  // 輪出力指令。速度PID を経由しない
+};
+
 struct WheelTargets {
-  float  mm_s[kWheelCount] = {0.0f, 0.0f, 0.0f};
-  TimeMs issued_at_ms = 0;
-  bool   valid = false;                 // 起動後まだ一度も有効指令が無ければ false（要件 14.10）
+  float       mm_s[kWheelCount] = {0.0f, 0.0f, 0.0f};   // path == kVelocityPid のとき有効
+  float       duty[kWheelCount] = {0.0f, 0.0f, 0.0f};   // path == kOpenLoop のとき有効（要件 5.10）
+  ControlPath path = ControlPath::kVelocityPid;
+  TimeMs      issued_at_ms = 0;
+  bool        valid = false;            // 起動後まだ一度も有効指令が無ければ false（要件 14.10）
 };
 
 class CommandInput {
@@ -1297,11 +1356,12 @@ class CommandInput {
 
   CommandAcceptance submit(const BodyVelocityCommand& command) noexcept;   // 要件 5.1
   CommandAcceptance submit(const WheelVelocityCommand& command) noexcept;  // 要件 5.8
+  CommandAcceptance submit(const WheelDutyCommand& command) noexcept;      // 要件 5.10
   void setOutputEnabled(bool enabled, TimeMs now) noexcept;                // 要件 5.7
 
   const WheelTargets& latched() const noexcept;      // 要件 5.5
   bool outputEnabled() const noexcept;
-  bool lastCommandClamped() const noexcept;          // 要件 5.4
+  bool lastCommandClamped() const noexcept;          // 要件 5.4, 5.13
 };
 ```
 
@@ -1309,7 +1369,9 @@ class CommandInput {
 - Postconditions:
   - `BodyVelocityCommand` は `max_body_speed_mm_s` / `max_body_omega_rad_s` でクランプされ、**逆運動学を通した後に `max_wheel_speed_mm_s` で等比縮小される**（要件 6.5）。クランプまたは縮小が起きたことは `CommandAcceptance::clamped` と `lastCommandClamped()` で外部へ提供される（要件 5.4）
   - `WheelVelocityCommand` は**各輪を個別に飽和**させる。1輪だけ回す用途には保存すべき運動方向が存在しないため等比縮小を掛けない
-  - どちらの入口も同じ `WheelTargets` に落ちる。**以降の層は指令の形も出自も知らない**（要件 5.2, 5.9）
+  - `WheelDutyCommand` は各輪を**デューティの定義域 `[-1, +1]` で個別に飽和**させ、`path` を `kOpenLoop` にして保持する（要件 5.13）。ここでは PWM 上限（`PwmCeiling`）を**適用しない** —— 上限はバッテリ電圧に依存して毎ステップ変わる量であり、投入時点の値で焼き付けると電圧降下に追従しなくなる。上限の適用は制御ステップ側（等比縮小）が担う（要件 5.11）
+  - **どの入口も同じ `WheelTargets` に落ちる。以降の層は指令の形も出自も知らない**（要件 5.2, 5.9, 5.11）。`path` は「どちらの値を読むか」を制御ステップへ伝えるだけであり、**保護①〜④はこれを一切参照しない**
+  - 過去時刻の拒否は `path` によらず `WheelTargets::issued_at_ms` の単調性のみで判定する（要件 5.12）。**経路をまたぐ指令の入れ替わりも通常の指令更新と同じに扱う** —— 経路が変わったこと自体は受理・拒否の条件にしない
   - 指令の受領は出力許可の条件にならない（要件 5.6）。`setOutputEnabled` は完全に独立した入口である（要件 5.7）
 - Invariants:
   - **指令元に固有の情報を型に含めない**（要件 5.3）。`BodyVelocityCommand` はスティック値もボタン状態も通信のシーケンス番号も持たない
@@ -1317,7 +1379,7 @@ class CommandInput {
 
 **Implementation Notes**
 
-- Integration: `teleop-bringup` のデッドマンは `setOutputEnabled()` への写像として実現される。輪単体テスト（D-pad による対象輪選択）は `submit(WheelVelocityCommand)` への写像として実現される。**どちらの写像も `teleop-bringup` が持ち、本 Spec は入口だけを持つ**
+- Integration: `teleop-bringup` のデッドマンは `setOutputEnabled()` への写像として実現される。輪単体テスト（D-pad による対象輪選択）は `submit(WheelVelocityCommand)` への、M2a-1 の開ループ走行は `submit(WheelDutyCommand)` への写像として実現される。**いずれの写像も `teleop-bringup` が持ち、本 Spec は入口だけを持つ**
 - Risks: `issued_at_ms` を呼び出し側が正しく入れないとウォッチドッグが機能しない。**過去時刻の指令は `accepted = false` で拒否**し、ウォッチドッグを欺けないようにする
 
 #### DrivetrainController
@@ -1325,7 +1387,7 @@ class CommandInput {
 | Field | Detail |
 |-------|--------|
 | Intent | 制御ステップを合成し、外部へ渡す出力指令を確定させる |
-| Requirements | 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 6.5, 12.4, 15.4, 15.5, 17.1, 17.7 |
+| Requirements | 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 5.11, 5.14, 5.15, 6.5, 12.4, 15.4, 15.5, 17.1, 17.7 |
 
 ##### Service Interface
 
@@ -1342,6 +1404,7 @@ class DrivetrainController {
   // 指令入口（CommandInput への委譲）
   CommandAcceptance submit(const BodyVelocityCommand& command) noexcept;
   CommandAcceptance submit(const WheelVelocityCommand& command) noexcept;
+  CommandAcceptance submit(const WheelDutyCommand& command) noexcept;   // 要件 5.10
   void setOutputEnabled(bool enabled, TimeMs now) noexcept;
 
   void resetProtections(TimeMs now) noexcept;                    // 要件 14.6
@@ -1379,6 +1442,7 @@ struct DrivetrainStatus {
   bool        has_valid_command = false;
   bool        last_command_clamped = false;
   TimeMs      last_command_at_ms = 0;
+  ControlPath control_path = ControlPath::kVelocityPid;  // 有効な経路（要件 5.15）
 
   float       wheel_target_mm_s[kWheelCount]   = {0.0f, 0.0f, 0.0f};
   float       wheel_measured_mm_s[kWheelCount] = {0.0f, 0.0f, 0.0f};
@@ -1409,6 +1473,13 @@ struct DrivetrainStatus {
 
 - Integration: `configure()` は `Ports` の 3 つが非 null であることも検証する。null は設定エラーとして拒否する
 - Integration: `VelocityPid::compute()` → 等比縮小 → `commit()` の呼び出し順序は `controller.cpp` 内の非公開ヘルパー（例: `applyWheelOutputs()`）へ閉じ込め、`compute()`/`commit()` を直接呼ぶコードパスを `controller.cpp` の外に作らない。2段プロトコルの誤用（`commit()` の呼び忘れ・二重 `compute()`）を、呼び出し箇所を1つに限定することで防ぐ
+- Integration（2026-08-24 追加、要件 5.10, 5.11, 5.14）: **開ループ経路の分岐も同じ `applyWheelOutputs()` の内部に置く。** 同ヘルパーは `WheelTargets::path` を見て3通りに分かれる:
+  1. **ウォッチドッグ発火中**（`path` によらず最優先）: 全輪 `holdReset(計測速度)` ＋ 適用デューティ0（既存の挙動を変更しない、要件 13.5）
+  2. **`kVelocityPid`**: 既存の `compute()` → `scaleToLimit(上限)` → `commit()`
+  3. **`kOpenLoop`**: 指令された `duty[]` を生の出力として `scaleToLimit(上限)` を掛け、**`compute()`/`commit()` を一切呼ばず全輪 `holdReset(計測速度)` を呼ぶ**
+  
+  `VelocityPid` の Preconditions（`velocity_pid.hpp`）は同一ステップ内で `compute()`/`commit()` と `holdReset()` を混在させることを禁じている。3経路はいずれもこの制約を満たす（1と3は `holdReset()` のみ、2は `compute()`/`commit()` のみ）。**`applyWheelOutputs()` の外側は経路を一切知らない**ため、`Lock` 以降の保護適用は3経路で完全に同一である（要件 5.11）
+- Integration（要件 5.14）: 経路の切り替えに専用の遷移処理を持たせない。`kOpenLoop` の間は毎ステップ `holdReset()` が呼ばれ積分項がゼロに保たれるため、`kVelocityPid` へ戻った最初のステップの PID は必ず清浄な状態から始まる。**「切り替えを検出して状態をクリアする」という明示的な機構を設けない**のは、検出漏れが静かな不具合になる形を避けるためである（毎ステップ無条件にリセットする方が、状態数が少なく検証しやすい）
 - Validation: 決定性テストは「同じ時刻列と入力列で2回回して `StepResult` の全フィールドが一致すること」で行う（要件 3.3, 16.5）
 - Validation: `command_apply_latency_ms` は、指令投入から複数ステップ後に反映された場合（`step()` の呼び出し間隔より短い周期で複数の指令が届いた場合を含む）でも「最後に反映が切り替わった時点の遅れ」を報告することを回帰させる
 - Risks: `now` の単調性はアダプタが保証する。`esp_timer_get_time()`（µs, `int64_t`）を 1000 で割って渡すのが想定であり、**Arduino の `millis()`（`uint32_t`、約 49.7 日で折り返す）をそのまま渡さない**ことを `teleop-bringup` の期待として明記する
@@ -1422,7 +1493,7 @@ struct DrivetrainStatus {
 
 `include/drivetrain_control/drivetrain_control.hpp` が以下を再エクスポートする。下流はこのヘッダだけを include する。
 
-- 型: `TimeMs` / `DurationMs` / `BodyVelocityCommand` / `WheelVelocityCommand` / `CommandAcceptance` / `WheelOutputs` / `VoltageSample` / `EncoderCounts` / `Pose2D` / `BodyVelocity` / `BlockReason` / `BlockMask` / `StepResult` / `DrivetrainStatus` / `OdometryState` / `LowVoltageState`
+- 型: `TimeMs` / `DurationMs` / `BodyVelocityCommand` / `WheelVelocityCommand` / `WheelDutyCommand` / `ControlPath` / `CommandAcceptance` / `WheelOutputs` / `VoltageSample` / `EncoderCounts` / `Pose2D` / `BodyVelocity` / `BlockReason` / `BlockMask` / `StepResult` / `DrivetrainStatus` / `OdometryState` / `LowVoltageState`
 - ポート: `EncoderPort` / `MotorOutputPort` / `BatteryVoltagePort` / `Ports`
 - 設定: `DrivetrainConfig` と各 `*Params` / `ConfigError` / `ConfigField` / `ConfigDiagnostic` / `validate`
 - 部品: `WrapAccumulator` / `VoltageScaler` / `Kinematics` / `DrivetrainController`
@@ -1636,6 +1707,11 @@ class FakeBatteryPort  : public drivetrain_control::BatteryVoltagePort { /* 時�
 5. **決定性**（`controller_step/`）— 同一の時刻列・指令列・ポート応答列で2回回し、`StepResult` と `DrivetrainStatus` の全フィールドが一致すること（要件 3.3, 16.5）
 6. **Supervisor の呼び出し順序**（`protection_supervisor/`）— `updateLowVoltage()` / `updateWatchdog()` / `updateLock()` を1ステップにつき1回ずつ呼んでから `compose()` を呼ぶ実装（`controller_step/` 経由）で、`LowVoltageProtector` の継続時間判定が実際の経過時間と一致すること。**同一ステップ内で `updateLowVoltage()` を2回呼ぶ誤用**が継続時間を実際より早く進めることを回帰テストで固定し、実装がこの誤用をしていないことの間接証拠とする（要件 11.2, 11.5, 14.7）
 7. **指令反映遅れの算出**（`command_input/` ＋ `controller_step/`）— 新しい指令が `latched()` へ反映された最初の `step()` で `command_apply_latency_ms` が `now - issued_at_ms` になること、次の指令が反映されるまで値が保持されること、`step()` の呼び出し間隔より短い周期で複数の指令が届いても最後の遷移の遅れを報告すること（要件 17.1）
+8. **開ループ経路でも保護が同一に適用される**（`controller_step/` ＋ `protection_supervisor/`、2026-08-24 追加）— 速度PID 経由で最終的に得られたデューティと**同じ値**を開ループ入口へ直接与えたとき、**保護①〜④の発火・遮断理由・遮断値・極性適用が完全に一致する**ことを確認する。要件 5.11 を構造ではなく振る舞いで裏取りする（項目1が要件 5.9 に対して行っているのと同じ形）
+9. **開ループでも途絶判定が同一**（`protection_watchdog/` ＋ `controller_step/`、2026-08-24 追加）— 開ループ指令を投入したのち指令を止めて時刻だけを進め、速度PID 経由の場合と**同一の時刻で**遮断されることを確認する（要件 5.12）
+10. **経路切替で内部状態を持ち越さない**（`velocity_pid/` ＋ `controller_step/`、2026-08-24 追加）— 速度PID 経由で積分項を十分に育てた状態から開ループへ切り替え、再び速度PID 経由へ戻したとき、**戻った最初のステップの出力が積分項ゼロから始まる場合と一致する**ことを確認する（要件 5.14）。⚠️ この試験は「開ループ中に毎ステップ `holdReset()` を呼ぶ」という設計判断そのものを検証する項目であり、**この試験が無いと積分項の持ち越しは静かな不具合として残る**
+11. **定義域外の目標出力のクランプ**（`command_input/`、2026-08-24 追加）— `[-1, +1]` を超える目標出力が定義域へ制限され、`CommandAcceptance::clamped` と `lastCommandClamped()` で報告されること（要件 5.13）
+12. **有効な経路の提示**（`controller_step/`、2026-08-24 追加）— 各入口へ投入した後の `status().control_path` が期待どおりであること、経路をまたぐ指令の入れ替わりが通常の指令更新と同じに受理されること（要件 5.15, 5.12）
 
 ### 閉ループテスト（`firmware/test/native/controller_closed_loop/`）
 

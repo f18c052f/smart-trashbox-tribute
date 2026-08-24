@@ -115,6 +115,15 @@ CommandAcceptance DrivetrainController::submit(const WheelVelocityCommand& comma
   return command_input_.get().submit(command);
 }
 
+CommandAcceptance DrivetrainController::submit(const WheelDutyCommand& command) noexcept {
+  // 要件 5.10。他の2つの submit() と同じ方針: 未構築の CommandInput へは
+  // 一切触れない。
+  if (!configured_) {
+    return CommandAcceptance{};
+  }
+  return command_input_.get().submit(command);
+}
+
 void DrivetrainController::setOutputEnabled(bool enabled, TimeMs now) noexcept {
   if (!configured_) {
     return;
@@ -217,11 +226,12 @@ StepResult DrivetrainController::step(TimeMs now) noexcept {
 
   const bool watchdog_tripped = protection_.get().updateWatchdog(now, targets.issued_at_ms, targets.valid);
 
-  // Target → Pid → Scale → Commit: 2段プロトコルの呼び出し順序を
+  // Target → Pid/OpenLoop → Scale → Commit/HoldReset: 3経路の分岐を
   // applyWheelOutputs() へ閉じ込める（compute()/commit() を直接呼ぶ経路は
-  // これ以外に作らない）。ウォッチドッグ発火中は目標速度を無視し、PID を
-  // holdReset の経路に置く（直前の指令を継続実行しない、要件 13.5）。
-  applyWheelOutputs(targets.mm_s, dt_ms, ceiling, watchdog_tripped, last_commanded_duty_);
+  // これ以外に作らない。要件 5.11, 5.14）。ウォッチドッグ発火中は経路に
+  // よらず目標を無視し、PID を holdReset の経路に置く（直前の指令を継続
+  // 実行しない、要件 13.5）。
+  applyWheelOutputs(targets, dt_ms, ceiling, watchdog_tripped, last_commanded_duty_);
 
   // Lock: 保護①（モータロック）を輪ごとに1回進める。判定入力は「上限
   // 適用後・遮断前」の出力指令（last_commanded_duty_、極性適用前）である
@@ -265,12 +275,17 @@ StepResult DrivetrainController::step(TimeMs now) noexcept {
   return last_result_;
 }
 
-void DrivetrainController::applyWheelOutputs(const float targets_mm_s[kWheelCount], DurationMs dt_ms,
-                                              float ceiling, bool watchdog_tripped,
+void DrivetrainController::applyWheelOutputs(const WheelTargets& targets, DurationMs dt_ms, float ceiling,
+                                              bool watchdog_tripped,
                                               float out_applied_duty[kWheelCount]) noexcept {
+  // 3経路の分岐はこの関数の内部だけに置く（design.md「フローの決定事項」
+  // 2026-08-24 追加分、要件 5.11, 5.14）。呼び出し側（step()）はこの関数
+  // 以外で経路を分岐させない。
+
   if (watchdog_tripped) {
+    // 途絶発火中は path によらず最優先（既存の挙動を変更しない）。
     // design.md「フローの決定事項」: 発火中は CommandInput の保持する輪
-    // 目標速度が PID へ渡らない。目標を 0 とし、PID を holdReset の経路に
+    // 目標が PID へ渡らない。目標を 0 とし、PID を holdReset の経路に
     // 置く。VelocityPid の Preconditions（velocity_pid.hpp）は同一ステップ
     // 内で compute()/commit() と holdReset() を混在させることを禁じるため、
     // ここでは compute()/commit() を一切呼ばない。
@@ -281,10 +296,37 @@ void DrivetrainController::applyWheelOutputs(const float targets_mm_s[kWheelCoun
     return;
   }
 
-  // compute(): 上限でクランプしない生の出力を3輪ぶん算出する。
+  if (targets.path == ControlPath::kOpenLoop) {
+    // 開ループ経路（要件 5.10, 5.11）: 指令された各輪のデューティを生の
+    // 出力として扱う。輪ごとの個別クリップではなく、3輪まとめての等比
+    // 縮小として PWM 上限を適用する（要件 5.11。上限が効いた瞬間に指令
+    // した方向が歪むと、逆運動学の符号確認そのものが成立しなくなるため。
+    // scaleToLimit() は速度PID 経路と同じ関数・同じ意味論 ―― 既に上限
+    // 以内なら値を変更しない）。
+    float raw[kWheelCount];
+    for (std::uint8_t i = 0; i < kWheelCount; ++i) {
+      raw[i] = targets.duty[i];
+    }
+    scaleToLimit(raw, ceiling);
+
+    // 速度PID の2段プロトコル（compute()/commit()）は一切呼ばない。毎
+    // ステップ全輪の PID を holdReset の経路に置くことで、経路の切り替え
+    // 時に積分項が持ち越されない（要件 5.14）。「切り替えを検出して状態を
+    // クリアする」専用の遷移処理は設けない ―― kOpenLoop の間は毎ステップ
+    // holdReset() が呼ばれ続けるため、kVelocityPid へ戻った最初のステップ
+    // は必ず積分ゼロから始まる。
+    for (std::uint8_t i = 0; i < kWheelCount; ++i) {
+      pid_[i].get().holdReset(last_measured_mm_s_[i]);
+      out_applied_duty[i] = raw[i];
+    }
+    return;
+  }
+
+  // kVelocityPid 経路（既存）。compute(): 上限でクランプしない生の出力を
+  // 3輪ぶん算出する。
   float raw[kWheelCount];
   for (std::uint8_t i = 0; i < kWheelCount; ++i) {
-    raw[i] = pid_[i].get().compute(targets_mm_s[i], last_measured_mm_s_[i], dt_ms);
+    raw[i] = pid_[i].get().compute(targets.mm_s[i], last_measured_mm_s_[i], dt_ms);
   }
 
   // Scale: 輪ごとの個別クリップではなく、3輪まとめての等比縮小として PWM
@@ -323,6 +365,8 @@ DrivetrainStatus DrivetrainController::status() const noexcept {
   const WheelTargets& targets = command_input_.get().latched();
   status.has_valid_command = targets.valid;
   status.last_command_at_ms = targets.issued_at_ms;
+  // 有効な制御経路を外部へ提供する（要件 5.15）。
+  status.control_path = targets.path;
 
   for (std::uint8_t i = 0; i < kWheelCount; ++i) {
     status.wheel_target_mm_s[i] = targets.mm_s[i];

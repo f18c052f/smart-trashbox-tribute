@@ -49,6 +49,7 @@ using drivetrain_control::BlockMask;
 using drivetrain_control::BlockReason;
 using drivetrain_control::BodyVelocity;
 using drivetrain_control::BodyVelocityCommand;
+using drivetrain_control::ControlPath;
 using drivetrain_control::DrivetrainConfig;
 using drivetrain_control::DrivetrainController;
 using drivetrain_control::DrivetrainStatus;
@@ -57,8 +58,12 @@ using drivetrain_control::GeometryParams;
 using drivetrain_control::Kinematics;
 using drivetrain_control::kWheelCount;
 using drivetrain_control::Ports;
+using drivetrain_control::PwmCeiling;
+using drivetrain_control::scaleToLimit;
 using drivetrain_control::StepResult;
 using drivetrain_control::TimeMs;
+using drivetrain_control::VoltageSample;
+using drivetrain_control::WheelDutyCommand;
 using drivetrain_control::WheelVelocityCommand;
 using test_support::FakeBatteryPort;
 using test_support::FakeEncoderPort;
@@ -663,6 +668,276 @@ void test_low_voltage_trip_timing_matches_real_elapsed_time_through_full_control
 //    ポート実装に差し替えても検証の深さが増えない）。
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// 7. タスク 10.4 項目1: 速度PID 経由で最終的に得られたデューティと同じ値を
+//    開ループ入口へ直接与えたとき、保護①〜④の発火・遮断理由・遮断値・
+//    極性適用が完全に一致する（要件 5.9 に対して上の §1
+//    (test_body_and_wheel_command_entry_produce_identical_traces_through_full_stack)
+//    が行った裏取りと同じ形を、要件 5.11, 5.12 に対して行う）。
+//
+//    速度PID は「指令」ではなく「出力」としてデューティを生む経路であり、
+//    §1のように「同じ入力を2つの入口へ」比較できない。そこで:
+//    (a) このシナリオでは輪プラントを一切進めない（advanceAllWheels() を
+//        呼ばない）ため計測速度は常に0であり、かつ ki=kd=0 なので速度PID
+//        の生出力 raw=kp*target は時刻に依らず一定になる。`PwmCeiling` /
+//        `scaleToLimit()` はどちらも状態を持たない純関数（design.md
+//        "PwmCeiling" Implementation Notes）であるため、
+//        「速度PID 経由で最終的に得られるはずのデューティ」を
+//        DrivetrainController を一切構築せずに独立計算できる。
+//    (b) 求めた値を WheelDutyCommand として開ループ入口へ直接投入した別の
+//        コントローラを、速度PID 側と完全に同一の時刻列・電圧列で
+//        step() させ、StepResult/DrivetrainStatus の全フィールドを毎ステップ
+//        比較する（§1と同じ assertStepResultEqual/assertStatusEqual を
+//        再利用する）。
+//
+//    設定はこのシナリオの中で保護①（ロック）・保護②（低電圧）・保護④
+//    （ウォッチドッグ）がいずれも発火するように意図的に配置しており（保護③
+//    ＝PWM上限は常時効いている）、発火の有無・遮断理由・遮断値（0）・出力
+//    極性の適用が全経路で一致することを、単一の比較ループで確認する。
+// ---------------------------------------------------------------------------
+
+void test_open_loop_input_matching_velocity_pid_output_produces_identical_protection_behavior(void) {
+  DrivetrainConfig config = makeValidConfig();
+  for (std::uint8_t w = 0; w < kWheelCount; ++w) {
+    config.pid[w] = {/*kp=*/0.0008f, /*ki=*/0.0f, /*kd=*/0.0f, /*integral_limit=*/1.0f};
+  }
+  // 極性適用の一致も併せて確認するため、輪1だけ極性を反転させておく
+  // （test_controller_step.cpp の makeValidConfig() と同じ流儀）。
+  config.output.polarity[0] = 1;
+  config.output.polarity[1] = -1;
+  config.output.polarity[2] = 1;
+
+  config.lock.duty_threshold = 0.3f;
+  config.lock.speed_threshold_mm_s = 10.0f;
+  config.lock.duration_ms = 80;
+  config.lock.clear_duration_ms = 80;
+  config.lock.latching = true;
+
+  config.low_voltage.warn_milli_volts = 10500;
+  config.low_voltage.stop_milli_volts = 9500;
+  config.low_voltage.recover_milli_volts = 10500;
+  config.low_voltage.average_window = 1;
+  config.low_voltage.stop_duration_ms = 80;
+  config.low_voltage.unavailable_duration_ms = 100000;
+  config.low_voltage.latching = true;
+
+  config.pwm_ceiling.enabled = true;
+  config.pwm_ceiling.reference_milli_volts = 4500;
+  config.pwm_ceiling.fallback_duty = 0.2f;
+  config.pwm_ceiling.override_fn = nullptr;
+
+  config.watchdog.timeout_ms = 250;
+
+  const PlantCoefficients coeffs = makeCoefficients();
+  constexpr std::int32_t kBatteryMv = 9000;
+
+  // 速度PID 経由で最終的に得られるはずのデューティを、DrivetrainController
+  // を一切構築せず独立計算する（本テスト冒頭コメント参照）。
+  WheelVelocityCommand velocity_command{};
+  velocity_command.wheel_mm_s[0] = 400.0f;
+  velocity_command.wheel_mm_s[1] = 700.0f;
+  velocity_command.wheel_mm_s[2] = 999.0f;
+  velocity_command.issued_at_ms = 0;
+
+  float expected_open_loop_duty[kWheelCount];
+  for (std::uint8_t w = 0; w < kWheelCount; ++w) {
+    expected_open_loop_duty[w] = config.pid[w].kp * velocity_command.wheel_mm_s[w];
+  }
+  const PwmCeiling reference_ceiling(config.pwm_ceiling, config.output.absolute_max_duty);
+  const float ceiling = reference_ceiling.evaluate(VoltageSample{/*valid=*/true, kBatteryMv});
+  scaleToLimit(expected_open_loop_duty, ceiling);
+
+  // 土台の確認: 実際に縮小が起き、輪1・輪2はロック閾値以上、輪0は未満に
+  // なる前提を崩していないこと（そうでなければ以降で意図した「保護①が
+  // 一部の輪だけで発火する」パターンが成立しない）。
+  TEST_ASSERT_TRUE(expected_open_loop_duty[0] < config.lock.duty_threshold);
+  TEST_ASSERT_TRUE(expected_open_loop_duty[1] >= config.lock.duty_threshold);
+  TEST_ASSERT_TRUE(expected_open_loop_duty[2] >= config.lock.duty_threshold);
+
+  // A: 速度PID 経由。
+  DrivetrainController controller_pid;
+  IntegrationFixture fx_pid(coeffs, config);
+  TEST_ASSERT_TRUE(controller_pid.configure(config, fx_pid.ports(), /*now=*/0).ok());
+  fx_pid.battery.setSample(kBatteryMv);
+  controller_pid.setOutputEnabled(true, /*now=*/0);
+  TEST_ASSERT_TRUE(controller_pid.submit(velocity_command).accepted);
+
+  // B: 開ループ入口。求めた「速度PID が最終的に出すはずの値」をそのまま
+  //    WheelDutyCommand として直接投入する。
+  DrivetrainController controller_open_loop;
+  IntegrationFixture fx_open_loop(coeffs, config);
+  TEST_ASSERT_TRUE(controller_open_loop.configure(config, fx_open_loop.ports(), /*now=*/0).ok());
+  fx_open_loop.battery.setSample(kBatteryMv);
+  controller_open_loop.setOutputEnabled(true, /*now=*/0);
+
+  WheelDutyCommand duty_command{};
+  for (std::uint8_t w = 0; w < kWheelCount; ++w) {
+    duty_command.wheel_duty[w] = expected_open_loop_duty[w];
+  }
+  duty_command.issued_at_ms = 0;
+  TEST_ASSERT_TRUE(controller_open_loop.submit(duty_command).accepted);
+  TEST_ASSERT_TRUE(controller_open_loop.status().control_path == ControlPath::kOpenLoop);
+
+  // 両方を完全に同一の時刻列・電圧列で回す。輪プラントは進めない
+  // （advanceAllWheels() を呼ばない ―― measured_mm_s を常に0へ保つことで
+  // 「速度PID の raw が時刻に依らず一定」という前提を維持する。§1が閉ループ
+  // を回すのとは異なる、本テスト専用の意図的な単純化）。
+  constexpr int kSteps = 7;  // now: 50, 100, ..., 350ms
+  constexpr DurationMs kDt = 50;
+  TimeMs now = 0;
+
+  const BlockMask kMotorLockBit = static_cast<BlockMask>(BlockReason::kMotorLock);
+  const BlockMask kLowVoltageBit = static_cast<BlockMask>(BlockReason::kLowVoltage);
+  const BlockMask kTimeoutBit = static_cast<BlockMask>(BlockReason::kCommandTimeout);
+
+  bool saw_lock = false;
+  bool saw_low_voltage = false;
+  bool saw_watchdog = false;
+
+  for (int i = 0; i < kSteps; ++i) {
+    now += kDt;
+
+    const StepResult result_pid = controller_pid.step(now);
+    const StepResult result_open_loop = controller_open_loop.step(now);
+
+    assertStepResultEqual(result_pid, result_open_loop);
+
+    // status() のうち「保護・遮断・出力」に関わるフィールドだけを比較する
+    // ―― assertStatusEqual() は §1（同じ WheelTargets へ落ちる2つの入口の
+    // 比較）向けであり、control_path と wheel_target_mm_s はこのテストでは
+    // 意図的に異なる（前者は kVelocityPid/kOpenLoop、後者は速度PID 側だけが
+    // mm_s を持ち開ループ側は既定の 0 のまま。WheelDutyCommand は duty[] を
+    // 使う別のフィールドであり、これは本テストの主張の対象ではない）ため、
+    // ここでは流用しない。
+    const DrivetrainStatus status_pid = controller_pid.status();
+    const DrivetrainStatus status_open_loop = controller_open_loop.status();
+    TEST_ASSERT_TRUE(status_pid.output_enabled == status_open_loop.output_enabled);
+    TEST_ASSERT_TRUE(status_pid.has_valid_command == status_open_loop.has_valid_command);
+    TEST_ASSERT_TRUE(status_pid.last_command_clamped == status_open_loop.last_command_clamped);
+    TEST_ASSERT_EQUAL_INT64(status_pid.last_command_at_ms, status_open_loop.last_command_at_ms);
+    for (std::uint8_t w = 0; w < kWheelCount; ++w) {
+      TEST_ASSERT_EQUAL_FLOAT(status_pid.wheel_duty[w], status_open_loop.wheel_duty[w]);
+      TEST_ASSERT_EQUAL_UINT16(status_pid.wheel_reasons[w], status_open_loop.wheel_reasons[w]);
+    }
+    TEST_ASSERT_EQUAL_FLOAT(status_pid.pwm_ceiling, status_open_loop.pwm_ceiling);
+    TEST_ASSERT_EQUAL_INT32(status_pid.battery_milli_volts, status_open_loop.battery_milli_volts);
+    TEST_ASSERT_TRUE(status_pid.battery_valid == status_open_loop.battery_valid);
+    TEST_ASSERT_TRUE(status_pid.low_voltage_state == status_open_loop.low_voltage_state);
+    TEST_ASSERT_EQUAL_UINT16(status_pid.global_reasons, status_open_loop.global_reasons);
+    TEST_ASSERT_EQUAL_INT32(status_pid.last_step_interval_ms, status_open_loop.last_step_interval_ms);
+    TEST_ASSERT_EQUAL_INT32(status_pid.command_apply_latency_ms, status_open_loop.command_apply_latency_ms);
+
+    if ((result_pid.wheel_reasons[1] & kMotorLockBit) != 0) {
+      saw_lock = true;
+    }
+    if ((result_pid.global_reasons & kLowVoltageBit) != 0) {
+      saw_low_voltage = true;
+    }
+    if ((result_pid.global_reasons & kTimeoutBit) != 0) {
+      saw_watchdog = true;
+    }
+  }
+
+  // このテストが何も検証していない状態を避ける: 保護①・②・④がいずれも
+  // このシナリオの中で実際に発火したことを確認する（保護③=PWM上限は
+  // ceiling<absolute_max_duty かつ実際に縮小が起きたことを上で既に確認
+  // 済み）。
+  TEST_ASSERT_TRUE_MESSAGE(saw_lock, "expected MotorLock to trip during this scenario");
+  TEST_ASSERT_TRUE_MESSAGE(saw_low_voltage, "expected LowVoltage to trip during this scenario");
+  TEST_ASSERT_TRUE_MESSAGE(saw_watchdog, "expected CommandTimeout to trip during this scenario");
+}
+
+// ---------------------------------------------------------------------------
+// 8. タスク 10.4 項目2: 開ループ指令を投入したのち指令を止めて時刻だけを
+//    進めたとき、速度PID 経由の場合と全く同一の時刻(elapsed = timeout_ms
+//    をちょうど厳密に超えた瞬間)で途絶（ウォッチドッグ）が遮断する（要件
+//    5.12。§2
+//    (test_watchdog_timeout_blocks_and_new_command_stays_blocked_without_output_enable)
+//    と同一の timeout_ms・同一の相対オフセットを、指令の種類だけ変えて
+//    2つのコントローラを並走させて確認する）。
+// ---------------------------------------------------------------------------
+
+void test_watchdog_timeout_boundary_is_identical_between_velocity_pid_and_open_loop_paths(void) {
+  DrivetrainConfig config = makeValidConfig();
+  config.watchdog.timeout_ms = 200;
+  const PlantCoefficients coeffs = makeCoefficients();
+
+  DrivetrainController controller_pid;
+  IntegrationFixture fx_pid(coeffs, config);
+  TEST_ASSERT_TRUE(controller_pid.configure(config, fx_pid.ports(), /*now=*/0).ok());
+  fx_pid.battery.setSample(12600);
+  controller_pid.setOutputEnabled(true, /*now=*/0);
+
+  WheelVelocityCommand velocity_command{};
+  velocity_command.wheel_mm_s[0] = 100.0f;
+  velocity_command.wheel_mm_s[1] = 100.0f;
+  velocity_command.wheel_mm_s[2] = 100.0f;
+  velocity_command.issued_at_ms = 0;
+  TEST_ASSERT_TRUE(controller_pid.submit(velocity_command).accepted);
+
+  DrivetrainController controller_open_loop;
+  IntegrationFixture fx_open_loop(coeffs, config);
+  TEST_ASSERT_TRUE(controller_open_loop.configure(config, fx_open_loop.ports(), /*now=*/0).ok());
+  fx_open_loop.battery.setSample(12600);
+  controller_open_loop.setOutputEnabled(true, /*now=*/0);
+
+  WheelDutyCommand duty_command{};
+  duty_command.wheel_duty[0] = 0.3f;
+  duty_command.wheel_duty[1] = 0.3f;
+  duty_command.wheel_duty[2] = 0.3f;
+  duty_command.issued_at_ms = 0;
+  TEST_ASSERT_TRUE(controller_open_loop.submit(duty_command).accepted);
+  TEST_ASSERT_TRUE(controller_open_loop.status().control_path == ControlPath::kOpenLoop);
+
+  const BlockMask kTimeoutBit = static_cast<BlockMask>(BlockReason::kCommandTimeout);
+
+  // 境界前(100ms < timeout(200)): まだ発火せず、両経路とも非ゼロの出力が
+  // 出ていること（このテストが何も検証していない状態を避ける）。
+  {
+    const StepResult result_pid = controller_pid.step(/*now=*/100);
+    const StepResult result_open_loop = controller_open_loop.step(/*now=*/100);
+    TEST_ASSERT_EQUAL_UINT16(0, result_pid.global_reasons & kTimeoutBit);
+    TEST_ASSERT_EQUAL_UINT16(0, result_open_loop.global_reasons & kTimeoutBit);
+
+    bool pid_nonzero = false;
+    bool open_loop_nonzero = false;
+    for (std::uint8_t w = 0; w < kWheelCount; ++w) {
+      if (std::fabs(result_pid.outputs.duty[w]) > 1.0e-6f) {
+        pid_nonzero = true;
+      }
+      if (std::fabs(result_open_loop.outputs.duty[w]) > 1.0e-6f) {
+        open_loop_nonzero = true;
+      }
+    }
+    TEST_ASSERT_TRUE(pid_nonzero);
+    TEST_ASSERT_TRUE(open_loop_nonzero);
+  }
+
+  // ちょうど境界(now=200, elapsed=200-0=200。「厳密に超える」の境界ぴったり
+  // なのでまだ超えていない): まだ発火しない ―― 速度PID 経路・開ループ経路の
+  // 両方で。
+  {
+    const StepResult result_pid = controller_pid.step(/*now=*/200);
+    const StepResult result_open_loop = controller_open_loop.step(/*now=*/200);
+    TEST_ASSERT_EQUAL_UINT16(0, result_pid.global_reasons & kTimeoutBit);
+    TEST_ASSERT_EQUAL_UINT16(0, result_open_loop.global_reasons & kTimeoutBit);
+  }
+
+  // 境界を厳密に超えた直後(now=201, elapsed=201>200): ちょうどこの1ステップ
+  // で両経路とも発火する ―― 同一の経過時間ちょうどの境界で揃うことの直接
+  // 確認（要件 5.12）。
+  {
+    const StepResult result_pid = controller_pid.step(/*now=*/201);
+    const StepResult result_open_loop = controller_open_loop.step(/*now=*/201);
+    TEST_ASSERT_TRUE((result_pid.global_reasons & kTimeoutBit) != 0);
+    TEST_ASSERT_TRUE((result_open_loop.global_reasons & kTimeoutBit) != 0);
+    for (std::uint8_t w = 0; w < kWheelCount; ++w) {
+      TEST_ASSERT_EQUAL_FLOAT(0.0f, result_pid.outputs.duty[w]);
+      TEST_ASSERT_EQUAL_FLOAT(0.0f, result_open_loop.outputs.duty[w]);
+    }
+  }
+}
+
 int main(int argc, char** argv) {
   (void)argc;
   (void)argv;
@@ -673,6 +948,8 @@ int main(int argc, char** argv) {
   RUN_TEST(test_no_command_yet_and_output_disabled_are_separate_reasons_right_after_configure);
   RUN_TEST(test_two_independent_controllers_given_identical_script_produce_identical_traces);
   RUN_TEST(test_low_voltage_trip_timing_matches_real_elapsed_time_through_full_controller_step);
+  RUN_TEST(test_open_loop_input_matching_velocity_pid_output_produces_identical_protection_behavior);
+  RUN_TEST(test_watchdog_timeout_boundary_is_identical_between_velocity_pid_and_open_loop_paths);
 
   return UNITY_END();
 }

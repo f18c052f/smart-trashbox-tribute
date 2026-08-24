@@ -53,6 +53,18 @@ struct WheelVelocityCommand {  // 要件 5.8
   TimeMs issued_at_ms = 0;
 };
 
+struct WheelDutyCommand {  // 要件 5.10。輪ごとの目標出力を直接与える開ループ指令
+  float wheel_duty[kWheelCount] = {0.0f, 0.0f, 0.0f};  // 各輪のデューティ [-1, +1]
+  TimeMs issued_at_ms = 0;
+};
+
+// 保持中の指令が経由する制御経路。速度PID を経由するか経由しないかを
+// WheelTargets（command_input.hpp）へ持たせるための列挙（要件 5.10）。
+enum class ControlPath : std::uint8_t {
+  kVelocityPid = 0,  // 機体速度指令・輪速度指令。速度PID を経由する
+  kOpenLoop = 1,     // 輪出力指令。速度PID を経由しない
+};
+
 struct CommandAcceptance {  // 要件 5.4
   bool accepted = false;    // 未設定・過去時刻なら false
   bool clamped = false;     // 有効範囲へ制限されたか
@@ -144,12 +156,22 @@ static_assert(sizeof(BodyVelocityCommand) == 24,
 static_assert(sizeof(WheelVelocityCommand) == 24,
               "WheelVelocityCommand: 3x float (12B) + 4B alignment padding + TimeMs (8B) "
               "== 24B, verified identical on host x86-64 System V and xtensa-esp32-elf");
+static_assert(sizeof(WheelDutyCommand) == 24,
+              "WheelDutyCommand: 3x float (12B) + 4B alignment padding + TimeMs (8B) "
+              "== 24B, verified identical on host x86-64 System V and xtensa-esp32-elf");
 static_assert(std::is_same_v<decltype(BodyVelocityCommand::issued_at_ms), TimeMs>,
               "BodyVelocityCommand::issued_at_ms must stay TimeMs (int64_t)");
 static_assert(std::is_same_v<decltype(WheelVelocityCommand::issued_at_ms), TimeMs>,
               "WheelVelocityCommand::issued_at_ms must stay TimeMs (int64_t)");
+static_assert(std::is_same_v<decltype(WheelDutyCommand::issued_at_ms), TimeMs>,
+              "WheelDutyCommand::issued_at_ms must stay TimeMs (int64_t)");
 static_assert(std::is_same_v<std::remove_extent_t<decltype(WheelVelocityCommand::wheel_mm_s)>, float>,
               "WheelVelocityCommand::wheel_mm_s must stay float[]");
+static_assert(std::is_same_v<std::remove_extent_t<decltype(WheelDutyCommand::wheel_duty)>, float>,
+              "WheelDutyCommand::wheel_duty must stay float[]");
+
+static_assert(std::is_same_v<std::underlying_type_t<ControlPath>, std::uint8_t>,
+              "ControlPath must have a fixed-width uint8_t underlying type");
 
 // 以下は int64_t を含まない（= ABI 依存のアラインメント選択に左右されない）
 // 構造体で、パディング込みの総サイズがホスト・組込みの双方で一意に定まる

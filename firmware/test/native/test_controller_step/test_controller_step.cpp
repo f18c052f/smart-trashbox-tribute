@@ -95,9 +95,11 @@
 
 using drivetrain_control::BlockMask;
 using drivetrain_control::BlockReason;
+using drivetrain_control::BodyVelocityCommand;
 using drivetrain_control::CommandAcceptance;
 using drivetrain_control::ConfigDiagnostic;
 using drivetrain_control::ConfigError;
+using drivetrain_control::ControlPath;
 using drivetrain_control::DrivetrainConfig;
 using drivetrain_control::DrivetrainController;
 using drivetrain_control::DrivetrainStatus;
@@ -114,6 +116,7 @@ using drivetrain_control::Ports;
 using drivetrain_control::StepResult;
 using drivetrain_control::TimeMs;
 using drivetrain_control::VoltageSample;
+using drivetrain_control::WheelDutyCommand;
 using drivetrain_control::WheelOutputs;
 using drivetrain_control::WheelVelocityCommand;
 using drivetrain_control::units::kPi;
@@ -1038,6 +1041,301 @@ void test_command_apply_latency_computed_on_first_step_and_held_until_next_chang
   TEST_ASSERT_EQUAL_INT64(220, status.last_command_at_ms);
 }
 
+// ---------------------------------------------------------------------------
+// N: status().control_path は、機体速度指令/輪速度指令の後は kVelocityPid
+//    を、開ループ指令(duty)の後は kOpenLoop を反映する（要件 5.15。
+//    タスク 10.2）。
+// ---------------------------------------------------------------------------
+
+void test_status_control_path_reflects_velocity_pid_after_body_command(void) {
+  DrivetrainController controller;
+  Fixture fx;
+
+  TEST_ASSERT_TRUE(controller.configure(makeValidConfig(), fx.ports(), /*now=*/0).ok());
+  controller.setOutputEnabled(true, /*now=*/0);
+
+  // configure() 直後（まだ一度も指令が投入されていない）は既定値
+  // kVelocityPid のまま。
+  TEST_ASSERT_TRUE(controller.status().control_path == ControlPath::kVelocityPid);
+
+  BodyVelocityCommand body{};
+  body.vx_mm_s = 100.0f;
+  body.issued_at_ms = 0;
+  TEST_ASSERT_TRUE(controller.submit(body).accepted);
+
+  controller.step(/*now=*/100);
+  TEST_ASSERT_TRUE(controller.status().control_path == ControlPath::kVelocityPid);
+}
+
+void test_status_control_path_reflects_open_loop_after_duty_command(void) {
+  DrivetrainController controller;
+  Fixture fx;
+
+  TEST_ASSERT_TRUE(controller.configure(makeValidConfig(), fx.ports(), /*now=*/0).ok());
+  controller.setOutputEnabled(true, /*now=*/0);
+
+  WheelDutyCommand duty{};
+  duty.wheel_duty[0] = 0.3f;
+  duty.wheel_duty[1] = 0.3f;
+  duty.wheel_duty[2] = 0.3f;
+  duty.issued_at_ms = 0;
+  TEST_ASSERT_TRUE(controller.submit(duty).accepted);
+
+  controller.step(/*now=*/100);
+  TEST_ASSERT_TRUE(controller.status().control_path == ControlPath::kOpenLoop);
+
+  // 経路をまたいで速度PID 側の指令へ戻ると、control_path も追従する
+  // （経路の切り替えに専用の遷移処理を持たせないことの裏取り ―― status()
+  // は毎回 latched().path をそのまま反映するだけである）。
+  WheelVelocityCommand wheel_velocity{};
+  wheel_velocity.wheel_mm_s[0] = 50.0f;
+  wheel_velocity.issued_at_ms = 200;
+  TEST_ASSERT_TRUE(controller.submit(wheel_velocity).accepted);
+  controller.step(/*now=*/300);
+  TEST_ASSERT_TRUE(controller.status().control_path == ControlPath::kVelocityPid);
+}
+
+// ---------------------------------------------------------------------------
+// O: 開ループ経路を走行中は、速度PID の compute()/commit() ではなく
+//    holdReset() の経路が実際に使われている ―― 積分が非0まで育っている
+//    状態から開ループへ切り替えても、積分が直ちに 0 になり、以後（測定
+//    速度を一切動かさない・目標も持たない開ループの間）ずっと 0 のまま
+//    であることで裏取りする（要件 5.14）。
+//
+//    ⚠️ 判別性のための設計: 単に「開ループ中に積分が0のまま」だけを見る
+//    素朴なテストは弱い ―― WheelDutyCommand は latched().mm_s[] を更新
+//    しない（既定 0）ため、もし誤って kVelocityPid の
+//    compute(target=0, measured=0, ...) が呼ばれても偏差は常に0になり、
+//    積分は「何もしなくても」0のまま変化しない（この状態で始めると
+//    holdReset() 経路との区別が付かない）。さらに commit() の条件付き
+//    積分（velocity_pid.cpp）は、飽和方向の大きな偏差ではこのステップの
+//    増分を丸ごと取り消すため、積分を「大きく育てて確認する」だけでも
+//    誤検出を防げない。
+//
+//    そこでまず速度PID 経由で積分を明確に非0（かつ上限に飽和させず、
+//    条件付き積分によるキャンセルが起きない範囲）まで育てたうえで開ループ
+//    へ切り替える。「holdReset() を呼ばない」「目標0・測定0(偏差0)の
+//    compute()/commit() を呼ぶ」のどちらの誤実装でも、この非0の積分は
+//    そのまま残ってしまう ―― holdReset() が実際に無条件で積分を0にして
+//    いることの直接証拠になる。
+// ---------------------------------------------------------------------------
+
+void test_open_loop_driving_keeps_pid_integral_at_zero_via_hold_reset(void) {
+  DrivetrainController controller;
+  Fixture fx;
+
+  DrivetrainConfig config = makeValidConfig();
+  // kp=kd=0、ki だけを使う。measured は Fixture の既定(常に0)のまま動かさ
+  // ないため、raw は積分そのものになる。ceiling(=1.0, absolute_max_duty)
+  // に達するまでは commit() の条件付き積分（applied が raw より小さい
+  // 場合だけ取り消す）も働かないため、素直に積分が育つ。
+  for (std::uint8_t i = 0; i < kWheelCount; ++i) {
+    config.pid[i] = {/*kp=*/0.0f, /*ki=*/0.1f, /*kd=*/0.0f, /*integral_limit=*/1.0f};
+  }
+  TEST_ASSERT_TRUE(controller.configure(config, fx.ports(), /*now=*/0).ok());
+
+  fx.battery.sample = VoltageSample{/*valid=*/true, /*milli_volts=*/12600};
+  controller.setOutputEnabled(true, /*now=*/0);
+
+  // フェーズ1: 速度PID 経由で積分を明確に非0まで育てる。
+  WheelVelocityCommand velocity_command{};
+  velocity_command.wheel_mm_s[0] = 100.0f;
+  velocity_command.wheel_mm_s[1] = 100.0f;
+  velocity_command.wheel_mm_s[2] = 100.0f;
+  velocity_command.issued_at_ms = 0;
+  TEST_ASSERT_TRUE(controller.submit(velocity_command).accepted);
+
+  TimeMs now = 0;
+  for (int i = 0; i < 3; ++i) {
+    now += 20;
+    controller.step(now);
+  }
+  for (std::uint8_t w = 0; w < kWheelCount; ++w) {
+    TEST_ASSERT_TRUE_MESSAGE(ControllerStepTestHooks::pidIntegral(controller, w) > 0.1f,
+                              "setup check: PID integral must be clearly non-zero before switching "
+                              "to open-loop, otherwise this test cannot tell holdReset() apart from "
+                              "a no-op or a zero-error compute()/commit()");
+  }
+
+  // フェーズ2: 開ループへ切り替える。
+  WheelDutyCommand duty{};
+  duty.wheel_duty[0] = 0.4f;
+  duty.wheel_duty[1] = 0.4f;
+  duty.wheel_duty[2] = 0.4f;
+  duty.issued_at_ms = now + 1;
+  TEST_ASSERT_TRUE(controller.submit(duty).accepted);
+  TEST_ASSERT_TRUE(controller.status().control_path == ControlPath::kOpenLoop);
+
+  for (int i = 0; i < 5; ++i) {
+    now += 20;
+    controller.step(now);
+    for (std::uint8_t w = 0; w < kWheelCount; ++w) {
+      TEST_ASSERT_EQUAL_FLOAT(0.0f, ControllerStepTestHooks::pidIntegral(controller, w));
+    }
+  }
+
+  // 開ループ出力自体は指令された生のデューティ(上限適用後・極性適用前)
+  // として実際に流れていることも併せて確認する（このテストが何も検証
+  // していない状態を避ける。極性は makeValidConfig() で輪1が -1 のため、
+  // 極性適用前の値 lastCommandedDuty() で比較する）。
+  const float* applied = ControllerStepTestHooks::lastCommandedDuty(controller);
+  for (std::uint8_t w = 0; w < kWheelCount; ++w) {
+    TEST_ASSERT_FLOAT_WITHIN(kTight, 0.4f, applied[w]);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// P: タスク 10.4 項目3。速度PID の積分項を非0まで育てたあと開ループへ
+//    切り替え、再び速度PID 経由へ戻したとき、戻った最初のステップの出力が
+//    積分項ゼロから始まる独立した「フレッシュな」コントローラの最初の
+//    ステップの出力と一致する（要件 5.14）。
+//
+//    ⚠️ test_open_loop_driving_keeps_pid_integral_at_zero_via_hold_reset
+//    (テストO) は「開ループの間ずっと積分が0のまま」だけを見ており、
+//    「速度PID へ戻った直後の出力が正しいか」までは検証していない
+//    （holdReset() が呼ばれ続けている事実の裏取りに留まる。積分の持ち越しは
+//    静かな不具合として残り得るため、本テストで省略しない）。
+//
+//    kp=kd=0・ki だけを使い、Fixture の既定(測定速度は常に0のまま動かさ
+//    ない)のもとでは、compute() の raw は
+//      raw = integral_before + ki * (target - measured) * dt_s
+//    のうち measured=0・target・dt が両者で一致する限り、`integral_before`
+//    （＝積分の持ち越しの有無）だけに左右される。したがって「戻った最初の
+//    ステップの出力がフレッシュな基準と完全一致する」ことは、積分が
+//    正確にゼロへ戻っていることの直接証拠になる（近似的に0付近ではなく
+//    厳密一致であることを見る）。
+// ---------------------------------------------------------------------------
+
+void test_switching_back_to_velocity_pid_after_open_loop_matches_fresh_controller_output(void) {
+  DrivetrainConfig config = makeValidConfig();
+  // kp=kd=0, ki だけを使う（測定速度は Fixture の既定(常に0)のまま動かさ
+  // ない）―― テストOと同じ流儀で、積分だけを明確に育てる。
+  for (std::uint8_t i = 0; i < kWheelCount; ++i) {
+    config.pid[i] = {/*kp=*/0.0f, /*ki=*/0.1f, /*kd=*/0.0f, /*integral_limit=*/1.0f};
+  }
+  // ロック・ウォッチドッグ・低電圧がこのテストの関心（積分の持ち越し）を
+  // 横取りしないよう、十分離しておく（このシナリオの raw は 1.0 未満に
+  // 収まる想定で、閾値をさらにその上へ離す）。
+  config.lock.duty_threshold = 0.95f;
+  config.watchdog.timeout_ms = 100000;
+
+  // --- 基準: 積分が常に0から始まる、独立した「フレッシュな」コントローラ ---
+  DrivetrainController fresh_controller;
+  Fixture fresh_fx;
+  TEST_ASSERT_TRUE(fresh_controller.configure(config, fresh_fx.ports(), /*now=*/0).ok());
+  fresh_fx.battery.sample = VoltageSample{/*valid=*/true, /*milli_volts=*/12600};
+  fresh_controller.setOutputEnabled(true, /*now=*/0);
+
+  WheelVelocityCommand velocity_command{};
+  velocity_command.wheel_mm_s[0] = 100.0f;
+  velocity_command.wheel_mm_s[1] = 100.0f;
+  velocity_command.wheel_mm_s[2] = 100.0f;
+  velocity_command.issued_at_ms = 0;
+  TEST_ASSERT_TRUE(fresh_controller.submit(velocity_command).accepted);
+
+  // フレッシュなコントローラの「最初のステップ」(dt=20ms, target=100,
+  // measured=0, integral=0 から)。これが本テストの比較基準になる。
+  fresh_controller.step(/*now=*/20);
+  const DrivetrainStatus fresh_status = fresh_controller.status();
+  float fresh_applied[kWheelCount];
+  {
+    const float* p = ControllerStepTestHooks::lastCommandedDuty(fresh_controller);
+    for (std::uint8_t w = 0; w < kWheelCount; ++w) {
+      fresh_applied[w] = p[w];
+    }
+  }
+  // 土台の確認: フレッシュなコントローラの最初のステップの出力が非ゼロで
+  // あること（ゼロ同士が一致しても何も検証したことにならない）。
+  bool fresh_any_nonzero = false;
+  for (std::uint8_t w = 0; w < kWheelCount; ++w) {
+    if (std::fabs(fresh_applied[w]) > 1.0e-6f) {
+      fresh_any_nonzero = true;
+    }
+  }
+  TEST_ASSERT_TRUE(fresh_any_nonzero);
+
+  // --- 切り替えシナリオ ---------------------------------------------------
+  DrivetrainController controller;
+  Fixture fx;
+  TEST_ASSERT_TRUE(controller.configure(config, fx.ports(), /*now=*/0).ok());
+  fx.battery.sample = VoltageSample{/*valid=*/true, /*milli_volts=*/12600};
+  controller.setOutputEnabled(true, /*now=*/0);
+  TEST_ASSERT_TRUE(controller.submit(velocity_command).accepted);
+
+  // フェーズ(a): 速度PID 経由で積分を明確に非0まで育てる（テストOと同じ
+  // 3ステップ）。
+  TimeMs now = 0;
+  for (int i = 0; i < 3; ++i) {
+    now += 20;
+    controller.step(now);
+  }
+  for (std::uint8_t w = 0; w < kWheelCount; ++w) {
+    TEST_ASSERT_TRUE_MESSAGE(ControllerStepTestHooks::pidIntegral(controller, w) > 0.1f,
+                              "setup check: PID integral must be clearly non-zero before switching "
+                              "to open-loop, otherwise this test cannot tell a correct reset apart "
+                              "from a carried-over integral");
+  }
+
+  // フェーズ(b): 開ループへ切り替えて数ステップ走らせる（どんな duty でも
+  // よい ―― タスクブリーフ参照。ここではロック閾値未満の非0値を使う）。
+  WheelDutyCommand duty{};
+  duty.wheel_duty[0] = 0.4f;
+  duty.wheel_duty[1] = 0.4f;
+  duty.wheel_duty[2] = 0.4f;
+  duty.issued_at_ms = now + 1;
+  TEST_ASSERT_TRUE(controller.submit(duty).accepted);
+  for (int i = 0; i < 5; ++i) {
+    now += 20;
+    controller.step(now);
+  }
+  for (std::uint8_t w = 0; w < kWheelCount; ++w) {
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, ControllerStepTestHooks::pidIntegral(controller, w));
+  }
+
+  // フェーズ(c): 速度PID 経由へ、フェーズ(a)終了時点と同一の目標
+  // (target=100。実測は Fixture の既定のままなので常に0)で戻す。
+  WheelVelocityCommand velocity_command_again{};
+  velocity_command_again.wheel_mm_s[0] = 100.0f;
+  velocity_command_again.wheel_mm_s[1] = 100.0f;
+  velocity_command_again.wheel_mm_s[2] = 100.0f;
+  velocity_command_again.issued_at_ms = now + 1;
+  TEST_ASSERT_TRUE(controller.submit(velocity_command_again).accepted);
+  TEST_ASSERT_TRUE(controller.status().control_path == ControlPath::kVelocityPid);
+
+  // フェーズ(d): 戻った最初のステップ(dt=20ms, target=100, measured=0)は、
+  // フレッシュなコントローラの最初のステップと完全に一致するはずである
+  // ―― 積分が持ち越されていれば、この最初のステップの raw が
+  // 非0の integral_before ぶんだけ大きくなり、ここで検出できる。
+  now += 20;
+  const StepResult switchback_step = controller.step(now);
+  const DrivetrainStatus switchback_status = controller.status();
+  float switchback_applied[kWheelCount];
+  {
+    const float* p = ControllerStepTestHooks::lastCommandedDuty(controller);
+    for (std::uint8_t w = 0; w < kWheelCount; ++w) {
+      switchback_applied[w] = p[w];
+    }
+  }
+
+  // 上限適用後・遮断前の出力指令（PID の生の計算結果そのもの）が厳密一致
+  // すること。
+  for (std::uint8_t w = 0; w < kWheelCount; ++w) {
+    TEST_ASSERT_EQUAL_FLOAT(fresh_applied[w], switchback_applied[w]);
+  }
+  // 最終的な出力（ゲート・極性適用後）・目標・遮断理由も一致すること
+  // （どちらのシナリオも遮断理由が一切立たない前提であることも併せて
+  // 確認する ―― ロック・ウォッチドッグ・低電圧をこのテストの関心から
+  // 離してある設定どおり）。
+  TEST_ASSERT_EQUAL_UINT16(0, fresh_status.global_reasons);
+  TEST_ASSERT_EQUAL_UINT16(0, switchback_status.global_reasons);
+  TEST_ASSERT_EQUAL_UINT16(fresh_status.global_reasons, switchback_status.global_reasons);
+  for (std::uint8_t w = 0; w < kWheelCount; ++w) {
+    TEST_ASSERT_EQUAL_FLOAT(fresh_status.wheel_target_mm_s[w], switchback_status.wheel_target_mm_s[w]);
+    TEST_ASSERT_EQUAL_FLOAT(fresh_status.wheel_duty[w], switchback_status.wheel_duty[w]);
+  }
+  (void)switchback_step;
+}
+
 int main(int argc, char **argv) {
   (void)argc;
   (void)argv;
@@ -1059,6 +1357,10 @@ int main(int argc, char **argv) {
   RUN_TEST(test_status_before_configure_returns_defaults);
   RUN_TEST(test_status_reflects_final_snapshot_and_does_not_touch_ports);
   RUN_TEST(test_command_apply_latency_computed_on_first_step_and_held_until_next_change);
+  RUN_TEST(test_status_control_path_reflects_velocity_pid_after_body_command);
+  RUN_TEST(test_status_control_path_reflects_open_loop_after_duty_command);
+  RUN_TEST(test_open_loop_driving_keeps_pid_integral_at_zero_via_hold_reset);
+  RUN_TEST(test_switching_back_to_velocity_pid_after_open_loop_matches_fresh_controller_output);
 
   return UNITY_END();
 }

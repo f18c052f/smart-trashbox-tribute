@@ -27,6 +27,7 @@ using drivetrain_control::BatteryVoltagePort;
 using drivetrain_control::BlockReason;
 using drivetrain_control::BodyVelocityCommand;
 using drivetrain_control::CommandAcceptance;
+using drivetrain_control::ControlPath;
 using drivetrain_control::DrivetrainConfig;
 using drivetrain_control::DrivetrainController;
 using drivetrain_control::DrivetrainStatus;
@@ -39,6 +40,7 @@ using drivetrain_control::Ports;
 using drivetrain_control::Pose2D;
 using drivetrain_control::StepResult;
 using drivetrain_control::VoltageSample;
+using drivetrain_control::WheelDutyCommand;
 using drivetrain_control::WheelOutputs;
 using drivetrain_control::WheelVelocityCommand;
 
@@ -236,11 +238,58 @@ void test_public_api_entry_points_are_safe_before_configure(void) {
   TEST_ASSERT_EQUAL_UINT16(kNotConfiguredBit, step_result.global_reasons);
 }
 
+// ---------------------------------------------------------------------------
+// タスク 10.3（design.md "PublicApi" 再エクスポート対象へ WheelDutyCommand /
+// ControlPath を追加、要件 5.10, 5.15）の観測可能な完了状態: このヘッダ
+// だけを取り込んだ翻訳単位から開ループ指令（WheelDutyCommand）を構築して
+// submit() へ投入し、step() を経て status().control_path が
+// ControlPath::kOpenLoop になることを確認できること。
+// ---------------------------------------------------------------------------
+void test_public_api_open_loop_command_reports_control_path(void) {
+  DrivetrainController controller;
+
+  FakeEncoderPort encoder;
+  FakeMotorPort motor;
+  FakeBatteryPort battery;
+  Ports ports;
+  ports.encoder = &encoder;
+  ports.motor = &motor;
+  ports.battery = &battery;
+
+  const DrivetrainConfig config = makeValidConfig();
+
+  const auto diagnostic = controller.configure(config, ports, /*now=*/0);
+  TEST_ASSERT_TRUE(diagnostic.ok());
+
+  controller.setOutputEnabled(true, /*now=*/0);
+
+  // 開ループ指令: 輪ごとの目標出力を直接与える（速度PID を経由しない、
+  // 要件 5.10）。
+  WheelDutyCommand duty_command{};
+  duty_command.wheel_duty[0] = 0.1f;
+  duty_command.wheel_duty[1] = 0.1f;
+  duty_command.wheel_duty[2] = 0.1f;
+  duty_command.issued_at_ms = 0;
+  const CommandAcceptance acceptance = controller.submit(duty_command);
+  TEST_ASSERT_TRUE(acceptance.accepted);
+
+  const StepResult step_result = controller.step(/*now=*/20);
+  TEST_ASSERT_TRUE(step_result.outputs_written);
+
+  // 経路の判別（要件 5.15）: 直近に投入したのは開ループ指令なので
+  // control_path は kOpenLoop になる。
+  const DrivetrainStatus status = controller.status();
+  TEST_ASSERT_TRUE(status.has_valid_command);
+  const auto kOpenLoopValue = static_cast<std::uint8_t>(ControlPath::kOpenLoop);
+  TEST_ASSERT_EQUAL_UINT8(kOpenLoopValue, static_cast<std::uint8_t>(status.control_path));
+}
+
 int main(int argc, char** argv) {
   (void)argc;
   (void)argv;
   UNITY_BEGIN();
   RUN_TEST(test_public_api_full_flow_configure_submit_step_status);
   RUN_TEST(test_public_api_entry_points_are_safe_before_configure);
+  RUN_TEST(test_public_api_open_loop_command_reports_control_path);
   return UNITY_END();
 }
