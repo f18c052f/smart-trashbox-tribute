@@ -391,7 +391,7 @@
 
 - [ ] 9. 実機ブリングアップと実測
 
-- [ ] 9.1 OS を導入し、RAM 容量と選定結果を記録する
+- [x] 9.1 OS を導入し、RAM 容量と選定結果を記録する
   - 64bit かつ headless 運用可能な OS を導入する。**Raspberry Pi OS 64-bit を先に評価する**
   - 実測結果の記録先として `measurements.md` を作成し、確認項目・実施日・結果・使用したコマンドを残す章立てを用意する
   - 診断コマンドで RAM 容量・OS・カーネル・Python 版を取得して記録する
@@ -475,4 +475,21 @@
 
 ## 全体まとめ: タスク1〜8（ハードウェア不要な全作業）が完了
 
-`.kiro/specs/sensing-foundation/measurements.md` は未作成（タスク9.1で新設予定）。タスク9（実機ブリングアップと実測）は Raspberry Pi 4 と RealSense D435 の実機が揃うまで着手不可。`uv run --extra sensing pytest -q` は822件全通過（SDK非導入・実機非接続のこの開発環境で）。
+`uv run --extra sensing pytest -q` は822件全通過（SDK非導入・実機非接続のこの開発環境で）。
+
+## タスク9 進捗（2026-08-27 時点）
+
+実機（Raspberry Pi 4 Model B Rev 1.2 / 4GB モデル）が到着し、タスク9に着手した。
+記録先の `.kiro/specs/sensing-foundation/measurements.md` を新設済み。
+
+- **9.1 完了**: Raspberry Pi OS 64-bit（**Desktop 版**、Debian 13 "trixie" ベース）を導入し、
+  SSH 経由で `doctor` を実機実行。OS・カーネル・64bit判定・RAM容量・Python版を記録した。
+  搭載 RAM は 3,973,906,432 bytes（4GB モデル）で **OQ-24 が決着**。
+  リングバッファ上限の既定割合 25% は必要量の約18倍の余裕があり**妥当と判断して変更しない**。
+- ⚠️ **9.2 への申し送り（最重要）**: OS が **Debian 13 (trixie) / GCC 14.2 / Python 3.13** であり、
+  `research.md` が前提とした Bookworm（Debian 12 / GCC 12 / Python 3.11）より新しい。
+  librealsense のビルドが通らなかった場合、**OQ-23 の Ubuntu 退避を発動する前に
+  「Pi OS だからか」「trixie だからか」を切り分けること**（Ubuntu 24.04 は GCC 13 / Python 3.12 で trixie より Bookworm に近い）。
+- ⚠️ **9.4 への申し送り**: microSD の書き込み速度実測は 31.9 MB/s。60fps の Depth は約 36.9 MB/s で
+  **これを上回る**ため、60fps 評価時に連続記録を併用してはならない。
+  また実測前に起動ターゲットを `Console` へ切り替え、デスクトップを常駐させないこと。
