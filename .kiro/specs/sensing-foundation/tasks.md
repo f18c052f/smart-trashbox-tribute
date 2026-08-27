@@ -336,7 +336,7 @@
   - _Depends: 4.6_
   - _Boundary: LoggingOverheadBench_
 
-- [ ] 7.4 計測 ON / OFF の比較を単一入力元の構造へ作り替える
+- [x] 7.4 計測 ON / OFF の比較を単一入力元の構造へ作り替える
   - 3条件で `FrameSource`・`SessionClock`・`CaptureMetrics` を**1つずつ共有**し、
     セグメントの切り替えでは**ロガーの向き先だけ**を差し替える
     （`logging_off` → `NullLogger`、`logging_on` → `StructuredLogger`、
@@ -515,6 +515,11 @@
 - タスク9.6: **2回の再生を互いに突き合わせるだけでは記録の忠実性を検証できない。** `RecordedSource` は内部で `SessionReader` を使うため、両方が同じように壊れる欠陥を原理的に検出できない。負の対照（`SessionReader.read()` が返すフレーム1枚の Depth を1画素だけ書き換える）で実証済み: 独立参照と突き合わせる2件は失敗したが、`test_two_replays_produce_equivalent_series` は通過した。**期待値は `frames.ndjson`/`depth.bin`/`manifest.json` から素の `json` と `zlib` で独立に組み立てること**（タスク4.4 が手書きフィクスチャを選んだのと同じ理由）。
 - タスク9.6: **版管理しない実データを要するテストは環境変数で与え、無ければ skip する。** `tests/sensing_foundation/test_real_session_roundtrip.py` は `SENSING_REAL_SESSION_DIR` が指定されたときだけ実行する（タスク9.3 が実機の有無で `skipif` した構造と同じ）。ただし**指定されたのに読めない場合は skip ではなく失敗させる**——設定の誤りを静かに飛ばすと検証を実行しないまま緑になる。
 - タスク9.6（下流 `flying-object-tracking` への申し送り）: **640×480 で 2m 級の距離では、背景差分だけで投擲物を分離するのは困難である。** 実測した背景差分のノイズ下限（8×8ブロックで熱いブロック数の中央値 14）に対し、2.4m 先の紙ボール（直径約7cm）が占める面積は fx≈385px から見積もって約8px四方 = 64px 程度しかない。本タスクの記録で検出できた強い区間（最大96ブロック）は距離約1.0m・継続1.8〜6.1秒であり、投擲物の飛行時間（200〜400ms）ではなく**投げている人の腕や体**である可能性が高い。投擲距離を詰めるか、時間方向の情報（フレーム間差分・軌道の連続性）を使う方式が要る。
+- タスク7.4: **`Protocol` で定義した口は「実行中に向き先を差し替える」余地をタダで与える。** `obslog.Logger` が `Protocol`（構造的部分型）であるため、`enabled`/`emit`/`stage`/`timed`/`stats`/`close` の6要素を満たす**私有の転送クラス**（`bench/logging_overhead.py` の `_RoutingLogger`）を1つ置くだけで、`CaptureMetrics` を1インスタンスに保ったままログの向き先をセグメント境界で切り替えられる。**`metrics.py` も `source.py` も1行も変えていない。** 「条件ごとに計測点を作り直す」以外に道が無いように見えたのは、`Logger` を具象型として見ていたからだった——同種の「条件だけ差し替えたい」要求が出たら、まず口が `Protocol` かを確認すること。
+- タスク7.4: **計測点を共有したら、条件別の値は累計ではなく「セグメント境界の前後で読んだ差分」で取ること。** `CaptureMetrics.counters()` は構築時からの累計を返すため、共有した状態で各条件が終端の値をそのまま読むと**3条件とも同じ総数**になり、条件間の比較が静かに無意味になる（`frames_dropped` は判定基準の一方の柱なので、これは判定そのものを壊す）。差分の読み取りは `active_elapsed_ms` の計測窓の**外側**に置く（`counters()` 自体が `clock.now_ms()` と除算を行うため）。
+- タスク7.4: **入力元を共有すると `StopIteration` は3条件同時に効く。** 旧構造では条件ごとに別の供給を持っていたため「1条件だけ尽きる」ことがあり得たが、1本を分け合う以上それは起こらない。`simulated` で回すときは供給が**3条件ぶんの合計**（おおむね `3 * cycles * segment_s` 秒ぶん）を賄える必要がある——1条件ぶんの見積もりで用意すると、後半の条件がサンプル0で終わる。
+- タスク7.4: **構造の作り替えが「測っているもの」を変えていないことは、旧実装との同一入力比較で示せる。** HEAD 版と 7.4 版を同じ合成入力（`--source simulated --segment-s 0.05 --cycles 3`）で走らせ、3条件の `total_ms_p50`（0.0053/0.0264/0.0127 対 0.0055/0.0258/0.0133 ms）と2つの判定（両方とも `False`、`median_delta_ms`・`baseline_iqr_ms` ともほぼ同値）が一致することを確認した。テストの通過だけでは「同じものを測り続けている」ことまでは示せない。
+- タスク7.4（タスク8.1 への差し戻し）: **`cli.py` の `run_bench_logging()` の docstring が古くなった。** 「入力元は `LoggingOverheadBench.run()` が内部で `with source_off, source_on, source_rec:` する」と書いてあるが、7.4 以降は `with source:` の1本である（同モジュール冒頭の「`FrameSource` に触れるすべてのサブコマンド」節にも同じ記述がある）。`cli.py` は本タスクの `_Boundary: LoggingOverheadBench_` の外なので**修正していない**。
 
 ## タスク9 進捗（2026-08-27 時点）
 
