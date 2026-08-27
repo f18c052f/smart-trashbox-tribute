@@ -418,7 +418,7 @@
   - _Requirements: 3.5, 3.6, 4.2, 2.8_
   - _Depends: 8.2, 9.2_
 
-- [ ] 9.4 解像度・fps を掃引し、設定を決定する
+- [x] 9.4 解像度・fps を掃引し、設定を決定する
   - モード掃引を実機で実行し、少なくとも 640×480 の 30 fps と 60 fps を同一条件で比較する
   - **実効サンプル数**（一定時間窓あたりの有効フレーム数）で比較し、フレームレート単体で決めない
   - USB2 接続が検出された回の結果は無効として扱う
@@ -482,6 +482,11 @@
 - タスク9.3: **取得区間の実時間を測る際、`with` を抜けた後まで測らないこと。** RealSense の `stop()`（pipeline 停止）に約 0.58 秒かかり、`CaptureMetrics` の計測窓（構築時刻 → `stats` 読み取り時点）と食い違う。タスク9.4（fps 掃引）で実時間ベースの比較を行う際に同じ罠がある。
 - タスク9.3: **`CaptureStats` の各項目を「在ること」で検証しない。** `frames_dropped >= 0` のような表明は `int` カウンタである限り決して落ちず、壊れた実装を検出できない。また `measured_fps` を `frames_yielded / (duration_ms/1000)` と比較するのは `metrics.py:169` と同じ式であり恒真になる。**観測した系列から独立に数え直して突き合わせること**（`frames_missing` は `seq` 差分と、`frames_dropped` は `dropped_before` の総和と、`measured_fps` はテスト側の時計で測った実時間と）。
 - タスク9.3: **実機の D435 Depth ストリームは歪み係数がすべて `0.0` である**ことを実測で確認した。`sensing_foundation/geometry.py`（歪み補正を恒等として扱う）と `world_frame_calibration/deproject.py` の `ensure_supported_distortion()`（非ゼロ係数を**受理せず失敗させる**）が置いた仮定は、実機で成立する。
+
+- タスク9.4: **`bench-modes` の `--warmup-s` の既定値 0.0 は罠である。** design.md「ModeSweep」は「ウォームアップ区間を**必ず**設ける」と定めているのに CLI 既定は 0.0 であり、そのまま測るとウォームアップ込みの値が出る。タスク9.3 で観測した `measured_fps` 17.4〜20.5（30fps 要求時）はこれが原因で、`--warmup-s 2 --duration-s 10` で測り直すと 30.08 fps になった。**タスク9.5（`bench-logging`）でも同種の引数があれば同じ罠を確認すること。**
+- タスク9.4: **`src/sensing_foundation/**` を変更すると `world-frame-calibration` の境界テストが失敗する。** 同 Spec タスク7.3 の `test_actual_working_tree_changes_since_main_stay_within_boundary` が `main` からのブランチ全変更に対して `src/sensing_foundation/` への変更を禁止しており、**ブランチが単一 Spec のものであることを前提としている**ため、sensing-foundation 自身の作業ブランチで誤検出する。**本 Spec 側で回避策を当てないこと**（それ自体が越境である）。`world-frame-calibration` 側のタスクとして起こし、マージ前に解決する。
+- タスク9.4: **既定 fps を 60 へ変更したことは下流に波及する。** `world-frame-calibration` の `check_compatibility()` は保存結果の解像度・fps・Depth スケール・Color 有無を現在の入力元と突き合わせるため、**30fps で取ったキャリブレーション結果は 60fps の live 入力に対して `PROFILE_MISMATCH` で失敗する**（設計どおりの正しい挙動）。同 Spec のタスク8（実機キャリブレーション）は**必ず 60fps で実施すること**。
+- タスク9.4: **実効サンプル数には「フレーム層」と「点層」の2つがある。** 9.4 で倍増を確認したのは**フレーム層**であり、検出処理を含む点層の実効点数は `flying-object-tracking` の測定対象で未測定。下流が 1 フレーム 16.6ms に収まらない場合、ドレインが働いて点層は倍増しない（欠落は生じず、余分な取得コストを払うだけ）。**下流の実測後に既定 fps を再検討してよい。**
 
 ## タスク9 進捗（2026-08-27 時点）
 

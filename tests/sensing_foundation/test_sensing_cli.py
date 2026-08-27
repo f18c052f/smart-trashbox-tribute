@@ -505,9 +505,13 @@ class TestSettingsPrecedence:
         monkeypatch.delenv("STB_SF_FPS", raising=False)
 
         # 既定値のみ（設定ファイルもCLI引数も無し）。
+        # 既定 fps はタスク 9.4 の実機実測により 30 → 60 へ変更された
+        # （`measurements.md` タスク9.4）。ここで固定しているのは
+        # 「解決順序の最下層が既定値である」ことであり、60 という値そのものの
+        # 妥当性ではない。
         rc = cli.main(["capture", "--print-settings"])
         assert rc == 0
-        assert json.loads(capsys.readouterr().out)["capture"]["fps"] == 30
+        assert json.loads(capsys.readouterr().out)["capture"]["fps"] == 60
 
         # 設定ファイル > 既定値。
         rc = cli.main(["capture", "--print-settings", "--config", str(config_path)])
