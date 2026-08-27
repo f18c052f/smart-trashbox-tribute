@@ -1313,7 +1313,7 @@ class OverheadVerdict:
 ##### Batch / Job Contract
 
 - **Trigger**: CLI `bench-logging`
-- **Input / validation**: 同一入力元・同一設定・同一時間で、条件だけを変えて交互に実行する（順序効果を打ち消すため **A/B/A/B** で回す）
+- **Input / validation**: 同一入力元・同一設定・同一時間で、条件だけを変えて交互に実行する（順序効果を打ち消すため **A/B/A/B** で回す）。**「同一入力元」は3条件で `FrameSource` を1本だけ開いて共有することを指す**（条件ごとに別インスタンスを開かない。下記「3条件が入力元を共有する理由」を参照）
 - **Output / destination**: `var/bench/logging-<session_id>.json` ＋ 判定を `measurements.md` へ
 - **Idempotency & recovery**: 各条件の生サンプルを残し、判定を後から再計算できるようにする
 
@@ -1324,10 +1324,24 @@ class OverheadVerdict:
 - この基準は**絶対値の目標を置かない**。`tech.md` 開発標準1（未実測の数値を合否条件にしない）に反しないよう、**基準を「OFF 条件自身のばらつき」に対する相対量で定義する**
 - 判定が偽になった場合、**計測結果を無条件に有効なものとして扱わない**旨を `measurements.md` に明記する（要件 10.4）
 
+##### 3条件が入力元を共有する理由
+
+3条件は **1本の `FrameSource`・1本の `SessionClock`・1つの `CaptureMetrics` を共有**し、セグメントの切り替えでは**ロガーの向き先だけ**を差し替える（`logging_off` → `NullLogger`、`logging_on` → `StructuredLogger`、`recording_on` → `NullLogger` ＋ `SessionRecorder.write()`）。条件ごとに `open_source()` を呼んで3本を同時に開いてはならない。
+
+**根拠1（live では物理的に成立しない）**: RealSense は1デバイスにつき1パイプラインしか開けない。3本を同時に開く構造では2本目のオープンが失敗する（タスク9.5 で実測）。仮に開けたとしても、1台のカメラに3本のパイプラインが競合すれば各条件が得るフレームが互いに干渉し、「同一条件で比較する」という前提自体が崩れる。
+
+**根拠2（毎セグメントで開き直す案は測定を壊す）**: RealSense のパイプラインには無視できないウォームアップがある（タスク9.4 の実測: 30fps 要求時にウォームアップ無しで 17〜20fps、2秒のウォームアップ後で 30.08fps）。セグメント長は秒未満〜数秒であり、毎セグメントで開き直すと**全セグメントがウォームアップ区間になる**。測っているのがロギング負荷ではなくパイプライン起動の過渡応答になるため、この案は採らない。
+
+**根拠3（交互実行を諦める案は本契約に反する）**: 3条件を別々の実行として測る案は、上の Batch/Job Contract が定める A/B/A/B を放棄することになり、順序効果と（Pi 上での長時間実行では）熱ドリフトを打ち消せなくなる。
+
+**帰結（許容する副作用）**: 入力元を共有すると、3条件は入力の**互いに素な区間**を処理する（`logging_off` が先頭、次に `logging_on`、…）。条件ごとに別インスタンスを開いていた場合は `simulated` / `recorded` で3条件が同一内容を見ていたが、共有ではそうならない。**これは A/B/A/B の交互実行と複数サイクルが打ち消すべき非定常性であり、交互実行が存在する理由そのものである。** また live では区間が互いに素になることは不可避であり、`simulated` / `recorded` を同じ構造で回すことは、実機実行の予行演習としてはむしろ忠実になる。
+
 **Implementation Notes**
 
 - Integration: 実機が無い期間は `simulated` 入力で実行できる（要件 10.5）。実機到着後に live で再実行する
 - Risks: `simulated` では I/O 負荷の性質が実機と異なる。**simulated の結果を実機の結論として扱わない**旨を出力に明記する
+- Integration: ロガーの差し替えは `obslog.Logger` が `Protocol`（構造的部分型）であることを利用し、**ベンチ側に私有の切り替え可能ロガーを置いて実現する**。`CaptureMetrics` も `BaseFrameSource` も変更しない（本節の変更は `src/sensing_foundation/bench/logging_overhead.py` に閉じる）
+- Validation: 条件別の `frames_dropped` は、共有した `CaptureMetrics.counters()` を**セグメント境界の前後で読んだ差分**として条件ごとに積算する（条件ごとに別々の `CaptureMetrics` を持たないため）
 
 #### LogSummarizer
 
