@@ -929,7 +929,230 @@ live では2本目のオープンで失敗する。
 
 ## タスク9.6 実データを記録し、WSL で再生する往復を確認する
 
-**ステータス: 未着手**（タスク9.4 の完了が前提）
+**ステータス: 完了**
+
+### 実施日
+
+2026-08-28（JST）。セッション識別子は UTC 表記のため `20260827T152644Z` となる。
+
+### 実施環境
+
+| 役割 | 機材 | SDK | 実機接続 |
+|---|---|---|---|
+| 記録側 | Raspberry Pi 4 Model B Rev 1.2（4GB）/ Raspberry Pi OS 64-bit trixie / Python 3.13.5 | librealsense 2.58.3 あり | D435 接続あり（USB 3.2） |
+| 再生側 | WSL2 Ubuntu / Python 3.11.16 | **なし** | **なし** |
+
+再生側に SDK も実機も無いことは実測で確認した（要件 6.3）。
+
+```
+$ uv run --extra sensing python -c "from sensing_foundation.sources.realsense import probe_sdk, probe_devices; print(probe_sdk()); print(probe_devices())"
+{'available': False, 'version': None, 'location': None, 'error': 'pyrealsense2 を import できない。…'}
+{'available': False, 'devices': [], 'error': 'pyrealsense2 を import できない。…'}
+```
+
+記録側と再生側で `src/sensing_foundation/**` の 26 ファイルが同一であることを sha256 で確認済み。
+
+### 使用したコマンド
+
+**1. 構図確認（Pi、投擲不要）**
+
+モニタの無い Pi で画角を確認するため、使い捨ての診断ツールを用いた（`sensing_foundation`
+の公開経路のみを使い、パッケージ本体には何も足していない）。
+
+```
+$ .venv/bin/python /tmp/aim_check.py --background-s 12 --motion-s 0
+[stream] 640x480@60 depth_scale=1.0000000474974513 mm/count
+[stage1] 背景 716 枚から作成。測距できた画素 96.5%
+[stage1] 距離 5%tile=1.55m 中央=2.21m 95%tile=2.60m
+```
+
+深度マップの下端4行に手前へ向かう勾配が出ており、床が画角に入っていることを確認した
+（`world-frame-calibration` 要件 5.4「床面を見込む角度が浅すぎる場合は失敗」を避ける条件）。
+
+**2. 本記録（Pi、実際の投擲を含む）**
+
+```
+$ .venv/bin/python -m sensing_foundation.cli record \
+      --source live --recording-mode ring \
+      --ring-seconds 15 --duration-s 15 --compression zlib
+```
+
+**3. WSL への転送と完全性確認**
+
+```
+$ scp -r raspi@192.168.0.11:~/repos/smart-trashbox-tribute/var/sessions/20260827T152644Z-4f058354 \
+      var/real-sessions/
+$ sha256sum manifest.json frames.ndjson depth.bin summary.json   # 両機で一致を確認
+```
+
+**4. WSL での再生往復検証**
+
+```
+$ SENSING_REAL_SESSION_DIR=var/real-sessions/20260827T152644Z-4f058354 \
+      uv run --extra sensing pytest tests/sensing_foundation/test_real_session_roundtrip.py -q
+9 passed in 18.08s
+```
+
+生データは版管理しない（`var/` は `.gitignore` 済み）。検証テストは環境変数
+`SENSING_REAL_SESSION_DIR` が与えられたときのみ実行し、無い環境では skip する
+（タスク9.3 が実機の有無で `skipif` した構造と同じ）。
+
+### 結果: 記録
+
+| 項目 | 値 |
+|---|---|
+| セッション識別子 | `20260827T152644Z-4f058354` |
+| 記録方式 | ring（リング長 15 秒 = 取得時間） |
+| 取得枚数 / 書き出し枚数 | 900 / 900 |
+| 破棄 / 欠落 / 取得失敗 / 書き込み失敗 | 0 / 0 / 0 / 0 |
+| ストリーム | 640×480@60fps, Color 無効, `depth_scale_mm`=1.0000000474974513 |
+| 圧縮 | zlib（553 MB → 124,566,829 B、約 4.4 倍） |
+| 時刻ドメイン | 全 900 行が `global_time` |
+| 取得レイテンシ | 算出可能（先頭 16.19 ms / 末尾 12.25 ms） |
+| 内部パラメータ | fx=fy=385.4710, ppx=319.0791, ppy=240.5482, coeffs 全 0.0 |
+
+**実効的な取得レートは 59.9 fps。** 索引の先頭 `t_capture_ms`=588.221 と末尾 15596.836 から、
+899 間隔で 15008.6 ms、すなわち 16.695 ms/フレーム。**15 秒間 60fps を破棄0・欠落0で維持できた。**
+
+> ⚠️ `summary.json` の `measured_fps` は 10.04 と出るが、これは**採用してはならない**。
+> `CaptureMetrics` の計測窓が「構築時刻 → `stats` 読み取り時点」であり、取得後の
+> zlib 圧縮と書き出し（約 74 秒）を含んでしまうためである（タスク9.3 発見4・9.4 発見1 と同根）。
+> 実効レートは上記のとおり索引の時刻から算出すること。
+
+### 結果: WSL での再生往復検証（9件すべて通過）
+
+| 検証 | 要件 | 内容 |
+|---|---|---|
+| 記録元が実機であること | 9.6 前提 | `manifest.source == "live"`、内部パラメータが非 `None` かつ焦点距離が正 |
+| 2回再生の系列一致 | 6.2 | 900 枚をロックステップで全フィールド比較（`t_capture_ms` を除く） |
+| 索引との一致 | 6.1 | 通し番号・フレーム番号・デバイス側時刻・時刻ドメイン・取得レイテンシ・破棄／欠落件数 |
+| Depth 内容の一致 | 6.1 | `depth.bin` から素の `zlib` で独立に再構成した配列と全 900 枚が一致 |
+| 中身の非空性 | 6.1 | 一様な値で埋まっていない（実際に測距した内容がある） |
+| メタ情報の取得経路 | 6.4 | `FrameSource.profile` から解像度・fps・Depth スケール・内部パラメータを取得 |
+| Throw Record の対応付け | 7.7 | `link_to_session()` → 保存 → 読み戻し → セッション識別子から記録側のフレーム範囲（225..450 の 226 枚）を引けること |
+
+**検証を「同じ経路」で行わない設計にした。** `RecordedSource` は内部で `SessionReader` を
+使うため、再生結果を `SessionReader` で読み直して突き合わせても同じコードが同じ答えを
+返しただけになる。期待値は `frames.ndjson` / `depth.bin` / `manifest.json` から素の
+`json` と `zlib` で独立に組み立て直している（タスク9.3 の申し送りの適用）。
+
+### 負の対照: 表明が恒真でないことの実証
+
+`SessionReader.read()` に意図的な欠陥（フレーム 300 の Depth の 1 画素だけ書き換え）を
+注入して再実行した。結果は予測どおり:
+
+```
+FAILED ...::test_replayed_depth_matches_blob_reconstructed_independently
+FAILED ...::test_linked_record_round_trips_and_resolves_to_the_frame_range
+2 failed, 7 passed
+```
+
+- ❌ 独立参照と突き合わせる2件は**検出した**
+- ✅ `test_two_replays_produce_equivalent_series` は**通過した**
+
+**最後の1点が独立参照を用意した理由そのものである。** 2回の再生を互いに比べるだけでは、
+両方が同じように壊れる欠陥を原理的に検出できない。
+
+あわせて、合成入力で作った記録を与えると「実機由来」ゲートが発火することも確認した
+（`test_manifest_records_live_as_the_source` ほか 6 件が失敗）。
+
+### 記録内容の性質（投擲の分離は本 Spec の責務ではない）
+
+記録に実際の動きが含まれることは確認した。背景差分の「熱いブロック数」で見て
+ノイズ下限（中央値 14）に対し最大 96 と約 7 倍の信号があり、時系列に明確な山が 3 箇所ある。
+
+ただし**投擲物そのものを分離できたとは主張しない。** 最も強い区間は距離約 1.0m・画面右中央・
+継続 1.8 秒および 6.1 秒であり、投擲物の飛行時間（200〜400 ms 程度）よりはるかに長い。
+投げている人の腕や体である可能性が高い。
+
+> **下流（`flying-object-tracking`）への申し送り**: 2.4m 先の紙ボール（直径約 7cm）が
+> 占める面積は fx≈385px から見積もって**約 8px 四方 = 面積 64px 程度**しかなく、
+> 本シーンで実測した背景差分のノイズ下限を下回る。**640×480 で 2m 級の距離では、
+> 背景差分だけで投擲物を分離するのは困難である。** 投擲距離を詰めるか、
+> 時間方向の情報（フレーム間差分・軌道の連続性）を使う方式が要る。
+
+物体検出は `flying-object-tracking` の責務であり、`sensing-foundation` は
+「フレームを取得・記録・再生する」層である（タスク8.1 も投擲検出トリガを明示的に範囲外としている）。
+**タスク9.6 の完了条件は「再生の往復」であって「物体の検出」ではない。**
+
+### 発見1: `frame_index_from`/`frame_index_to` の意味が未定義（**未解決・要 design 判断**）
+
+同じ「フレーム番号」に見える 3 つの量があり、**リングが古いフレームを追い出したときだけ食い違う**。
+
+| 量 | 定義 | 追い出し時の値（例） |
+|---|---|---|
+| `SessionReader.read(i)` の `i` | 索引ファイルの**行位置** | 0..59 |
+| 索引行の `i` フィールド | **記録**セッションの通し番号 | 121..180 |
+| `RecordedSource` が返す `CaptureFrame.index` | **再生**セッションの 0 始まり通し番号 | 0..59 |
+
+実測（タスク9.6 のスモーク記録 `20260827T150236Z-04c2bd88`、181 枚取得して直近 60 枚を保存）:
+
+```
+$ head -1 frames.ndjson  →  {"i": 121, "seq": 121, ...}
+$ tail -1 frames.ndjson  →  {"i": 180, "seq": 180, ...}
+$ wc -l frames.ndjson    →  60
+```
+
+`link_to_session(record, session_id, frame_index_from, frame_index_to)` の
+`frame_index_*` がこのどれを指すのかは、**`design.md` にも `requirements.md` にも定義が無い**
+（`design.md` L1178・L1187・L1491 はシグネチャと格納先を書くのみ）。
+
+**影響**: 投擲だけを残すリングバッファ運用（要件 5.5）は**まさに追い出しが起きる使い方**であり、
+食い違いが常態化する。下流が「記録側の通し番号」のつもりで値を入れ、利用側が
+`SessionReader.read()` へ行位置として渡すと、**静かにずれた範囲を読む**。
+
+**本タスクでは是正しない。** `SessionReader` はタスク4.4、`link_to_session` はタスク5 の
+境界であり、どちらの意味を正とするかは design レベルの判断を要する。
+本タスクの検証テストには前提を明示する表明（`index_rows[0]["i"] == 0`）を置き、
+追い出しのある記録では前提が崩れることをコメントに残した。
+
+なお `types.py` は `CaptureFrame.index` を「セッション内の 0 始まり通し番号。欠番なく増加する」
+と定義しており、**この不変条件を満たすのは `RecordedSource` の側で、`SessionReader.read()`
+が返す値（121 始まり）は満たさない**。是正の起点はここになると思われる。
+
+### 発見2: live 記録の manifest にデバイス識別情報が無い（**要件 5.2 未充足・未解決**）
+
+実機で記録した manifest の `device` が `null` である。
+
+```json
+"device": null,
+"runtime": {"os": "Linux", "os_release": "6.18.34+rpt-rpi-v8",
+            "python_version": "3.13.5", "hostname": "raspberry-pi",
+            "global_time_enabled": null}
+```
+
+要件 5.2 は「記録に、使用した解像度・フレームレート・入力元種別・カメラ内部パラメータ・
+記録開始時刻・**デバイス識別情報**を含むメタ情報を伴わせる」と定めている。
+`SessionRecorder` は `device` 引数を受け取る用意があり、`sources/realsense.py` の
+`probe_devices()` は `serial_number` / `firmware_version` / `usb_type_descriptor` を返せるが、
+**`cli.run_record()` が `device=None` を固定で渡している**（`cli.py` の `SessionRecorder(...)` 構築箇所）。
+
+**影響**: どの個体・どのファームウェアで撮った記録なのかが後から追えない。
+D435 のシリアル（実測 834412071095）とファームウェア（5.17.3.10）はタスク9.2 で
+`doctor` から取得できることを確認済みであり、情報が無いのではなく**渡していない**。
+
+### 発見3: manifest の `global_time_enabled` が常に `null`
+
+`_build_runtime_info()`（`cli.py`）が `"global_time_enabled": None` を固定で返す。
+入力元を開く前に組み立てているため、実際の有効化結果を入れる経路が無い。
+
+タスク6.1 は「グローバル時刻の有効化を試み、**有効化できたかどうか**をメタ情報とログに残す」と
+定めており、`RealSenseSource` は `_global_time_enabled` を保持しているが manifest へ届かない。
+
+**影響は限定的**である。本記録では索引行の `ts_domain` が全行 `global_time` であることから
+有効化に成功したと判断できる。ただし「メタ情報に残す」という要件の字義は満たしていない。
+
+> 発見2・発見3 はいずれも **`cli.py`（タスク8.1）の境界**にあり、本タスク（9.6）の
+> 要件（5.1 / 6.1 / 6.2 / 6.3 / 7.7）には含まれない。**実機でしか観測できない欠陥**であり、
+> タスク9.7 またはタスク8.1 への差し戻しとして扱うこと。
+
+### 未実施の項目
+
+- 発見1〜3 の是正（いずれも別タスク・別境界）
+- リングが追い出す条件下での再生往復検証（発見1 の意味が確定してから行うべき）
+- `replay-session` サブコマンド経由での往復（本タスクは `open_source()` 契約で検証した。
+  CLI 経由の系列一致は `run_replay_session()` が枚数一致しか見ないため、
+  系列の等価性は検証できない）
 
 ---
 
