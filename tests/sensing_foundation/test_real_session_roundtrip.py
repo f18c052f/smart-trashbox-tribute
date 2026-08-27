@@ -407,8 +407,13 @@ class TestThrowRecordLinksBackToTheRecordedFrameRange:
     ) -> None:
         session_id = manifest["session_id"]
         # 記録の中ほどを「1投擲ぶん」の範囲に見立てる（両端を含む閉区間）。
-        frame_index_from = len(index_rows) // 4
-        frame_index_to = len(index_rows) // 2
+        # 範囲は**記録側の通し番号**で作る（タスク 4.7 で確定した契約。
+        # design.md「SessionReader /『フレーム番号』が指す3つの量」）。
+        # 索引行から取るのであって、行位置をそのまま使うのではない
+        # ——本記録は追い出しが無く両者が一致するが、一致に依存して書くと
+        # 追い出しのある記録で静かに壊れる。
+        frame_index_from = index_rows[len(index_rows) // 4]["i"]
+        frame_index_to = index_rows[len(index_rows) // 2]["i"]
         assert frame_index_from < frame_index_to
 
         store = ThrowRecordStore(tmp_path / "throws.ndjson")
@@ -443,31 +448,28 @@ class TestThrowRecordLinksBackToTheRecordedFrameRange:
         # で行わないこと」）。範囲がずれていないことの証拠として意味を持つのは、
         # 再生の当該区間が **`frames.ndjson` のその行番号の内容**と一致する
         # ことである。
-        # ⚠️ 前提を明示する: 本記録はリングが1枚も追い出していない
-        # （取得時間 = リング長）ため、「索引ファイルの行位置」と「記録
-        # セッション側の通し番号 `i`」がたまたま一致している。
-        #
-        # リングが実際に追い出した記録では両者は食い違う（タスク 9.6 で実測:
-        # 181 枚取得して直近 60 枚を保存した記録では、行位置 0 の `i` が 121）。
-        # `SessionReader.read(i)` の `i` は**行位置**、`RecordedSource` が返す
-        # `CaptureFrame.index` は**再生セッションの 0 始まり通し番号**、
-        # 索引行の `i` は**記録セッションの通し番号**であり、3つ目だけが
-        # ずれる。`frame_index_from`/`frame_index_to` がこのどれを指すのかは
-        # design.md でも requirements.md でも定義されていない（未決の設計課題。
-        # measurements.md タスク9.6「発見した設計上の欠陥」を参照）。
-        assert index_rows[0]["i"] == 0, (
-            "以下の表明は行位置と記録側通し番号の一致を前提にしている。"
-            "リングが追い出した記録ではこの前提が崩れる（未決の設計課題）。"
-        )
+        # 保存されているのは**記録側の通し番号**なので、再生の何枚目を見る
+        # べきかは行位置へ変換して決める（タスク 4.7 の契約）。本記録は
+        # リングが1枚も追い出していない（取得時間 = リング長）ため両者は
+        # 一致するが、**一致に依存した書き方をしない**——追い出しのある記録
+        # （タスク9.6 の実測では行位置 0 の `i` が 121）でも同じコードが
+        # 正しく動くようにしておく。
+        reader = SessionReader(resolved_dir)
+        position_from = reader.position_of(link["frame_index_from"])
+        position_to = reader.position_of(link["frame_index_to"])
 
         span = range(link["frame_index_from"], link["frame_index_to"] + 1)
         checked = 0
         with (session_dir / layout.BLOB_NAME).open("rb") as blob:
             with _replay(session_dir, "replay-linked") as frames:
-                window = islice(frames, frame_index_from, frame_index_to + 1)
-                for i, replayed in zip(span, window, strict=True):
-                    row = index_rows[i]
-                    assert replayed.index == row["i"] == i
+                window = islice(frames, position_from, position_to + 1)
+                for recorded_index, replayed in zip(span, window, strict=True):
+                    position = reader.position_of(recorded_index)
+                    row = index_rows[position]
+                    assert row["i"] == recorded_index
+                    # 再生側は 0 始まりへ振り直されるため、行位置と一致する
+                    # （記録側の通し番号とは別の量である）。
+                    assert replayed.index == position
                     assert replayed.seq == row["seq"]
                     assert np.array_equal(
                         replayed.depth, _reference_depth(blob, manifest, row)
@@ -475,7 +477,12 @@ class TestThrowRecordLinksBackToTheRecordedFrameRange:
                     checked += 1
         assert checked == frame_index_to - frame_index_from + 1
 
-        # 同じ範囲を `SessionReader` からも引ける（対応付けの利用側が
-        # 再生を回さずに該当フレームだけ取り出す経路。要件 7.7）。
-        reader = SessionReader(resolved_dir)
-        assert [reader.read(i).index for i in span] == list(span)
+        # 同じ範囲を `SessionReader` から**記録側の通し番号のまま**引ける
+        # （対応付けの利用側が再生を回さずに該当フレームだけ取り出す経路。
+        # 要件 7.7）。保存された値をそのまま渡せる形になっていることが要点。
+        linked_frames = list(
+            reader.iter_recorded_range(
+                link["frame_index_from"], link["frame_index_to"]
+            )
+        )
+        assert [frame.index for frame in linked_frames] == list(span)

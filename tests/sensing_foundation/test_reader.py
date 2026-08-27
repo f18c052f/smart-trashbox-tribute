@@ -111,6 +111,7 @@ def _write_session(
     format_version: str = layout.RECORDING_FORMAT_VERSION,
     include_summary: bool = True,
     tamper_raw_len_at: int | None = None,
+    recorded_indices: Sequence[int] | None = None,
 ) -> tuple[Path, list[np.ndarray]]:
     """手書きの最小フィクスチャ（4ファイル）を組み立てる。
 
@@ -122,6 +123,11 @@ def _write_session(
         tamper_raw_len_at: 指定した位置の索引行だけ `raw_len` を意図的に
             ずらす（off/len 自体は正しいままにする）。`read()` 実行時の
             「展開後の長さ不一致」検出を確認するために使う。
+        recorded_indices: 索引行の `i`（**記録側の通し番号**）として書く値の列。
+            既定（`None`）では行位置と同じ `0, 1, 2, ...` になり、
+            「リングが1枚も追い出していない記録」を表す。リングが古い
+            フレームを追い出した記録では行位置と食い違うため、その状況を
+            作るときに明示的に渡す（タスク 4.7）。
     """
     session_dir = tmp_path / "session"
     session_dir.mkdir()
@@ -132,6 +138,10 @@ def _write_session(
     )
 
     depths = [make_depth_frame(WIDTH_PX, HEIGHT_PX, seq) for seq in seqs]
+
+    if recorded_indices is None:
+        recorded_indices = list(range(len(seqs)))
+    assert len(recorded_indices) == len(seqs), "recorded_indices は seqs と同じ長さで渡すこと"
 
     index_lines: list[str] = []
     offset = 0
@@ -148,7 +158,7 @@ def _write_session(
                 reported_raw_len = raw_len + 1
 
             record = {
-                "i": i,
+                "i": recorded_indices[i],
                 "seq": seq,
                 "t_capture_ms": float(i) * (1000.0 / FPS),
                 "device_ts_ms": None,
@@ -531,3 +541,137 @@ def test_integration_roundtrip_with_session_recorder(tmp_path: Path) -> None:
         assert got.index == written.index
         assert got.seq == written.seq
         assert np.array_equal(got.depth, written.depth)
+
+
+# ---------------------------------------------------------------------------
+# 記録側の通し番号で引く経路（タスク 4.7）
+#
+# 索引ファイルの**行位置**と、索引行の `i`（**記録側の通し番号**）は、
+# リングが古いフレームを追い出したときだけ食い違う。以下のテストは
+# `recorded_indices=` を明示して**食い違う記録**を作る——食い違わない記録では
+# 3つの量が一致してしまい、どの量を扱っているかを区別できない。
+# ---------------------------------------------------------------------------
+
+#: 181枚取得して直近60枚を保存した記録を模した通し番号（タスク9.6 の実測に対応）。
+EVICTED_INDICES = [121, 122, 123]
+
+
+def _write_evicted_session(tmp_path: Path) -> tuple[Path, list[np.ndarray]]:
+    """行位置 `0,1,2` に対して記録側通番が `121,122,123` になる記録を書く。"""
+    return _write_session(tmp_path, seqs=(100, 101, 102), recorded_indices=EVICTED_INDICES)
+
+
+def test_read_returns_the_recording_side_index_not_the_row_position(tmp_path: Path) -> None:
+    """`read(i)` の `i` は行位置、返る `CaptureFrame.index` は記録側の通し番号である。
+
+    design.md「SessionReader /『フレーム番号』が指す3つの量」の契約。
+    読み出し側で 0 始まりへ振り直さない（記録に書かれた識別子を、読み出し方の
+    都合で書き換えないため）。
+    """
+    session_dir, _ = _write_evicted_session(tmp_path)
+    reader = SessionReader(session_dir)
+
+    assert [reader.read(i).index for i in range(len(reader))] == EVICTED_INDICES
+
+
+def test_recorded_index_range_reports_the_closed_interval_actually_present(
+    tmp_path: Path,
+) -> None:
+    session_dir, _ = _write_evicted_session(tmp_path)
+    reader = SessionReader(session_dir)
+
+    assert reader.recorded_index_range == (121, 123)
+
+
+def test_position_of_maps_the_recording_side_index_to_the_row_position(
+    tmp_path: Path,
+) -> None:
+    session_dir, _ = _write_evicted_session(tmp_path)
+    reader = SessionReader(session_dir)
+
+    assert [reader.position_of(n) for n in EVICTED_INDICES] == [0, 1, 2]
+
+
+def test_position_of_raises_for_a_number_not_in_this_session(tmp_path: Path) -> None:
+    """追い出されて残っていない番号は、静かに別のフレームを返さず失敗する。
+
+    メッセージに実在する範囲を含める——`0` を渡した呼び出し側（行位置と
+    取り違えた側）が、何が起きたかをその場で理解できるようにするため。
+    """
+    session_dir, _ = _write_evicted_session(tmp_path)
+    reader = SessionReader(session_dir)
+
+    with pytest.raises(IndexError) as excinfo:
+        reader.position_of(0)
+    assert "121" in str(excinfo.value)
+    assert "123" in str(excinfo.value)
+
+
+def test_read_recorded_matches_read_of_the_corresponding_position(tmp_path: Path) -> None:
+    session_dir, _ = _write_evicted_session(tmp_path)
+    reader = SessionReader(session_dir)
+
+    for position, number in enumerate(EVICTED_INDICES):
+        _assert_frames_equal(reader.read_recorded(number), reader.read(position))
+
+
+def test_iter_recorded_range_is_a_closed_interval(tmp_path: Path) -> None:
+    """両端を含む。`from == to` は1枚を指す。"""
+    session_dir, _ = _write_evicted_session(tmp_path)
+    reader = SessionReader(session_dir)
+
+    assert [f.index for f in reader.iter_recorded_range(121, 123)] == [121, 122, 123]
+    assert [f.index for f in reader.iter_recorded_range(122, 123)] == [122, 123]
+    assert [f.index for f in reader.iter_recorded_range(122, 122)] == [122]
+
+
+def test_iter_recorded_range_rejects_an_inverted_range(tmp_path: Path) -> None:
+    session_dir, _ = _write_evicted_session(tmp_path)
+    reader = SessionReader(session_dir)
+
+    with pytest.raises(IndexError):
+        reader.iter_recorded_range(123, 121)
+
+
+def test_iter_recorded_range_validates_endpoints_before_iteration_starts(
+    tmp_path: Path,
+) -> None:
+    """端点の検証は呼び出した時点で行う（最初の `next()` まで遅延させない）。
+
+    generator にすると誤った引数が「1枚目を取り出すまで発覚しない」形になり、
+    呼び出し側のスタックから原因が消える。
+    """
+    session_dir, _ = _write_evicted_session(tmp_path)
+    reader = SessionReader(session_dir)
+
+    with pytest.raises(IndexError):
+        reader.iter_recorded_range(0, 123)  # 端点が実在しない
+    with pytest.raises(IndexError):
+        reader.iter_recorded_range(121, 999)
+
+
+def test_iter_recorded_range_yields_only_the_numbers_present_when_gapped(
+    tmp_path: Path,
+) -> None:
+    """記録側通番に欠番がある記録（書き込み失敗等）では、実在するぶんだけ返す。
+
+    呼び出し側は `index_to - index_from + 1` と件数を比べれば欠落を検出できる。
+    """
+    session_dir, _ = _write_session(
+        tmp_path, seqs=(100, 101, 102), recorded_indices=[10, 12, 13]
+    )
+    reader = SessionReader(session_dir)
+
+    frames = list(reader.iter_recorded_range(10, 13))
+    assert [f.index for f in frames] == [10, 12, 13]
+    assert len(frames) < (13 - 10 + 1)
+
+
+def test_duplicate_recorded_index_is_rejected_at_construction(tmp_path: Path) -> None:
+    """同じ通し番号が2行にあると `position_of` が黙って一方を捨てるため、構築時に拒否する。"""
+    session_dir, _ = _write_session(
+        tmp_path, seqs=(100, 101, 102), recorded_indices=[5, 6, 5]
+    )
+
+    with pytest.raises(RecordingFormatError):
+        SessionReader(session_dir)

@@ -614,6 +614,7 @@ class CaptureStats:
 
 - Preconditions: `depth.shape == (profile.height_px, profile.width_px)`、`depth.dtype == uint16`
 - Invariants: `t_capture_ms` は同一セッション内で単調非減少。`index` は 0 から欠番なく増加する
+- **`index` の不変条件が適用される範囲**: 上の不変条件は **`FrameSource` が下流へ渡すフレーム**についてのものである。`SessionReader.read()` が返す `CaptureFrame` は**記録時の `index` をそのまま保つ**ため、リングが古いフレームを追い出した記録では 0 始まりにならない（下記「SessionReader」の「『フレーム番号』が指す3つの量」を参照）。`RecordedSource` はこの値を再生セッションの 0 始まり通し番号へ振り直したうえで下流へ渡すため、`FrameSource` の利用者から見た不変条件は保たれる
 
 **Implementation Notes**
 
@@ -1062,13 +1063,38 @@ class SessionReader:
     @property
     def summary(self) -> Mapping[str, object] | None: ...   # 書きかけなら None
     def __len__(self) -> int: ...
-    def read(self, i: int) -> CaptureFrame: ...
+    def read(self, i: int) -> CaptureFrame: ...            # i は索引ファイルの行位置
     def iter_frames(self) -> Iterator[CaptureFrame]: ...
+    # 記録側の通し番号で引く経路（要件 7.7 の対応付けが指す量。下記参照）
+    @property
+    def recorded_index_range(self) -> tuple[int, int] | None: ...   # 実在する範囲（閉区間）。空なら None
+    def position_of(self, recorded_index: int) -> int: ...
+    def read_recorded(self, recorded_index: int) -> CaptureFrame: ...
+    def iter_recorded_range(self, index_from: int, index_to: int) -> Iterator[CaptureFrame]: ...
 ```
 
 - Preconditions: `manifest.json` が存在し `format_version` が既知であること
 - Postconditions: `iter_frames()` は索引の順序どおりに返す。同一 `SessionReader` を複数回反復しても**同一系列**になる（要件 6.2）
-- Invariants: `read(i)` はブロブのオフセットとバイト長で決まり、内部状態に依存しない
+- Invariants: `read(i)` はブロブのオフセットとバイト長で決まり、内部状態に依存しない。索引行の `i`（記録側の通し番号）は1セッション内で重複しない
+
+##### 「フレーム番号」が指す3つの量
+
+同じ「フレーム番号」に見える量が3つあり、**リングが古いフレームを追い出したときだけ食い違う**。追い出しが無ければ3つとも一致するため、区別せずに書いたコードでも通常は動いてしまう。
+
+| | 量 | どこに現れるか | 例（181枚取得し直近60枚を保存した記録） |
+|---|---|---|---|
+| (a) | **行位置** | `SessionReader.read(i)` の引数 `i` | `0 .. 59` |
+| (b) | **記録側の通し番号** | 索引行の `i` フィールド。記録時の `CaptureFrame.index` そのもの | `121 .. 180` |
+| (c) | **再生側の通し番号** | `RecordedSource` が返す `CaptureFrame.index` | `0 .. 59` |
+
+**契約**:
+
+- `SessionReader.read(i)` の `i` は **(a) 行位置**である。返る `CaptureFrame.index` は **(b) 記録側の通し番号**である（記録時の値をそのまま保つ。読み出し側で振り直さない——記録に書かれた識別子を読み出し方の都合で書き換えないため）
+- `RecordedSource` は下流へ渡す前に **(c)** へ振り直す。`FrameSource` の利用者から見た「0 から欠番なく増加する」不変条件はここで満たされる
+- `ThrowRecord` の `extra["sensing"]["frame_index_from"]` / `["frame_index_to"]` は **(b) 記録側の通し番号**である（下記「ThrowRecordStore」を参照）
+- (b) から (a) を引くのが `position_of()`、(b) で直接読むのが `read_recorded()`、(b) の閉区間で読むのが `iter_recorded_range()` である
+
+**投擲の瞬間だけを残すリング運用（要件 5.5）はまさに追い出しが起きる使い方**であり、この区別が表面化する経路そのものである。区別せずに (b) の値を (a) として渡すと、例外にならずに**静かにずれた範囲を読む**。
 
 **Implementation Notes**
 
@@ -1185,6 +1211,8 @@ def link_to_session(record: ThrowRecord, session_id: str,
 **Implementation Notes**
 
 - Integration: **対応付けは `ThrowRecord.extra` を使う**（D-8 が用意した加算的拡張の退避先）。`extra["sensing"] = {"session_id": ..., "frame_index_from": ..., "frame_index_to": ...}` の1キーに収め、`extra` の名前空間を汚さない（要件 7.7）
+- Integration: **`frame_index_from` / `frame_index_to` は「記録側の通し番号」（索引行の `i`。記録時の `CaptureFrame.index`）であり、索引ファイルの行位置ではない。** 両端を**含む**閉区間である（`from == to` は1枚を指す）。取り出しは `SessionReader.iter_recorded_range(index_from, index_to)` を使う。上の「SessionReader / 『フレーム番号』が指す3つの量」を参照
+- Validation: 行位置ではなく記録側の通し番号を採るのは、要件 7.7 が求めるのが「後から対応付けられる**識別子**」だからである。行位置はファイル内の位置であって識別子ではなく、記録を切り詰めれば同じ値が別のフレームを指す。記録側の通し番号は `seq` / `t_capture_ms` と同じく**記録に書き込まれた事実**であり、読み出し方に依存しない
 - Validation: 読み出しは行ごとに独立して行う。破損行は `ThrowRecordReadIssue` として報告し、**`iter_with_issues()` では後続行の読み出しを続ける**（要件 7.5）。`schema_version` 不一致は `version_mismatch` として報告し、**内容を推測して読み替えない**（要件 7.6）
 - Risks: `prediction_core` の内部モジュールを import しないこと。`test_boundaries.py` が静的に検証する（要件 7.8 / 12.5）
 
