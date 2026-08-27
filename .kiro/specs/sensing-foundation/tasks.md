@@ -246,6 +246,36 @@
   - _Depends: 3.2, 4.3, 4.5_
   - _Boundary: open_source, tests/sensing_foundation/test_source_contract.py_
 
+- [ ] 4.7 「フレーム番号」が指す量を確定させ、記録・再生・対応付けの間で一致させる
+  - 同じ「フレーム番号」に見える**3つの別々の量**があり、リングが古いフレームを
+    追い出したときだけ食い違う:
+    (a) `SessionReader.read(i)` の `i` は**索引ファイルの行位置**、
+    (b) 索引行の `i` フィールドは**記録**セッションの通し番号、
+    (c) `RecordedSource` が返す `CaptureFrame.index` は**再生**セッションの 0 始まり通し番号
+  - タスク9.6 の実機記録（181枚取得し直近60枚を保存）で、**行位置 0 の `i` が 121** であることを実測した
+  - `types.py` は `CaptureFrame.index` を「セッション内の 0 始まり通し番号。欠番なく増加する」と
+    定義しているが、この不変条件を満たすのは `RecordedSource` の側であり、
+    `SessionReader.read()` の戻り値（121 始まり）は満たさない
+  - `throw_store.link_to_session()` の `frame_index_from` / `frame_index_to` が
+    上記のどれを指すかは、design.md も requirements.md も定めていない。
+    下流が「記録側の通し番号」のつもりで値を入れ、利用側が行位置として渡すと
+    **静かにずれた範囲を読む**（例外にならない）
+  - **投擲の瞬間だけを残すリング運用（要件 5.5）はまさに追い出しが起きる使い方**であり、
+    この曖昧さが表面化する経路そのものである
+  - **まず design.md に `frame_index_*` がどの量を指すかを明記してから**、
+    `SessionReader` / `RecordedSource` / `link_to_session` / `types.CaptureFrame` の
+    記述と実装をその定義に合わせる（実装を先に動かして定義を後付けしない）
+  - 観測可能な完了状態: **追い出しが起きた記録を明示的に作り**、`link_to_session()` が
+    残した範囲から元のフレームを取り直せることをテストで固定する
+    （追い出しの無い記録では3つの量が一致してしまい、検証が空振りになる）。
+    あわせて `tests/sensing_foundation/test_real_session_roundtrip.py` に置いた
+    前提の表明（`index_rows[0]["i"] == 0` と、それが未決である旨のコメント）を
+    確定した定義に沿って更新する
+  - _Requirements: 5.5, 6.1, 7.7_
+  - _Depends: 4.4, 4.5, 5_
+  - _Boundary: SessionReader, RecordedSource, ThrowRecordStore.link_to_session, types.CaptureFrame_
+  - _Note: 欠陥は3つの境界の**間**の不整合そのものであり、どれか1つの中では契約を定義できない。したがって本タスクの境界は意図的に複数へまたがる。経緯は `measurements.md` タスク9.6「発見1」を参照。_
+
 ## 5. Throw Record の保存層
 
 - [x] 5. Throw Record の保存層を実装する
@@ -292,6 +322,22 @@
   - _Requirements: 1.3, 1.4, 1.5, 1.10, 12.7_
   - _Depends: 1.4, 6.1_
   - _Boundary: Doctor_
+
+- [ ] 6.3 開いたデバイスの識別情報を live アダプタから取り出せるようにする
+  - `LiveSource` は `start()` の中でデバイスオブジェクトを握っているが、
+    `global_time_enabled` / `usb2_warning` と違い**識別情報を外へ公開していない**。
+    そのため記録側が「どの個体・どのファームウェアで撮ったか」を知る経路が無い
+  - `start()` 完了後に確定する属性として、実際に開いたデバイスの
+    `name` / `serial_number` / `firmware_version` / `usb_type_descriptor` を公開する
+    （`global_time_enabled` と同じ流儀のプロパティ）
+  - **`probe_devices()` の流用で代替しない。** あれは接続中の全デバイスを列挙するもので、
+    複数台つながっているときに**パイプラインが実際に開いた個体**を特定できない
+  - 取得できない項目は `None`（欠測）とし、偽装しない（要件 3.5 の方針をそのまま適用）
+  - 観測可能な完了状態: SDK を模したモックに対し、`start()` 後に識別情報が読め、
+    `get_info` が例外を送出する項目は `None` になることをテストで固定する
+  - _Requirements: 1.4, 5.2_
+  - _Depends: 6.1_
+  - _Boundary: RealSenseSource_
 
 ## 7. 集計と比較の手段
 
@@ -402,6 +448,27 @@
   - _Requirements: 4.3, 4.4, 12.2, 12.5, 12.8_
   - _Depends: 8.1_
   - _Boundary: PublicApi, tests/sensing_foundation/test_boundaries.py, tests/sensing_foundation/test_public_api.py_
+
+- [ ] 8.3 記録のメタ情報にデバイス識別情報とグローバル時刻の有効化結果を入れる
+  - **欠陥1**: `run_record()` が `SessionRecorder(..., device=None, ...)` を固定で渡すため、
+    実機で撮った記録でも `manifest.json` の `"device"` が `null` になる。
+    **要件 5.2「メタ情報にデバイス識別情報を含める」が実機で未充足**である
+    （タスク9.6 の実記録で確認。タスク9.2 では serial 834412071095 / FW 5.17.3.10 が
+    読めているので、情報が無いのではなく渡していない）
+  - **欠陥2**: `_build_runtime_info()` が `"global_time_enabled": None` を固定で返す。
+    **入力元を開く前に組み立てている**ため、実際の有効化結果を入れる経路が無い。
+    タスク6.1 の「有効化できたかどうかをメタ情報とログに残す」の字義を満たしていない
+    （索引行の `ts_domain` から推定は可能なので影響は限定的だが、メタ情報としては欠測のまま）
+  - `runtime` の組み立てを `open_source()` の**後**へ移し、live のときは
+    `LiveSource.global_time_enabled` と 6.3 が公開する識別情報を読んで渡す。
+    live 以外の入力元では `None`（欠測）のままとし、値を偽装しない
+  - 観測可能な完了状態: SDK を模したモックを使った `record` の実行で、
+    `manifest.json` の `device` が非 `null` になり `runtime.global_time_enabled` が
+    真偽値になることをテストで固定する。**実機での確認は次の実機セッションで
+    タスク9.5 と同時に行う**（`device` が実在の個体を指すことは実機でしか確認できない）
+  - _Requirements: 5.2, 6.1_
+  - _Depends: 6.3, 8.1_
+  - _Boundary: src/sensing_foundation/cli.py_
 
 ## 9. 実機ブリングアップと実測（ハードウェア必須）
 
