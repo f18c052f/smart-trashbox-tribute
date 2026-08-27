@@ -378,6 +378,27 @@
   - _Depends: 6.4_
   - _Boundary: .kiro/specs/world-frame-calibration/procedure.md_
 
+- [x] 7.5 境界テストが単一 Spec ブランチ前提であることを是正する
+  - `test_actual_working_tree_changes_since_main_stay_within_boundary` は
+    `main` からの**全変更**を検査するため、「このブランチには本 Spec の作業しか
+    載っていない」ことを暗黙の前提にしている。前提が書かれていないので、
+    成り立たない場所で走ったときに**境界違反として報告される**
+  - 実際に `spec/sensing-foundation-bringup` で恒常的に赤くなっている
+    （同 Spec のタスク9.4 が `src/sensing_foundation/config.py` を変更した時点から。
+    本 Spec は既に main へマージ済みのため、そのブランチには本 Spec の変更が1つも無い）
+  - **本 Spec の変更が1つも含まれないときは検査対象が無いものとして skip する**。
+    本 Spec の変更が1つでも含まれるブランチでは、**現在と同じ全変更検査を維持する**
+    （検出能力を落とさない。`pyproject.toml` は共有ファイルなので「本 Spec の変更」に数えない）
+  - 判定は純粋関数として切り出し、`git` を呼ばずに単体テストできるようにする
+    （既存の `find_forbidden_boundary_changes` / `find_out_of_boundary_changes` と同じ流儀）
+  - 観測可能な完了状態: 次の3つを実際の作業ツリーで確認する。
+    (a) 他 Spec の変更のみがある状態で skip し、誤検出しない、
+    (b) 本 Spec の変更と越境した変更が同時にある状態では**引き続き失敗する**、
+    (c) 本 Spec の変更のみの状態では通過する
+  - _Requirements: 11.5_
+  - _Depends: 7.3_
+  - _Boundary: tests/world_frame_calibration/test_world_frame_calibration_boundaries.py_
+
 ## 8. 実機での確立と検証（ハードウェア必須）
 
 > ⚠️ **ここから先は Raspberry Pi 4 と RealSense D435、および `sensing-foundation` の実装完了が前提である。**
@@ -434,3 +455,6 @@
 - タスク6.2: テストファイルは `sensing_foundation.obslog.RESERVED_STAGES`（内部モジュール、公開入口の外）を直接importして `calibrate` ステージ名が予約語と衝突しないことを確認している。**「公開入口のみ参照」制約（design.md）は本パッケージの本番コード（`src/world_frame_calibration/**`）の依存グラフに対するものであり、テストコードの内省的な参照までは禁じていない。** タスク7.3の `test_boundaries.py` を書く際、この意図的な例外を壊さないよう注意すること。またタスク6.4（CLI）が `plane_fit`/`anchor_observe`/`frame_build`/`verify` の各段階ログを、本タスクが用意した `timed`/`stage_logger` を使って追加する予定である（design.mdのUpstreamAdapter契約には段階別の専用関数は無く、`collect_depth` 以外は6.4側でこのプリミティブを使って組み立てる）。
 - タスク7.1: 許容値の「余裕が大きい／ほぼ厳密」という主張を裏付ける実測値は、**必ず実際にテストが叩く経路（今回は `cli.run_calibrate`）で測り直すこと。** 幾何コアのモジュール（`plane`/`anchors`/`frame`）を直接呼んで測ると、CLIが経由する `depth_scale_mm` 丸め込みなどの量子化が欠落し、実際より何桁も小さい誤差を「実測値」として報告してしまう（本タスクでは回転誤差が 6e-17 対 8.1e-07 と約13000倍食い違った）。許容値の非空虚性（halving）テストは、この実際に叩く経路で測った値に対して書くこと。
 - タスク7.2: タスク7.1と同種の問題が2回発生した（docstring中の実測値主張が不正確: 存在しない「7.9mm」の記載、異なる値を「同じ量」と誤記、「数mm」を実際は0.83mmの差に対して使用）。**docstring/コメント中の数値主張は、テストのassertionが依存していなくても実際にパイプラインを叩いて検証すること。** 実測値の記述はレビューの重点確認対象になるため、書いた本人が公開前に実行環境で再現確認する習慣を今後のタスク（7.4手順書・8.x実機タスク）でも徹底すること。
+- タスク7.5: **「作業ツリーの実差分」を根拠にする検査は、暗黙に「このブランチにはこの Spec の作業しか載っていない」と仮定している。** 本 Spec が main へマージされた後、`spec/sensing-foundation-bringup` 側でその Spec の正当な変更（`src/sensing_foundation/config.py` 等）がすべて境界違反として報告され、全体スイートが恒常的に赤くなった。**前提を skip 条件として書き出す**ことで是正した（本 Spec が所有するパスの変更が1つも無ければ検査対象外）。検出能力は落としていない——本 Spec の変更が1つでもあれば従来どおり全変更を検査する。同種の「リポジトリ全体の状態を見る」テストを書くときは、**成立条件をテスト自身が判定できる形に落とすこと。**
+- タスク7.5: **「変更してよい場所」と「その Spec が所有する場所」は別の概念である。** `ALLOWED_BOUNDARY_PREFIXES` にはルート `pyproject.toml`（`ALLOWED_BOUNDARY_EXACT_FILES`）が伴うが、所有判定にこれを含めると、共有の構成ファイルに1行足しただけの他 Spec のブランチが本 Spec の境界検査の対象になってしまう。`OWNED_BOUNDARY_PREFIXES` を別の定数として置き、意図の違いをコメントに残した。
+- タスク7.5: **Windows 側で作った git worktree を WSL から実行すると、`.git` ファイルの `gitdir` が Windows 形式パス（`C:/...`）のため git がリポジトリを解決できない。** `git` を呼ぶテストはこの環境で常に skip する（本テストは skip 理由を文言で残す設計なので、静かに緑になるのではなく skip として見える）。この環境で `git` 依存のテストを検証するときは、**実 git 出力を Windows 側の git で採取し、判定関数へ通す**形をとること（本タスクではこの方法で (a) 誤検出しない・(b) 越境は引き続き検出する・(c) 本 Spec のみなら通過する、の3ケースを実データで確認した）。

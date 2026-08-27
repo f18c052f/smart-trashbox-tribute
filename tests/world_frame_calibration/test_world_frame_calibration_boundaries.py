@@ -691,6 +691,20 @@ ALLOWED_BOUNDARY_PREFIXES: tuple[str, ...] = (
 # design.md Boundary Commitments: 「ルート `pyproject.toml` への追記」のみ許可。
 ALLOWED_BOUNDARY_EXACT_FILES: frozenset[str] = frozenset({"pyproject.toml"})
 
+#: 「このブランチに本 Spec の作業が載っているか」を判定するための、本 Spec が
+#: **所有する**パス接頭辞（タスク 7.5）。現状の値は `ALLOWED_BOUNDARY_PREFIXES`
+#: と一致するが、意味は異なる——あちらは「変更してよい場所」、こちらは
+#: 「変更されていれば本 Spec の作業だと言える場所」である。
+#:
+#: `ALLOWED_BOUNDARY_EXACT_FILES`（ルート `pyproject.toml`）は**含めない**。
+#: 共有の構成ファイルへ1行足しただけの他 Spec のブランチが、本 Spec の境界検査の
+#: 対象になってしまうためである。
+OWNED_BOUNDARY_PREFIXES: tuple[str, ...] = (
+    "src/world_frame_calibration/",
+    "tests/world_frame_calibration/",
+    ".kiro/specs/world-frame-calibration/",
+)
+
 
 def _normalize(raw_path: str) -> str:
     return raw_path.strip().replace("\\", "/")
@@ -729,6 +743,28 @@ def find_out_of_boundary_changes(changed_files: list[str]) -> list[str]:
             continue
         violations.append(path)
     return violations
+
+
+def contains_world_frame_calibration_changes(changed_files: list[str]) -> bool:
+    """変更ファイルパスの列に、本 Spec が所有するパスが1つでも含まれるか（タスク 7.5）。
+
+    `test_actual_working_tree_changes_since_main_stay_within_boundary` が
+    「このブランチには本 Spec の作業しか載っていない」という**暗黙の前提**の上に
+    立っていたため、他 Spec のブランチで走ると境界違反として報告されていた。
+    この関数はその前提を明示的な判定へ置き換える——本 Spec の変更が1つも無い
+    ブランチは、そもそも本 Spec の境界検査の対象ではない。
+
+    `False` を返すのは「違反が無い」という意味ではなく「**検査対象ではない**」
+    という意味である。`True` のときは従来どおり全変更が検査される
+    （本 Spec の作業と越境が同居する場合は引き続き違反として報告される）。
+    """
+    for raw in changed_files:
+        path = _normalize(raw)
+        if not path:
+            continue
+        if any(path.startswith(prefix) for prefix in OWNED_BOUNDARY_PREFIXES):
+            return True
+    return False
 
 
 def test_find_forbidden_boundary_changes_detects_named_directories_in_crafted_list() -> None:
@@ -802,15 +838,100 @@ def test_find_out_of_boundary_changes_normalizes_windows_path_separators_in_craf
     assert violations == ["src/prediction_core/types.py"]
 
 
+def test_contains_wfc_changes_true_for_each_owned_prefix_in_crafted_list() -> None:
+    """本 Spec が所有する3つの接頭辞は、それぞれ単独で「本 Spec の作業あり」と判定される。"""
+    for owned in (
+        "src/world_frame_calibration/plan.py",
+        "tests/world_frame_calibration/test_world_frame_calibration_plan.py",
+        ".kiro/specs/world-frame-calibration/tasks.md",
+    ):
+        assert contains_world_frame_calibration_changes([owned]) is True, owned
+
+
+def test_contains_wfc_changes_false_for_other_spec_only_list() -> None:
+    """他 Spec の変更しか無いブランチでは「本 Spec の作業なし」と判定される。"""
+    changed = [
+        "src/sensing_foundation/config.py",
+        "src/sensing_foundation/bench/logging_overhead.py",
+        "tests/sensing_foundation/test_bench_logging.py",
+        ".kiro/specs/sensing-foundation/tasks.md",
+    ]
+    assert contains_world_frame_calibration_changes(changed) is False
+
+
+def test_contains_wfc_changes_false_for_shared_pyproject_only() -> None:
+    """ルート `pyproject.toml` は共有ファイルであり、本 Spec の作業の証拠にしない。
+
+    `ALLOWED_BOUNDARY_EXACT_FILES` は「変更してよい場所」であって「本 Spec が
+    所有する場所」ではない——ここを混同すると、`pyproject.toml` に1行足した
+    他 Spec のブランチが本 Spec の境界検査の対象になってしまう。
+    """
+    assert contains_world_frame_calibration_changes(["pyproject.toml"]) is False
+
+
+def test_contains_wfc_changes_normalizes_windows_path_separators() -> None:
+    """Windows 由来のバックスラッシュ区切りパスでも判定できる。"""
+    assert (
+        contains_world_frame_calibration_changes(["src\\world_frame_calibration\\plan.py"])
+        is True
+    )
+
+
+def test_contains_wfc_changes_ignores_blank_lines() -> None:
+    """空文字列・空白のみの行（git 出力の末尾等）は無視される。"""
+    assert contains_world_frame_calibration_changes(["", "   "]) is False
+
+
+def test_mixed_branch_is_still_inspected_and_still_reports_violations() -> None:
+    """検出能力を落としていないことの明示: 本 Spec の変更と越境が同居する列は、
+    検査対象と判定され、かつ越境が引き続き報告される。
+
+    タスク 7.5 が導入する skip は「本 Spec の変更が1つも無いとき」に限られる。
+    1つでもあれば従来どおり全変更が検査される。
+    """
+    changed = [
+        "src/world_frame_calibration/plan.py",
+        "src/sensing_foundation/config.py",
+    ]
+    assert contains_world_frame_calibration_changes(changed) is True
+    assert find_forbidden_boundary_changes(changed) == ["src/sensing_foundation/config.py"]
+
+
+def test_other_spec_only_list_is_exactly_the_false_positive_being_fixed() -> None:
+    """是正対象の誤検出を、そのままの形で固定する。
+
+    `spec/sensing-foundation-bringup` で実際に起きていた状態（本 Spec の変更が
+    1つも無いのに `find_forbidden_boundary_changes` が非空になる）を再現し、
+    新しい判定がそれを検査対象外にすることを示す。
+    """
+    changed = ["src/sensing_foundation/config.py"]
+    # 従来の判定単体では違反として報告される（＝ skip しなければ赤くなる）。
+    assert find_forbidden_boundary_changes(changed) != []
+    # しかし本 Spec の変更が1つも無いので、そもそも検査対象ではない。
+    assert contains_world_frame_calibration_changes(changed) is False
+
+
 def test_actual_working_tree_changes_since_main_stay_within_boundary() -> None:
     """本 Spec の実際の変更（コミット済み + 未コミット）が境界内に閉じている
     ことを、`main` ブランチとの merge-base からの実差分で確認する
     （tasks.md タスク7.3「変更対象が自パッケージ・自テスト・自 Spec
     ディレクトリに閉じていることを確認する」）。
 
+    **前提（タスク 7.5 で明示化）**: 本検査は「作業ツリーの変更のうち本 Spec に
+    属さないものは境界違反である」と読む。これは**このブランチに本 Spec の作業が
+    載っている**ときにのみ成り立つ読み方であり、他 Spec のブランチでは
+    その Spec の正当な変更をすべて違反として報告してしまう。したがって
+    `contains_world_frame_calibration_changes()` が偽のとき、
+    すなわち本 Spec の変更が1つも含まれないときは検査対象が無いものとして
+    `pytest.skip` する。本 Spec の変更が1つでも含まれる場合は、
+    **従来どおり全変更を検査する**（検出能力は落とさない）。
+
     `git` 自体、または `main` ブランチや共通祖先が見つからない環境では
     前提が成立しないため `pytest.skip` する（境界違反の有無とは無関係な
-    環境要因でこのテストが赤くならないようにするため）。
+    環境要因でこのテストが赤くならないようにするため）。Windows 側で作成した
+    git worktree を WSL から実行する場合、`.git` ファイルが指す `gitdir` が
+    Windows 形式のパスであるため git がリポジトリを解決できず、この経路で
+    skip する。
     """
     try:
         merge_base_result = subprocess.run(
@@ -861,6 +982,11 @@ def test_actual_working_tree_changes_since_main_stay_within_boundary() -> None:
     changed_files = committed_files + uncommitted_files
     if not changed_files:
         pytest.skip("main との差分が無いため境界検査の対象が無い")
+    if not contains_world_frame_calibration_changes(changed_files):
+        pytest.skip(
+            "本 Spec の変更が1つも含まれないブランチのため境界検査の対象が無い"
+            f"（変更 {len(changed_files)} 件はすべて本 Spec の所有外）"
+        )
 
     forbidden = find_forbidden_boundary_changes(changed_files)
     assert forbidden == [], f"禁止ディレクトリへの変更を検出した: {forbidden}"
