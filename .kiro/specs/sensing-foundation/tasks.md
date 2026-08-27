@@ -410,7 +410,7 @@
   - _Requirements: 1.2, 1.3, 1.9, 12.7_
   - _Depends: 9.1_
 
-- [ ] 9.3 live アダプタを実機で通し、契約テストを再実行する
+- [x] 9.3 live アダプタを実機で通し、契約テストを再実行する
   - 実機から取得した系列に対して、合成・再生と**同じ契約テスト**を実行する
   - 欠落検出・破棄計数・時刻ドメイン・内部パラメータ取得が実機で期待どおり動くことを確認する
   - グローバル時刻が有効化できたか、取得レイテンシが算出可能かを記録する（算出できない場合は欠測として記録する）
@@ -476,6 +476,12 @@
 ## 全体まとめ: タスク1〜8（ハードウェア不要な全作業）が完了
 
 `uv run --extra sensing pytest -q` は822件全通過（SDK非導入・実機非接続のこの開発環境で）。
+
+- タスク9.3: **実機（SDK 有り）では 12 件のテストが失敗する。** すべて「SDK が存在しない環境」を前提に書かれたものであり、着手前から存在する（`test_doctor.py` 7件 / `test_realsense_source.py::TestSdkNotInstalled` 3件 / `test_sensing_cli.py` 1件 / `test_sensing_boundaries.py` 1件）。**このうち `test_import_sensing_foundation_succeeds_without_sdk` だけは性質が異なり、`sys.modules` というグローバル状態を見ているためテスト順序依存になる**（単独では PASS、`probe_sdk()` を呼ぶテストの後では FAIL）。ソース側の遅延 import 設計は正しく、欠陥ではない。design.md は「live 以外は**実機・SDK なしで**全通過すること」としか規定しておらず、**SDK が存在する環境での扱いは未規定**である。**タスク9.4 以降で実機のテストスイートを緑にする必要が生じた場合、まず design レベルで方針を決めること**（skipif で環境を切り分けるか、境界テストを静的解析へ移すか）。
+- タスク9.3: **live は終端しない。** `_consume()`（`list(source.frames())`）を live に渡すと戻らない。テストで live を扱う場合は枚数境界の `_take()`（`test_source_contract.py`）または `cli._drain_frames()` の時間境界を使うこと。
+- タスク9.3: **取得区間の実時間を測る際、`with` を抜けた後まで測らないこと。** RealSense の `stop()`（pipeline 停止）に約 0.58 秒かかり、`CaptureMetrics` の計測窓（構築時刻 → `stats` 読み取り時点）と食い違う。タスク9.4（fps 掃引）で実時間ベースの比較を行う際に同じ罠がある。
+- タスク9.3: **`CaptureStats` の各項目を「在ること」で検証しない。** `frames_dropped >= 0` のような表明は `int` カウンタである限り決して落ちず、壊れた実装を検出できない。また `measured_fps` を `frames_yielded / (duration_ms/1000)` と比較するのは `metrics.py:169` と同じ式であり恒真になる。**観測した系列から独立に数え直して突き合わせること**（`frames_missing` は `seq` 差分と、`frames_dropped` は `dropped_before` の総和と、`measured_fps` はテスト側の時計で測った実時間と）。
+- タスク9.3: **実機の D435 Depth ストリームは歪み係数がすべて `0.0` である**ことを実測で確認した。`sensing_foundation/geometry.py`（歪み補正を恒等として扱う）と `world_frame_calibration/deproject.py` の `ensure_supported_distortion()`（非ゼロ係数を**受理せず失敗させる**）が置いた仮定は、実機で成立する。
 
 ## タスク9 進捗（2026-08-27 時点）
 

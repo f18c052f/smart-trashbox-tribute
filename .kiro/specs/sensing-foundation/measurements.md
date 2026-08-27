@@ -471,7 +471,190 @@ cd ~/repos/smart-trashbox-tribute && .venv/bin/python -m sensing_foundation.cli 
 
 ## タスク9.3 live アダプタを実機で通し、契約テストを再実行する
 
-**ステータス: 未着手**（タスク8.2・9.2 の完了が前提）
+**ステータス: 完了**
+
+### 実施日
+
+2026-08-27
+
+### 実施環境
+
+タスク9.2 の構成（pyrealsense2 2.58.3 / D435 が USB 3.2 接続）。
+開発機（WSL, SDK 非導入）と実機の**両方**で実行し、
+design.md「Technology Stack」の「live 以外は実機・SDK なしで全通過すること」を
+壊していないことを併せて確認した。
+
+### 使用したコマンド
+
+```bash
+# 実機（Pi）
+cd ~/repos/smart-trashbox-tribute
+.venv/bin/python -m pytest tests/sensing_foundation/test_source_contract.py -q -p no:cacheprovider
+.venv/bin/python -m pytest tests/sensing_foundation/ tests/prediction_core/ -q -p no:cacheprovider
+
+# 開発機（WSL）
+.venv/bin/python -m pytest tests/sensing_foundation/ tests/prediction_core/ -q -p no:cacheprovider
+```
+
+⚠️ **`tests/` 全体を指定しないこと。** `flying_object_tracking` が `cv2` を要求し
+collection が 18 errors で中断する。OpenCV は `research.md` の決定により
+Pi へ導入しないため、これは想定内であり不具合ではない。
+
+### 結果: テスト実行
+
+| 環境 | 契約テストのみ | 全体（`sensing_foundation` + `prediction_core`） |
+|---|---|---|
+| 開発機（WSL・SDK 非導入） | 8 passed, 4 skipped | **822 passed, 4 skipped**（失敗ゼロ） |
+| **実機（Pi・SDK 有り）** | **11 passed, 1 skipped** | **813 passed, 12 failed, 1 skipped** |
+
+実機の 12 failed は**本タスク着手前から存在した失敗**であり、内訳・件数とも
+着手前のベースラインと完全に一致する（後述「未解決の課題」）。
+本タスクによる新規回帰は無い（着手前 809 passed → 813 passed の差 +4 は
+本タスクが追加した live テスト4件）。
+
+### 結果: live の実測値（タスク9.3 が記録を要求する項目）
+
+| 記録項目 | 実測値 |
+|---|---|
+| **グローバル時刻の有効化** | **成功（`global_time_enabled = True`）** |
+| **時刻ドメイン** | **`GLOBAL_TIME`**（30枚すべて。要件 3.5） |
+| **取得レイテンシの算出可否** | **算出可能（30/30、欠測ゼロ）**。実測 24.60 / 22.38 / 20.56 ms |
+| USB2 警告 | `False`（USB3 接続。タスク9.2 の結果と整合） |
+| カメラ内部パラメータ（要件 3.6） | `fx = fy = 385.4710`、`ppx = 319.0791`、`ppy = 240.5483` |
+| 歪みモデル・係数 | `distortion.brown_conrady`、**係数はすべて `0.0`** |
+| Depth スケール | `1.0000000474974513`（**厳密に 1.0 ではない**） |
+| Depth 配列 | `uint16` / `(480, 640)` |
+| **取得統計（要件 2.8）** | `frames_yielded=30` / `frames_dropped=0` / `frames_missing=0` / `duration_ms=1724.57` / `measured_fps=17.40` / `acquire_errors=0` |
+| `seq` の連続性 | 0〜29 連続（飛びなし） |
+
+> **グローバル時刻が有効化できたことは、レイテンシが算出できたことと表裏である。**
+> `RealSenseSource` は `timestamp_domain == GLOBAL_TIME` のときに限り
+> `capture_latency_ms` を算出する設計（取れないものを偽装しない。要件 3.5）であり、
+> 実機で `GLOBAL_TIME` が得られたため 30 枚すべてでレイテンシが算出できた。
+> **`research.md` Research 3 が懸念した「`TIME_OF_ARRIVAL` へのフォールバック」は
+> 本構成では発生しなかった。**
+
+⚠️ **`measured_fps`（17.4〜20.5、実行ごとに変動）を性能の判断材料にしないこと。**
+30枚（約1.7秒）の短い窓にカメラのウォームアップが含まれるための値であり、
+これをもって「Pi 4 が 30fps を出せない」と結論するのは
+**方針 A-10「未実測の数値を合否条件にしない」および OQ-27 に反する。**
+解像度・fps の評価は**タスク9.4 が実効サンプル数で行う**のが正しい手順である。
+
+### 実装: live を3アダプタ共通の契約に載せた方法
+
+変更したファイルは `tests/sensing_foundation/test_source_contract.py` のみ。
+
+**「合成・再生と同じ契約テスト」の解釈**: design.md「Integration Tests」1 は
+契約テストを「`CaptureFrame` の系列が等価になること」と定義し「live は実機タスクで
+同じテストを再実行する」と続けるが、**同一の合成フレーム列を live へ流すことは
+できない**（実カメラの Depth は合成パターンと一致しないため、
+`_assert_series_equivalent(合成系列, live系列)` は原理的に成立しない）。
+
+したがって「同じテスト」を**同じ消費関数と同じ等価性判定を live にも適用すること**と
+解釈し、既存の合成版と同じ形の往復で検証した:
+
+```
+live → 記録 → 再生 ≡ live
+```
+
+再生側は有限なので `_consume()` がそのまま使え、
+「種別ごとに別々の消費コードを書かない」という要件 4.2 の主旨も保たれる。
+
+追加・変更点:
+
+- `_take(source, count)` を追加。**live は終端しないため `_consume()` が使えない**
+  （`list(source.frames())` が戻らない）。枚数で境界を切る
+- `_live_hardware_available()` と skip マーカー2種を追加。`doctor` と同じ
+  `probe_sdk()` / `probe_devices()` を経由し、**テストファイル自身は
+  `pyrealsense2` を直接 import しない**（design.md 境界テスト2 の趣旨を保つ）
+- `_record_frames()` に `source` 引数を追加（manifest の記録元種別）
+- live 契約テスト4件を追加（要件 4.2 / 3.5 / 3.6 / 2.8 に1件ずつ対応）
+
+### 発見1: 既存テストが実機でハングしていた
+
+`TestLiveAdapterCaseIsDeferredToTask61::test_live_branch_constructs_but_fails_at_start_without_sdk`
+は「SDK が無いとき `SourceUnavailableError` が出る」ことを固定するテストだが、
+**実機では SDK が存在するため `start()` が成功し、`_consume()` が終端しない live を
+読み続けて戻らなくなる**。着手前の全体実行では、このテストを手動で deselect しないと
+スイートが完了しなかった。
+
+本タスクで `@requires_no_live_hardware` を付け、実機では skip されるようにした。
+これによりスイートは手動 deselect なしで完了する。
+
+### 発見2: 実機で 12 件のテストが失敗する（**本タスクのスコープ外・未解決**）
+
+**着手前から存在し、本タスクの変更とは無関係**である。すべて
+「SDK が存在しない環境」を前提に書かれており、実機では前提が成立しない。
+
+| ファイル | 件数 | 性質 |
+|---|---|---|
+| `test_doctor.py` | 7 | SDK 非存在時の `fail` / `skip` を固定している |
+| `test_realsense_source.py::TestSdkNotInstalled` | 3 | `probe_sdk()["available"] is False` 等 |
+| `test_sensing_cli.py::TestStartupValidation` | 1 | SDK 非導入時の CLI 失敗メッセージ |
+| `test_sensing_boundaries.py` | 1 | **性質が異なる（下記）** |
+
+代表例（実際の出力）:
+
+```
+test_probe_sdk_reports_unavailable_without_raising
+    assert result["available"] is False
+E   assert True is False
+```
+
+**`test_sensing_boundaries.py::test_import_sensing_foundation_succeeds_without_sdk`
+だけは他の 11 件と性質が異なり、テスト順序依存である。**
+
+```python
+importlib.import_module("sensing_foundation")
+assert "pyrealsense2" not in sys.modules
+```
+
+| 実行方法 | 結果（実証済み） |
+|---|---|
+| 単独実行 | **PASS** |
+| `probe_sdk()` を呼ぶテストの後に実行 | **FAIL** |
+
+⚠️ **ソース側の遅延 import 設計は正しく動いており、欠陥ではない。**
+このテストは**インタプリタのグローバル状態（`sys.modules`）**を観察しており、
+開発機では `pyrealsense2` が存在し得ないため常に PASS していた。実機では
+先行テストが**正当に** import するため汚染される。design.md 境界テスト2 は
+この性質を**静的な**依存方向の検証として定義しており（同ファイル内の他の
+境界チェックは AST 解析で実装されている）、要件 4.4 / 12.2 の意図自体は正しい。
+**意図を保ったまま検証機構をプロセス分離または静的解析へ変える必要がある。**
+
+> **本タスクではこれらを修正していない。** タスク9.3 の受入基準
+> （live 入力で契約テストが通過し取得統計が得られる）を妨げないこと、および
+> design.md が「live 以外は**実機・SDK なしで**全通過すること」としか規定して
+> おらず、**SDK が存在する環境での扱いは design に未規定**であることによる。
+> **この 12 件の扱いは design レベルの判断を要するため、別途タスク化するか
+> design.md の改訂で方針を定めること。**
+
+### 発見3: 歪み係数がすべて 0 であることを実機で確認した（下流2 Spec への裏付け）
+
+実測した内部パラメータの `coeffs` は `[0.0, 0.0, 0.0, 0.0, 0.0]` であった。
+これは**設計時に文献調査に基づいて置いた仮定を、実機で裏付けるもの**である:
+
+- `src/sensing_foundation/geometry.py`: 「これらの係数が全て `0` で提供されるため、
+  現時点では歪み補正の有無が恒等変換となり結果に差が出ない」
+- `src/world_frame_calibration/deproject.py` の `ensure_supported_distortion()`:
+  歪み係数が**厳密に 0 でなければ** `CalibrationFailure` を送出する
+
+後者は非ゼロ係数を**受理しない**実装であるため、仮定が崩れていれば
+`world-frame-calibration` の実機運用が全面的に失敗するところだった。
+**実機の D435 Depth ストリームではこの仮定が成立する。**
+
+### 発見4: `stop()` に数百 ms かかる
+
+`measured_fps` の検証を実装する過程で、`with` ブロックを抜けた後まで実時間を
+測ると `CaptureMetrics` の計測窓と食い違うことが判明した。差分は約 0.58 秒で、
+**RealSense の pipeline 停止に要する時間**である。取得区間の実時間を測る際は
+`stop()` を含めないよう区間を揃える必要がある。
+
+### 未実施の項目
+
+なし（タスク9.3 の要求事項はすべて充足）。ただし発見2 は未解決の課題として残る。
+
+---
 
 ---
 
