@@ -239,14 +239,233 @@ OS・Python・メモリ・ディスクの各項目は `ok` を返した**
 
 ## タスク9.2 RealSense の導通を確認し、SDK 導入手順を再現可能な形で記録する
 
-**ステータス: 未着手**
+**ステータス: 完了**
 
-前提条件（タスク9.1）は充足済み。次に実施する。
-確認順序は `docs/development-environment.md §16` に従い
-**認識 → USB3 接続 → 給電安定性 → SDK 導入**の順とし、**fps 計測より先に行う**。
+### 実施日
 
-着手時点で不足しているもの: `cmake`（未導入）、librealsense ソース、
-ビルド用の開発ライブラリ一式。
+2026-08-27
+
+### 実施環境
+
+タスク9.1 の構成（Raspberry Pi 4 Model B Rev 1.2 / Debian 13 trixie / Python 3.13.5）に
+RealSense D435 を USB3 ポートへ接続。作業はすべて開発機からの SSH 経由。
+
+### 結論（先に要点）
+
+- ✅ **`docs/development-environment.md §16` の #3〜#6 をすべて充足した。**
+  `doctor` の**全9項目が `ok`** となった（タスク9.2 の観測可能な完了状態）
+- ✅ **OQ-23（Pi 4 の OS）は Raspberry Pi OS 64-bit で確定できる。Ubuntu 24.04 LTS への退避は不要だった。**
+  タスク9.1 で最大リスクとして申し送った **Debian 13 trixie / GCC 14.2 / Python 3.13 という
+  「research.md の前提（Bookworm）より新しい環境」でも librealsense v2.58.3 のビルドは完走した**
+- ✅ **OQ-28（実機セットアップの成立性）も充足した**（認識・USB3・給電安定性・SDK 導入のすべて）
+
+### 手順1: ハードウェア層の確認（SDK 導入より先に実施）
+
+**ビルドに1時間以上かかるため、SDK 導入の前に Linux 標準ツールだけで
+認識・USB3・給電を確認した。**（§16 が「#3〜#6 を #7 より先に」と定める趣旨に沿い、
+さらにその中でも費用の安い確認を前倒しした）
+
+```bash
+lsusb | grep -i realsense       # 認識
+lsusb -t                        # 接続速度
+vcgencmd get_throttled          # 給電（電圧低下の有無）
+vcgencmd measure_temp           # 温度
+dmesg | grep -iE 'usb|xhci'     # 切断・リセットの有無
+```
+
+| 確認事項 | 結果 |
+|---|---|
+| 認識 | `Bus 002 Device 002: ID 8086:0b07 Intel Corp. RealSense D435` |
+| USB3 接続 | **SuperSpeed 5000M**（Bus 002）。video インターフェース5本すべて 5000M |
+| 給電 | **`throttled=0x0`**（電圧低下なし、過去の低下履歴もなし） |
+| 温度 | 49.6 °C |
+
+> ⚠️ **`dmesg` に出る USB 切断イベントを給電問題と誤読しないこと。**
+> 本作業中に `1-1.4.x` の切断が4件記録されたが、これは Bus 1 に接続された
+> Logitech ワイヤレスマウス受信機のものであり、**RealSense（`2-2`）とは別系統**である。
+> RealSense のバス番号で絞って判定すること。
+
+### 手順2: ビルド依存パッケージの導入
+
+```bash
+sudo apt update && sudo apt install -y \
+  cmake build-essential \
+  libssl-dev libusb-1.0-0-dev libudev-dev pkg-config \
+  libgtk-3-dev libglfw3-dev libgl1-mesa-dev libglu1-mesa-dev
+```
+
+`python3-dev`（`/usr/include/python3.13/Python.h`）は Raspberry Pi OS に既に導入済みであった。
+`libgtk-3-dev` / `libglfw3-dev` / mesa 系は `realsense-viewer` のビルドに要る
+（タスク9.1 で Desktop 版を選んだ理由に対応する）。
+
+導入後のバージョン: `cmake 3.31.6` / `gcc (Debian 14.2.0-19) 14.2.0`
+
+### 手順3: librealsense のクローンとビルド
+
+**採用バージョン: v2.58.3**（当時の最新安定版）。
+新しい GCC・Python への対応が最も進んでいる版を選ぶことで、trixie 環境のリスクを下げる判断。
+
+```bash
+cd ~
+git clone --depth 1 --branch v2.58.3 https://github.com/IntelRealSense/librealsense.git
+cd ~/librealsense && mkdir -p build && cd build
+
+cmake .. \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DFORCE_RSUSB_BACKEND=ON \
+  -DBUILD_PYTHON_BINDINGS=ON \
+  -DPYTHON_EXECUTABLE=/home/raspi/repos/smart-trashbox-tribute/.venv/bin/python \
+  -DBUILD_EXAMPLES=ON \
+  -DBUILD_GRAPHICAL_EXAMPLES=ON \
+  -DBUILD_UNIT_TESTS=OFF
+
+make -j3
+```
+
+**ビルドオプションの根拠:**
+
+| オプション | 値 | 根拠 |
+|---|---|---|
+| `FORCE_RSUSB_BACKEND` | `ON` | OQ-23 の前提。**カーネルパッチが不要になる**（`research.md` Research 1） |
+| `PYTHON_EXECUTABLE` | venv の python3.13 | **`research.md` が「import できない事例の原因は Python の版取り違えに集中」と指摘**。venv の python を明示的に指す |
+| `BUILD_GRAPHICAL_EXAMPLES` | `ON` | `realsense-viewer` を得る（タスク9.1 の Desktop 版選定に対応） |
+| `BUILD_EXAMPLES` | `ON` | `rs-enumerate-devices` 等のツール |
+| `CMAKE_BUILD_TYPE` | `Release` | — |
+| 並列度 | `-j3` | 4コアだが、4GB モデルでのメモリ逼迫を避けて3並列とした |
+
+**ビルド所要時間: 約72分**（20:32:47 → 21:44:57 JST、`make -j3`）。
+**コンパイルエラーは発生しなかった。**
+
+⚠️ **ビルド前に `cmake` の設定を検証すること。** 本作業では configure 直後に
+`CMakeCache.txt` を確認し、`PYTHON_LIBRARY` が `libpython3.13.so` を指していることを
+確かめてからビルドを開始した。ここが誤っていると72分が無駄になる。
+
+```bash
+grep -E '^(PYTHON_EXECUTABLE|PYTHON_LIBRARY|PYTHON_INSTALL_DIR):' build/CMakeCache.txt
+```
+
+### 手順4: インストール
+
+```bash
+cd ~/librealsense
+sudo make -C build install
+sudo cp config/99-realsense-libusb.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules && sudo udevadm trigger
+# 実行後 RealSense を USB から抜き差しする
+```
+
+⚠️ **`scripts/setup_udev_rules.sh` を使う場合の落とし穴（本作業で実際に踏んだ）:**
+このスクリプトは `/dev/video*` が存在すると
+`read -p "Remove all RealSense cameras attached. Hit any key when ready"` で**停止する**。
+ここで**カメラを抜いてもキーを押さなければ、後続の `cp` に到達せずルールは導入されない**。
+本作業ではこれによりルールが入っておらず、`rs-enumerate-devices` が
+`RS2_USB_STATUS_ACCESS` で失敗した。
+**Pi 4 では、このスクリプトが実際に行う処理は上記の `cp` と `udevadm` の2行と等価である**
+（スクリプト内の Tegra / IPU6 向け分岐は Pi 4 では該当しない）ため、
+**上記のように直接コピーする方が確実である。**
+
+### 手順5: `.so` の配置問題の解消 ★詰まりやすい箇所
+
+**`make install` の配置先と venv の探索パスは一致しない。**
+
+| | パス |
+|---|---|
+| インストール先 | `/usr/local/lib/python3.13/dist-packages/pyrealsense2/` |
+| venv の site-packages | `~/repos/smart-trashbox-tribute/.venv/lib/python3.13/site-packages/` |
+
+venv は `--system-site-packages` なしで作成しているため、このままでは
+**`import pyrealsense2` が失敗する**。これは `research.md` が
+「`.so` の配置先が `site-packages` の探索パスに入っていない」として
+主要な失敗原因に挙げたものそのものである。
+
+`research.md` / OQ-41 は対処として
+「(a) `--system-site-packages` で venv を作る」「(b) `.so` を venv へ配置する」の2案を挙げている。
+**本作業では (b) を採った**（明示的で、再ビルド時の再現が容易であり、
+venv を作り直しても root 所有ファイルが venv 内に残らないため）。
+
+```bash
+cp -rL /usr/local/lib/python3.13/dist-packages/pyrealsense2 \
+       ~/repos/smart-trashbox-tribute/.venv/lib/python3.13/site-packages/
+chown -R raspi:raspi ~/repos/smart-trashbox-tribute/.venv/lib/python3.13/site-packages/pyrealsense2
+```
+
+> ⚠️ **これは暫定の選択であり決定ではない。** OQ-41（Python の環境構築・パッケージ管理方法）は
+> タスク9.7 で「決着させない」と定められている。
+> ⚠️ **librealsense を再ビルドした場合は、この配置をやり直す必要がある。**
+
+### 手順6: 導通の確認
+
+```bash
+rs-enumerate-devices
+cd ~/repos/smart-trashbox-tribute && .venv/bin/python -m sensing_foundation.cli doctor
+```
+
+#### デバイス情報（`rs-enumerate-devices`）
+
+| 項目 | 値 |
+|---|---|
+| Name | RealSense D435 |
+| **Serial Number** | **834412071095** |
+| **Firmware Version** | **5.17.3.10** |
+| **Usb Type Descriptor** | **3.2** |
+| Physical Port | 2-2-5 |
+| Product Id | 0B07 |
+| Asic Serial Number | 836313020860 |
+
+> ⚠️ **シリアル番号は2種類あり、どちらを見ているかで値が異なる。**
+> `dmesg`（USB ディスクリプタ）が露出するのは **Asic Serial Number（836313020860）**であり、
+> `rs-enumerate-devices` や `doctor` が報告する **Serial Number（834412071095）**とは別物である。
+> **同一のカメラであるにもかかわらず値が食い違うため、突き合わせの際に混乱しやすい。**
+> 記録・照合には librealsense 側の Serial Number を用いること。
+
+#### `doctor` の結果: **全9項目 `ok`**
+
+| 項目 | status | 要旨 |
+|---|---|---|
+| `os` | ok | Debian GNU/Linux 13 (trixie) / kernel 6.18.34+rpt-rpi-v8 (aarch64), 64bit=True |
+| `python` | ok | Python 3.13.5（venv 配下） |
+| `memory` | ok | 搭載 3,980,185,600 bytes / 利用可能 3,575,754,752 bytes |
+| `sdk_import` | **ok** | **pyrealsense2 2.58.3**、venv の site-packages から解決 |
+| `device` | **ok** | 1台検出（serial 834412071095 / FW 5.17.3.10 / usb 3.2） |
+| `usb` | **ok** | **USB 3.2 接続を検出** |
+| `stream_open` | **ok** | 要求モード **640×480@30fps**（color_enabled=False）でストリームを開けた |
+| `power_stability` | **ok** | 30枚の短時間取得で **dropped 0 / missing 0 / acquire_errors 0** |
+| `disk` | ok | 空き 474,232,352,768 bytes、書き込み速度目安 **27.2 MB/s** |
+
+> `power_stability` の `detail` が自ら述べる通り、これは
+> **「この条件下でのみの観測であり、恒久的な安定性の保証ではない」**。
+> 長時間・高 fps での安定性はタスク9.4 / 9.5 で改めて確認する。
+
+### 特記事項
+
+1. ✅ **タスク9.1 で申し送った最大のリスク（trixie / GCC 14.2 / Python 3.13）は顕在化しなかった。**
+   librealsense **v2.58.3** は Debian 13 環境でエラーなくビルドでき、
+   Python バインディングも `pyrealsense2.cpython-313-aarch64-linux-gnu.so` として
+   正しく 3.13 向けに生成された。**OQ-23 の Ubuntu 退避規則は発動していない。**
+   ただしこれは v2.58.3 での結果であり、古い版（`research.md` が参照した実例の時代の版）でも
+   同じとは限らない
+
+2. ⚠️ **ディスク書き込み速度の実測値には無視できないばらつきがある。**
+   タスク9.1 では 31.9 MB/s、本タスクでは 27.2 MB/s と、同一の microSD で
+   **約 15% の差**が出た。`doctor` の当該値は「目安」であり、
+   **この値を判定基準に使う場合は複数回測って幅を見ること。**
+   なお 60fps の Depth（約 36.9 MB/s）はどちらの実測値も下回っているため、
+   タスク9.1 の結論（60fps 評価時に連続記録を併用しない）は変わらない
+
+3. `MemTotal` はタスク9.1 の 3,973,906,432 bytes に対し本タスクでは 3,980,185,600 bytes と
+   約 6 MB 異なる。起動ごとの GPU メモリ割り当て等による変動であり、
+   リングバッファ上限の結論（タスク9.1）に影響しない
+
+4. **`realsense-viewer` は未使用のまま。** ビルドは成功し `/usr/local/bin/realsense-viewer` に
+   配置済みだが、本タスクでは CLI での確認だけで導通が確定したため実行していない。
+   必要になった際は **Pi のデスクトップ上で実行すること**（SSH 経由では GUI を表示できない）
+
+### 決着した未決事項（タスク9.7 で文書へ反映する）
+
+- **OQ-23（Pi 4 の OS）**: Raspberry Pi OS 64-bit（Desktop 版 / Debian 13 trixie）で確定。
+  librealsense v2.58.3 のビルドが通ったため Ubuntu 24.04 LTS への退避は行わなかった
+- **OQ-28（RealSense 実機セットアップの成立性）**: 成立。認識・USB3・給電安定性・SDK 導入のすべてを確認済み
+- **OQ-24（RAM 容量）**: タスク9.1 で決着済み（4GB モデル）
 
 ---
 

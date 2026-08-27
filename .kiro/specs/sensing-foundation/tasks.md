@@ -400,7 +400,7 @@
   - _Requirements: 1.1, 1.3, 1.6, 1.7, 1.8_
   - _Depends: 6.2_
 
-- [ ] 9.2 RealSense の導通を確認し、SDK 導入手順を再現可能な形で記録する
+- [x] 9.2 RealSense の導通を確認し、SDK 導入手順を再現可能な形で記録する
   - 認識 → USB3 接続 → 給電安定性 → SDK 導入の順で確認する（**fps 計測より先に行う**）
   - SDK のビルドで USB バックエンドを強制する構成を用い、Python バインディングを生成する
   - import できない場合は「ビルド」「配置」「Python 版の取り違え」「デバイス」「接続速度」のどこで失敗しているかを診断コマンドで切り分ける
@@ -486,10 +486,14 @@
   SSH 経由で `doctor` を実機実行。OS・カーネル・64bit判定・RAM容量・Python版を記録した。
   搭載 RAM は 3,973,906,432 bytes（4GB モデル）で **OQ-24 が決着**。
   リングバッファ上限の既定割合 25% は必要量の約18倍の余裕があり**妥当と判断して変更しない**。
-- ⚠️ **9.2 への申し送り（最重要）**: OS が **Debian 13 (trixie) / GCC 14.2 / Python 3.13** であり、
-  `research.md` が前提とした Bookworm（Debian 12 / GCC 12 / Python 3.11）より新しい。
-  librealsense のビルドが通らなかった場合、**OQ-23 の Ubuntu 退避を発動する前に
-  「Pi OS だからか」「trixie だからか」を切り分けること**（Ubuntu 24.04 は GCC 13 / Python 3.12 で trixie より Bookworm に近い）。
+- **9.2 完了**: librealsense **v2.58.3** を `-DFORCE_RSUSB_BACKEND=ON` でソースビルドし（約72分、`make -j3`）、
+  Python 3.13 向けバインディングを生成して venv へ配置。`doctor` の**全9項目が `ok`** となった。
+  D435 は **USB 3.2 / FW 5.17.3.10 / serial 834412071095**、640×480@30fps でストリームを開け、
+  30枚取得で dropped 0 / missing 0。**OQ-23・OQ-28 が決着**（Ubuntu 退避は不要だった）。
+  - ✅ **9.1 で申し送った最大リスク（trixie / GCC 14.2 / Python 3.13）は顕在化しなかった。**
+    `research.md` が前提とした Bookworm より新しい環境でも v2.58.3 はエラーなくビルドできた。
+  - ⚠️ **再ビルド時の注意**: `make install` の配置先（`/usr/local/lib/python3.13/dist-packages/`）は
+    venv の探索パスに入らない。venv への `.so` 配置をやり直すこと（詳細は `measurements.md` 手順5）。
 - ⚠️ **9.4 への申し送り**: microSD の書き込み速度実測は 31.9 MB/s。60fps の Depth は約 36.9 MB/s で
   **これを上回る**ため、60fps 評価時に連続記録を併用してはならない。
   また実測前に起動ターゲットを `Console` へ切り替え、デスクトップを常駐させないこと。
