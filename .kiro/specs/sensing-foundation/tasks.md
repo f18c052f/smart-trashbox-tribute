@@ -323,7 +323,7 @@
   - _Depends: 1.4, 6.1_
   - _Boundary: Doctor_
 
-- [ ] 6.3 開いたデバイスの識別情報を live アダプタから取り出せるようにする
+- [x] 6.3 開いたデバイスの識別情報を live アダプタから取り出せるようにする
   - `LiveSource` は `start()` の中でデバイスオブジェクトを握っているが、
     `global_time_enabled` / `usb2_warning` と違い**識別情報を外へ公開していない**。
     そのため記録側が「どの個体・どのファームウェアで撮ったか」を知る経路が無い
@@ -593,6 +593,12 @@
 - タスク4.7: **不変条件は「どの層に適用されるか」まで書かないと、別の層で破れたときに誰も気づけない。** `types.CaptureFrame` の「`index` は 0 から欠番なく増加する」は `FrameSource` が下流へ渡すフレームについてのものであり、`SessionReader.read()` の戻り値は対象外である（記録時の値を保つ）。この適用範囲が書かれていなかったため、`SessionReader` が不変条件を破っているのか正しいのかを判断できない状態が続いていた。
 - タスク4.7: **境界の「間」の不整合は、独立したテストファイルへ集めると各境界の単体テストの性格を壊さずに済む。** 本タスクの欠陥は `FrameRingBuffer` / `SessionRecorder` / `SessionReader` / `link_to_session` / `types.CaptureFrame` の**間**にあり、どれか1つの中では契約を定義できない。`test_reader.py`（書き出し側から独立した手書きフィクスチャを主証拠にする方針）を汚さずに、境界をまたぐ約束だけを `test_frame_index_contract.py` へ置いた。
 - タスク4.7: **負の対照でテストの非空虚性を確かめた。** `SessionReader.read()` が記録側通番の代わりに行位置を返すよう壊すと7件が失敗する（契約テスト4件すべてを含む）。テストが通ることと、テストが欠陥を検出できることは別である。
+- タスク6.3: **「同じ情報を2つの経路から取れる」状態は、片方が間違いになり得ることを意味する。** 接続中の全デバイスを列挙する `probe_devices()` と、パイプラインが実際に開いた1個体を指す `device_identity` は、**1台しかつながっていない環境では常に一致する**——つまり普段は区別がつかない。区別が生じる条件（複数台接続）を意図的に作るテストを置いた（`test_identity_is_the_opened_device_not_the_first_enumerated_one`）。列挙の先頭と開いた個体をわざと食い違わせてあり、`probe_devices()` を流用する実装はこのテストだけが落ちる（負の対照で確認済み: 開いた個体の代わりに `rs.context().query_devices()[0]` を使うよう壊すと、49件中このテスト1件だけが失敗する）。
+- タスク6.3: **USB2 警告と、記録に残る接続種別は同じ1回の観測から導くこと。** 変更前は `_detect_usb2()` が独自に `get_info(usb_type_descriptor)` を呼んでいたため、識別情報を別途読むと同じ値に対して2つの出典ができる。`start()` で `_read_device_identity()` を1度だけ呼び、`_usb2_from_descriptor(identity.usb_type_descriptor)` で警告を導く形へ変えた（`_detect_usb2()` は撤去）。「記録には `"2.1"` が残っているのに警告は立っていない」という食い違いが構造的に起こらない。
+- タスク6.3（タスク8.3 への申し送り）: **`DeviceIdentity` のフィールド名は `rs.camera_info` の列挙値名（`name` / `serial_number` / `firmware_version` / `usb_type_descriptor` / `product_line`）であり、`manifest.json` の `device` の語彙（`serial` / `firmware` / `usb_type` / `product_line`。design.md「Data Models」）とは違う。** 対応付けは記録側（8.3）の責務とした——アダプタが保存形式の語彙を知ると、記録形式を変えるたびに SDK アダプタを触ることになる。なお **manifest 側のスキーマには `name` に相当するキーが無い**ので、8.3 は `name` を捨てるかスキーマへ足すかを決めること（機種名は個体の特定には不要だが、記録を後から眺めるときの手がかりにはなる）。
+- タスク6.3: **`product_line` は tasks.md 6.3 の本文が挙げる4項目に入っていないが、あえて公開した。** design.md「Data Models / `manifest.json`」の `device` スキーマがこれを要求しており、タスク8.3 の `_Boundary:_` は `cli.py` なので **8.3 側からは `RealSenseSource` にプロパティを足せない**。ここで出しておかないと 8.3 がスキーマを満たせないか、境界を越えるかの二択になる。
+- タスク6.3: **`device_identity` は `stop()` 後も保持する**（テストで固定）。記録のメタ情報は取得が終わってから書き出されることがあり、そこで「どの個体で撮ったか」が消えていては用を成さない。
+- タスク6.3: `_FakeDevice`（テスト側のモック）は各項目に `None` を渡すと「この SDK ビルドでは取得できない」を表す形へ一般化した。**`rs.camera_info` に列挙値そのものが無いビルド**という別の失敗の形も再現できるようにしてある（`del fake_rs.camera_info.product_line`）——`_device_info()` はこの2つを区別せずどちらも欠測として扱う。
 
 ## タスク9 進捗（2026-08-27 時点）
 

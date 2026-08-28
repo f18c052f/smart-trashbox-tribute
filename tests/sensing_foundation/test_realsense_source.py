@@ -1,4 +1,4 @@
-"""`sensing_foundation.sources.realsense` に対するテスト（タスク 6.1）。
+"""`sensing_foundation.sources.realsense` に対するテスト（タスク 6.1 / 6.3）。
 
 観測可能な完了状態（tasks.md 6.1）を固定する:
 
@@ -16,6 +16,9 @@
   観測できる
 - USB2 判定は `usb2_warning`（`bool | None`。取得不能なら `None` で欠測を表す）
   として観測できる
+- **タスク 6.3**: `start()` が実際に開いた個体の識別情報を `device_identity`
+  として観測できる（`probe_devices()` の列挙結果ではなく、パイプラインが
+  開いた個体を指すこと。取得できない項目は `None` で欠測を表すこと）
 - 要求モードが拒否された場合は `start()` の時点で `DeviceNotReadyError`
   （`SourceUnavailableError` のサブクラス）を送出し、黙って別モードへ
   フォールバックしない
@@ -44,6 +47,7 @@
 from __future__ import annotations
 
 import ast
+import dataclasses
 import inspect
 import sys
 import types
@@ -180,19 +184,31 @@ class _FakeSensor:
 
 
 class _FakeDevice:
+    """`device.get_info()` を模したもの。
+
+    各項目に `None` を渡すと「この SDK ビルドでは取得できない」を意味し、
+    `get_info()` が例外を送出する（実 SDK の振る舞い。`realsense.py` モジュール
+    docstring「API 形状」の前提）。既定値は D435 実機で観測できる形に近い。
+    """
+
     def __init__(
         self,
         *,
         usb_type: str | None = "3.2",
-        serial: str = "SN-0001",
-        firmware: str = "5.13.0.50",
-        name: str = "Intel RealSense D435",
+        serial: str | None = "SN-0001",
+        firmware: str | None = "5.13.0.50",
+        name: str | None = "Intel RealSense D435",
+        product_line: str | None = "D400",
         sensor: "_FakeSensor | None" = None,
     ) -> None:
-        info: dict[str, str] = {"serial_number": serial, "firmware_version": firmware, "name": name}
-        if usb_type is not None:
-            info["usb_type_descriptor"] = usb_type
-        self._info = info
+        candidates = {
+            "serial_number": serial,
+            "firmware_version": firmware,
+            "name": name,
+            "usb_type_descriptor": usb_type,
+            "product_line": product_line,
+        }
+        self._info = {key: value for key, value in candidates.items() if value is not None}
         self.sensor = sensor if sensor is not None else _FakeSensor()
 
     def get_info(self, info_enum: Any) -> str:
@@ -389,6 +405,7 @@ def _make_fake_rs_module(
         serial_number=_Enum("serial_number"),
         firmware_version=_Enum("firmware_version"),
         name=_Enum("name"),
+        product_line=_Enum("product_line"),
     )
     fake.option = types.SimpleNamespace(  # type: ignore[attr-defined]
         frames_queue_size=_Enum("frames_queue_size"),
@@ -685,6 +702,151 @@ class TestUsb2Warning:
     def test_usb2_warning_is_none_before_start(self, monkeypatch: pytest.MonkeyPatch) -> None:
         source, _ = _build_source(monkeypatch)
         assert source.usb2_warning is None
+
+
+# ============================================================================
+# 開いたデバイスの識別情報（タスク 6.3。要件 1.4 / 5.2）
+# ============================================================================
+
+
+class TestDeviceIdentity:
+    """`start()` が実際に開いた個体の識別情報を公開する（タスク 6.3）。
+
+    記録側（タスク 8.3）が `manifest.json` の `device` を埋めるための唯一の
+    入手経路である。要件 5.2「メタ情報にデバイス識別情報を含める」。
+    """
+
+    def test_identity_is_none_before_start(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """デバイスを開く前は「まだ分からない」を `None` で表す。
+
+        `usb2_warning` と同じ流儀（構築しただけでは何も観測していない）。
+        """
+        source, _ = _build_source(monkeypatch)
+        assert source.device_identity is None
+
+    def test_identity_is_resolved_after_start(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        device = _FakeDevice(
+            name="Intel RealSense D435",
+            serial="834412071095",
+            firmware="5.17.3.10",
+            usb_type="3.2",
+            product_line="D400",
+        )
+        source, _ = _build_source(monkeypatch, device=device)
+        source.start()
+
+        identity = source.device_identity
+        assert identity is not None
+        assert identity.name == "Intel RealSense D435"
+        assert identity.serial_number == "834412071095"
+        assert identity.firmware_version == "5.17.3.10"
+        assert identity.usb_type_descriptor == "3.2"
+        assert identity.product_line == "D400"
+
+    def test_identity_is_the_opened_device_not_the_first_enumerated_one(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """複数台つながっているとき、**パイプラインが開いた個体**を指す。
+
+        tasks.md 6.3「`probe_devices()` の流用で代替しない」の核心。
+        列挙の先頭とパイプラインが開いた個体をわざと食い違わせているので、
+        `probe_devices()` の結果を流用する実装はこのテストで落ちる。
+        """
+        opened = _FakeDevice(serial="SN-OPENED", firmware="5.17.3.10")
+        other = _FakeDevice(serial="SN-OTHER", firmware="5.12.0.0")
+        source, _ = _build_source(
+            monkeypatch, device=opened, context_devices=[other, opened]
+        )
+        source.start()
+
+        # 前提の確認: 列挙の先頭は「開いていない方」である（この前提が崩れると
+        # 以下の表明が食い違いを検出できなくなり、テストが空振りする）。
+        enumerated = probe_devices()["devices"]
+        assert enumerated[0]["serial_number"] == "SN-OTHER"  # type: ignore[index]
+
+        identity = source.device_identity
+        assert identity is not None
+        assert identity.serial_number == "SN-OPENED"
+        assert identity.firmware_version == "5.17.3.10"
+
+    def test_items_the_sdk_refuses_are_missing_not_faked(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """取得できない項目は `None`（欠測）。空文字や既定値で埋めない（要件 3.5）。"""
+        device = _FakeDevice(firmware=None, usb_type=None, product_line=None)
+        source, _ = _build_source(monkeypatch, device=device)
+        source.start()
+
+        identity = source.device_identity
+        assert identity is not None
+        assert identity.firmware_version is None
+        assert identity.usb_type_descriptor is None
+        assert identity.product_line is None
+        # 取れる項目は落とさない（1項目の欠測が他を巻き込まない）。
+        assert identity.name == "Intel RealSense D435"
+        assert identity.serial_number == "SN-0001"
+
+    def test_camera_info_without_product_line_is_missing_not_an_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`rs.camera_info` に該当の列挙値自体が無い SDK ビルドでも起動できる。
+
+        `get_info()` が例外を送出する場合とは別の失敗の形である
+        （design.md Risks「SDK のビルド構成によって取得できるメタデータが変わる」）。
+        """
+        device = _FakeDevice()
+        pipeline = _FakePipeline(device=device)
+        fake_rs = _make_fake_rs_module(pipeline)
+        del fake_rs.camera_info.product_line  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "pyrealsense2", fake_rs)
+        metrics, clock = _make_metrics_and_clock()
+        source = RealSenseSource(_default_capture_config(), metrics, clock=clock)
+
+        source.start()
+
+        identity = source.device_identity
+        assert identity is not None
+        assert identity.product_line is None
+        assert identity.serial_number == "SN-0001"
+
+    def test_usb2_warning_agrees_with_the_recorded_descriptor(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """警告フラグと記録される接続種別が同じ1つの観測から出る。
+
+        両者が別々に `get_info()` を叩くと、記録には `"2.1"` が残るのに
+        警告は立っていない、という食い違いが起こり得る。
+        """
+        for usb_type, expected in (("2.1", True), ("3.2", False)):
+            device = _FakeDevice(usb_type=usb_type)
+            source, _ = _build_source(monkeypatch, device=device)
+            source.start()
+
+            identity = source.device_identity
+            assert identity is not None
+            assert identity.usb_type_descriptor == usb_type
+            assert source.usb2_warning is expected
+
+    def test_identity_survives_stop(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """取得を終えた後も読める（記録のメタ情報は取得終了後に書き出され得る）。"""
+        source, _ = _build_source(monkeypatch)
+        source.start()
+        before = source.device_identity
+        source.stop()
+
+        assert source.device_identity == before
+        assert before is not None
+        assert before.serial_number == "SN-0001"
+
+    def test_identity_is_immutable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """呼び出し側が書き換えて記録の内容を汚せない。"""
+        source, _ = _build_source(monkeypatch)
+        source.start()
+
+        identity = source.device_identity
+        assert identity is not None
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            identity.serial_number = "SN-TAMPERED"  # type: ignore[misc]
 
 
 # ============================================================================

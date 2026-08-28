@@ -1131,6 +1131,9 @@ class SessionReader:
   - `RS2_OPTION_GLOBAL_TIME_ENABLED` を有効化し、**有効化できたかどうかを manifest とログに残す**
   - **Point Cloud を生成しない**（要件 2.6）。`get_data()` を `numpy.frombuffer` で読み、必要な1回だけコピーして読み取り専用にする
   - USB 接続種別は `rs.camera_info.usb_type_descriptor` から取得し、`"2."` で始まるなら警告フラグを立てる（要件 1.4 / 1.5）
+  - **`start()` が実際に開いた個体の識別情報を `device_identity: DeviceIdentity | None` として公開する**（タスク 6.3。要件 5.2）。`name` / `serial_number` / `firmware_version` / `usb_type_descriptor` / `product_line` を `pipeline_profile.get_device()` から読む。**`probe_devices()` で代替しない**——あれは接続中の全デバイスを列挙するものであり、複数台つながっているとき「このパイプラインが開いた個体」を特定できない。USB2 警告もこの1回の観測から導き、記録に残る接続種別と警告フラグが食い違わないようにする
+    - `DeviceIdentity` のフィールド名は `rs.camera_info` の列挙値名をそのまま使う。`manifest.json` の `device`（`serial` / `firmware` / `usb_type` / `product_line`）への**対応付けは記録側の責務**である（タスク 8.3）。`RealSenseSource` は SDK から見えた事実だけを持ち、保存形式の語彙を知らない
+    - `start()` 前は `None`（まだどのデバイスも開いていない）。`start()` 後は非 `None` だが、個々の項目は欠測し得る（要件 3.5）
   - **SDK への問い合わせ関数（`probe_sdk()` / `probe_devices()`）を本モジュールが公開し、`Doctor` はそれを経由する。** `pyrealsense2` を import するモジュールを本モジュール1つに限定するための措置である
 - Validation: 要求した解像度・fps が拒否された場合は**起動時に失敗**させる。黙って別のモードで動かさない
 - Risks: SDK のビルド構成によって取得できるメタデータが変わる。**取れないものは欠測として残す**（要件 3.5）
