@@ -1495,7 +1495,7 @@ var/sessions/<session_id>/
 | `started_wall_ms` | number | セッション開始の壁時計（epoch ms。単調時計とのアンカ） |
 | `profile` | object | `width_px` / `height_px` / `fps` / `depth_scale_mm` / `color_enabled` / `pixel_format` |
 | `intrinsics` | object \| null | `fx_px` / `fy_px` / `ppx_px` / `ppy_px` / `model` / `coeffs` |
-| `device` | object \| null | `serial` / `firmware` / `usb_type` / `product_line`（live のみ） |
+| `device` | object \| null | `name` / `serial` / `firmware` / `usb_type` / `product_line`（live のみ。`RealSenseSource.device_identity` を写す。タスク 8.3 で `name` を追加——機種名は個体の特定には不要だが、記録を後から眺めるときの手がかりになり、値は既に取得済みである）|
 | `runtime` | object | OS・カーネル・Python 版・SDK 版・ホスト名・`global_time_enabled` |
 | `capture` | object | `queue_capacity` / `drain_enabled` / `acquire_timeout_ms` |
 | `blob` | object | `file` / `dtype`（`uint16`）/ `little_endian` / `frame_bytes` / `compression` |

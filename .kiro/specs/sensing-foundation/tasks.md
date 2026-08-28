@@ -449,7 +449,7 @@
   - _Depends: 8.1_
   - _Boundary: PublicApi, tests/sensing_foundation/test_boundaries.py, tests/sensing_foundation/test_public_api.py_
 
-- [ ] 8.3 記録のメタ情報にデバイス識別情報とグローバル時刻の有効化結果を入れる
+- [x] 8.3 記録のメタ情報にデバイス識別情報とグローバル時刻の有効化結果を入れる
   - **欠陥1**: `run_record()` が `SessionRecorder(..., device=None, ...)` を固定で渡すため、
     実機で撮った記録でも `manifest.json` の `"device"` が `null` になる。
     **要件 5.2「メタ情報にデバイス識別情報を含める」が実機で未充足**である
@@ -599,6 +599,12 @@
 - タスク6.3: **`product_line` は tasks.md 6.3 の本文が挙げる4項目に入っていないが、あえて公開した。** design.md「Data Models / `manifest.json`」の `device` スキーマがこれを要求しており、タスク8.3 の `_Boundary:_` は `cli.py` なので **8.3 側からは `RealSenseSource` にプロパティを足せない**。ここで出しておかないと 8.3 がスキーマを満たせないか、境界を越えるかの二択になる。
 - タスク6.3: **`device_identity` は `stop()` 後も保持する**（テストで固定）。記録のメタ情報は取得が終わってから書き出されることがあり、そこで「どの個体で撮ったか」が消えていては用を成さない。
 - タスク6.3: `_FakeDevice`（テスト側のモック）は各項目に `None` を渡すと「この SDK ビルドでは取得できない」を表す形へ一般化した。**`rs.camera_info` に列挙値そのものが無いビルド**という別の失敗の形も再現できるようにしてある（`del fake_rs.camera_info.product_line`）——`_device_info()` はこの2つを区別せずどちらも欠測として扱う。
+- タスク8.3: **`runtime` の組み立て位置は既に `open_source()` の後だった。欠けていたのは「入力元を引数として渡していないこと」である。** 起票時の見立て（「入力元を開く前に組み立てているため経路が無い」）は構造としては外れており、`_build_runtime_info()` は `SessionRecorder(...)` の引数として `with source:` の内側で呼ばれていた。**欠陥の所在を診断のまま信じずコードで確かめること**——直し方（呼ぶ場所を動かす／引数を足す）が変わる。
+- タスク8.3: **`getattr()` だけで live 専用属性を読むと、絞り込みが効いているかを誰も確かめられない。** `_live_only()` は `source.kind is SourceKind.LIVE` で先に絞ってから `getattr()` する。属性の有無だけで判定すると、`RecordedSource` が将来 manifest の `device` を素通しするようになった時点で（`profile`/`intrinsics` は既に素通ししている）、**再生を録り直した記録に「元の個体」が live で撮ったかのように残る**。この絞り込みは通常のテストでは素通りするので、live 以外の入力元へ意図的に `device_identity` を生やして `null` のままであることを確かめるテストを置いた（負の対照で確認済み: 絞り込みを外すとこの1件だけが落ちる）。
+- タスク8.3: **manifest の `device` について「全項目 `null` の object」と「`device: null`」は別の意味である。** 前者は「live で撮ったが SDK が何も答えなかった」、後者は「そもそも物理デバイスで撮っていない」。両方を `null` に潰すと、実機で撮った記録なのにメタデータが取れなかったのか、合成入力の記録なのかが後から区別できない。
+- タスク8.3: **`DeviceIdentity` → manifest の語彙変換は記録側（`cli.py`）に置いた。** `name`/`serial_number`/`firmware_version`/`usb_type_descriptor`/`product_line`（`rs.camera_info` の列挙値名）から `name`/`serial`/`firmware`/`usb_type`/`product_line`（design.md「Data Models」）へ写す。アダプタが保存形式の語彙を知ると、記録形式を変えるたびに SDK アダプタを触ることになる。**`name` は design.md の manifest スキーマに無かったので追加した**（タスク6.3 の申し送りへの回答。値は既に取得済みで、記録を後から眺めるときの手がかりになる）。
+- タスク8.3: **フェイク `pyrealsense2` を `tests/sensing_foundation/fakerealsense.py` へ切り出した**（`synthetic.py` と同じ共有ヘルパの慣行）。本タスクの検証は `record` の live 経路を端から端まで通す必要があり、SDK 形状の実装が2つあると**タスク9.2 の実機突き合わせで形状を直したとき片方だけが更新されて食い違う**。切り出しは純粋な移動であることをテスト（50件）で確認してから本題に入った。あわせて `FakePipeline(endless=True)` を追加——在庫制のままだと「一定時間ぶん取得する」利用側が区間の終わりに達する前にフレーム切れになり、取得失敗として扱われてしまう。
+- タスク8.3（実機での確認が未実施）: 検証はすべて SDK モックである。**`device` が実在の個体を指すことは実機でしか確認できない**ため、次の実機セッションでタスク 9.5 と同時に `record --source live` の manifest を目視すること（期待値: serial 834412071095 / FW 5.17.3.10 / usb_type 3.x）。
 
 ## タスク9 進捗（2026-08-27 時点）
 
