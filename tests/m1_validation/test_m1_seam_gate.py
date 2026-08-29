@@ -26,6 +26,12 @@ import json
 from pathlib import Path
 
 import pytest
+from m1fixtures import (
+    calibration_payload,
+    verification_summary,
+    write_calibration,
+    write_layout,
+)
 
 from flying_object_tracking import (
     HANDOFF_VERSION,
@@ -38,148 +44,16 @@ from flying_object_tracking import (
 )
 from m1_validation.config import M1Settings
 from m1_validation.errors import FailureReason, M1ValidationError, SeamFailure
-from m1_validation.layout import LAYOUT_FORMAT_VERSION
 from m1_validation.seam import build_samples, calibration_summary, open_calibration
 from world_frame_calibration import load_calibration
-
-CALIBRATION_FORMAT_VERSION = "1.0"
-
-
-def _calibration_payload(
-    *,
-    width_px: int = 640,
-    height_px: int = 480,
-    fx_px: float = 385.0,
-    verification: dict[str, object] | None = None,
-    format_version: str = CALIBRATION_FORMAT_VERSION,
-    calibration_id: str = "cal-test-0001",
-) -> dict[str, object]:
-    """保存形式のキャリブレーション結果 JSON を組み立てる。
-
-    値は形式を満たすための最小限であり、意味のある較正ではない。**検査に
-    効くのは `signature` / `intrinsics` / `verification` / 形式版だけ**である。
-    """
-    anchor = {
-        "label": "origin",
-        "role": "origin",
-        "point_camera_mm": [0.0, 0.0, 1000.0],
-        "point_on_plane_mm": [0.0, 0.0, 1000.0],
-        "height_above_plane_mm": 0.0,
-        "range_from_camera_mm": 1000.0,
-        "sample_count": 100,
-        "spread_mm": 1.0,
-        "region": {"x0_px": 0, "y0_px": 0, "x1_px": 10, "y1_px": 10},
-        "frames_used": 5,
-    }
-    payload: dict[str, object] = {
-        "calibration_format_version": format_version,
-        "calibration_id": calibration_id,
-        "created_at_wall_ms": 1_700_000_000_000.0,
-        "source_kind": "simulated",
-        "session_path": None,
-        "signature": {
-            "width_px": width_px,
-            "height_px": height_px,
-            "fps": 30,
-            "depth_scale_mm": 1.0,
-            "color_enabled": False,
-        },
-        "intrinsics": {
-            "width_px": width_px,
-            "height_px": height_px,
-            "fx_px": fx_px,
-            "fy_px": 385.0,
-            "ppx_px": 320.0,
-            "ppy_px": 240.0,
-            "model": "brown_conrady",
-            "coeffs": [0.0, 0.0, 0.0, 0.0, 0.0],
-        },
-        "plane": {
-            "normal": [0.0, 0.0, 1.0],
-            "distance_mm": 0.0,
-            "quality": {
-                "points_considered": 1000,
-                "inlier_count": 990,
-                "inlier_ratio": 0.99,
-                "residual_abs_p50_mm": 1.0,
-                "residual_abs_p95_mm": 2.0,
-                "residual_rms_mm": 1.5,
-                "frames_used": 5,
-                "incidence_angle_deg": 45.0,
-                "rng_seed": 0,
-            },
-        },
-        "transform": {
-            "rotation": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
-            "translation_mm": [0.0, 0.0, -1000.0],
-        },
-        "geometry": {
-            "origin_camera_mm": [0.0, 0.0, 1000.0],
-            "x_axis_camera": [1.0, 0.0, 0.0],
-            "y_axis_camera": [0.0, 1.0, 0.0],
-            "z_axis_camera": [0.0, 0.0, 1.0],
-            "baseline_mm": 500.0,
-            "yaw_sensitivity_deg_per_mm": 0.1,
-            "lateral_error_mm_per_mm_at_1000mm": 0.02,
-        },
-        "origin_anchor": dict(anchor),
-        "x_axis_anchor": {**anchor, "label": "x", "role": "x_axis"},
-        "plan_digest": {"note": "test"},
-        "notes": "test fixture",
-    }
-    if verification is not None:
-        payload["verification"] = verification
-    return payload
-
-
-def _verification(verdict: str) -> dict[str, object]:
-    return {
-        "verified_at_wall_ms": 1_700_000_500_000.0,
-        "verdict": verdict,
-        "point_count": 6,
-        "independent_point_count": 4,
-        "bias_mm": [1.0, 2.0, 3.0],
-        "scatter_rms_mm": 4.0,
-        "max_error_norm_mm": 9.0,
-    }
-
-
-def _write_calibration(tmp_path: Path, **kwargs: object) -> Path:
-    path = tmp_path / "calibration.json"
-    path.write_text(
-        json.dumps(_calibration_payload(**kwargs), ensure_ascii=False),  # type: ignore[arg-type]
-        encoding="utf-8",
-    )
-    return path
 
 
 @pytest.fixture
 def settings(tmp_path: Path) -> M1Settings:
-    layout_path = tmp_path / "layout.json"
-    layout_path.write_text(
-        json.dumps(
-            {
-                "format_version": LAYOUT_FORMAT_VERSION,
-                "layouts": [
-                    {
-                        "layout_id": "throw-a",
-                        "release_position_world_mm": None,
-                        "release_height_mm": 1500.0,
-                        "throw_direction_deg": 0.0,
-                        "standby_position_world_mm": [0.0, 0.0],
-                        "object_diameter_mm": 65.0,
-                        "aperture_diameter_mm": 200.0,
-                        "camera_position_world_mm": [0.0, -1500.0, 1000.0],
-                        "notes": "仮値。",
-                    }
-                ],
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
     return M1Settings.resolve(
-        file=None, env={}, overrides={"layout_file": str(layout_path)}
+        file=None,
+        env={},
+        overrides={"layout_file": str(write_layout(tmp_path))},
     )
 
 
@@ -207,7 +81,7 @@ class TestVerificationGate:
     def test_passed_calibration_is_accepted(
         self, settings: M1Settings, tmp_path: Path
     ) -> None:
-        path = _write_calibration(tmp_path, verification=_verification("passed"))
+        path = write_calibration(tmp_path, verification=verification_summary("passed"))
         signature, intrinsics = _current_profile_of(path)
 
         result = open_calibration(
@@ -226,7 +100,7 @@ class TestVerificationGate:
         `failed` / `not_judged` を通すと、**誤差の帰属ができないデータを
         気づかず判断へ使う**ことになる。
         """
-        path = _write_calibration(tmp_path, verification=_verification(verdict))
+        path = write_calibration(tmp_path, verification=verification_summary(verdict))
         signature, intrinsics = _current_profile_of(path)
 
         with pytest.raises(SeamFailure) as exc:
@@ -238,7 +112,7 @@ class TestVerificationGate:
     def test_never_verified_is_rejected_by_default(
         self, settings: M1Settings, tmp_path: Path
     ) -> None:
-        path = _write_calibration(tmp_path, verification=None)
+        path = write_calibration(tmp_path, verification=None)
         signature, intrinsics = _current_profile_of(path)
 
         with pytest.raises(SeamFailure) as exc:
@@ -253,8 +127,8 @@ class TestVerificationGate:
         self, settings: M1Settings, tmp_path: Path, verdict: str | None
     ) -> None:
         """明示的な許可でのみ続行できる（要件 2.2）。"""
-        verification = None if verdict is None else _verification(verdict)
-        path = _write_calibration(tmp_path, verification=verification)
+        verification = None if verdict is None else verification_summary(verdict)
+        path = write_calibration(tmp_path, verification=verification)
         signature, intrinsics = _current_profile_of(path)
 
         result = open_calibration(
@@ -274,7 +148,7 @@ class TestVerificationGate:
             settings,
             seam=dataclasses.replace(settings.seam, require_verified_calibration=False),
         )
-        path = _write_calibration(tmp_path, verification=None)
+        path = write_calibration(tmp_path, verification=None)
         signature, intrinsics = _current_profile_of(path)
 
         assert open_calibration(
@@ -288,7 +162,7 @@ class TestUnverifiedMarkPropagates:
     def test_samples_built_from_an_unverified_calibration_are_marked(
         self, settings: M1Settings, tmp_path: Path
     ) -> None:
-        path = _write_calibration(tmp_path, verification=None)
+        path = write_calibration(tmp_path, verification=None)
         signature, intrinsics = _current_profile_of(path)
         calibration = open_calibration(
             path,
@@ -347,7 +221,7 @@ class TestCompatibility:
         解像度が変われば内部パラメータも変わる。古い結果を使い回すと、
         **座標系がわずかにずれたまま検出も予測も経由せず下流へ流れ込む**。
         """
-        path = _write_calibration(tmp_path, verification=_verification("passed"))
+        path = write_calibration(tmp_path, verification=verification_summary("passed"))
         signature, intrinsics = _current_profile_of(path)
         current_signature = dataclasses.replace(signature, width_px=1280)
 
@@ -363,7 +237,7 @@ class TestCompatibility:
     def test_different_intrinsics_is_rejected(
         self, settings: M1Settings, tmp_path: Path
     ) -> None:
-        path = _write_calibration(tmp_path, verification=_verification("passed"))
+        path = write_calibration(tmp_path, verification=verification_summary("passed"))
         signature, intrinsics = _current_profile_of(path)
         current_intrinsics = dataclasses.replace(intrinsics, fx_px=999.0)
 
@@ -384,7 +258,7 @@ class TestCompatibility:
         両方が成り立つとき「未検証だから」とだけ言われると、解像度を戻さずに
         `--allow-unverified` で押し通してしまう。
         """
-        path = _write_calibration(tmp_path, verification=None)
+        path = write_calibration(tmp_path, verification=None)
         signature, intrinsics = _current_profile_of(path)
 
         with pytest.raises(SeamFailure) as exc:
@@ -404,7 +278,7 @@ class TestFormatVersion:
         """未知の形式版は内容を推測して読まない（要件 1.5）。"""
         path = tmp_path / "calibration.json"
         path.write_text(
-            json.dumps(_calibration_payload(format_version="99.0"), ensure_ascii=False),
+            json.dumps(calibration_payload(format_version="99.0"), ensure_ascii=False),
             encoding="utf-8",
         )
 
@@ -444,7 +318,7 @@ class TestCalibrationSummary:
     """後段が読める要約（要件 2.3, 2.4 の材料）。"""
 
     def test_summary_carries_every_item_the_task_names(self, tmp_path: Path) -> None:
-        path = _write_calibration(tmp_path, verification=_verification("passed"))
+        path = write_calibration(tmp_path, verification=verification_summary("passed"))
 
         summary = calibration_summary(load_calibration(path))
 
@@ -457,7 +331,7 @@ class TestCalibrationSummary:
 
     def test_summary_is_json_serialisable(self, tmp_path: Path) -> None:
         """記録・レポートへそのまま載せられる（要件 2.3: 投擲ごとの記録に残す）。"""
-        path = _write_calibration(tmp_path, verification=_verification("failed"))
+        path = write_calibration(tmp_path, verification=verification_summary("failed"))
 
         summary = calibration_summary(load_calibration(path))
         assert json.loads(json.dumps(summary, ensure_ascii=False))
@@ -466,7 +340,7 @@ class TestCalibrationSummary:
         self, tmp_path: Path
     ) -> None:
         """未検証でも識別子と状態は分かる（欠測を `null` で表す）。"""
-        path = _write_calibration(tmp_path, verification=None)
+        path = write_calibration(tmp_path, verification=None)
 
         summary = calibration_summary(load_calibration(path))
 

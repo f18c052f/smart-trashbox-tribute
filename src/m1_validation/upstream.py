@@ -171,6 +171,16 @@ class UpstreamGateway:
     # 時刻・ログ
     # ------------------------------------------------------------------
 
+    @property
+    def source_kind(self) -> str:
+        """入力元の種別（ /  / ）。
+
+        **不透明な入力元指定を解釈してよい唯一の場所が本モジュールである**
+        ため、種別の取り出しもここが持つ。記録へ入力元を残す（要件 3.6）
+        利用側は、上流の設定型を知らないままこの文字列を使える。
+        """
+        return str(self._source_spec.source)  # type: ignore[attr-defined]
+
     def session_clock_ms(self) -> float:
         """セッション開始からの経過 ms。end-to-end の基準（要件 7.2）。"""
         return float(self._clock.now_ms())  # type: ignore[attr-defined]
