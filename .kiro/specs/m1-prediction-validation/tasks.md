@@ -35,7 +35,7 @@
   - 観測可能な完了状態: 自パッケージが import でき、既存の全テストとあわせてテスト実行が成功終了する
   - _Requirements: 13.3_
 
-- [ ] 1.2 (P) 例外階層と失敗理由の列挙を定義する
+- [x] 1.2 (P) 例外階層と失敗理由の列挙を定義する
   - 基底例外の下に、設定・入力の誤りを表す例外と、**継ぎ目が成立しないことを表す例外**の2系統を置く
   - 失敗理由を、座標系不一致・未知の受け渡し形式版・未知のキャリブレーション形式版・設定不一致・
     キャリブレーション未検証・有効サンプルなし・真値欠測・試行数不足・未知の記録スキーマ、として列挙する
@@ -596,6 +596,13 @@
 ## Implementation Notes
 
 > 各タスクで判明した、後続タスクが同じ失敗を繰り返さないための知見を1行ずつ足す。
+
+- タスク1.2: **`FailureReason` は例外専用の語彙ではない。** design.md「Errors」が列挙する9件のうち、`SeamFailure` として送出されるのは継ぎ目の不成立に当たる6件だけで、`NO_VALID_SAMPLE` / `TRUTH_MISSING` / `INSUFFICIENT_TRIALS` は**値として運ばれる**（design.md「Error Categories and Responses」が「観測の不成立・真値の欠測・判断の未成立は値として扱う」と定める）。失敗投擲の記録・欠測項目・保留の判断が同じ語彙で理由を書けるようにするための共有語彙である。**後続タスクが `SeamFailure(TRUTH_MISSING, ...)` のように送出すると、続けるべき実験が落ちる**——各メンバに `[例外]` / `[値]` の区分をコメントで書いたので、送出前に確認すること。構造的な禁止（コンストラクタでの拒否）はあえて入れていない: design.md は「投擲の前に評価する」という**実行順序**をこのリスクの緩和策として選んでおり、そちらが所有する判断だからである。
+- タスク1.2（タスク2.1 への申し送り）: **`UNKNOWN_RECORD_SCHEMA` の送出場所は 2.1 が決める。** design.md の分類表は継ぎ目の不成立の例として「未知の形式版」を挙げており、Throw Record の記録スキーマ版もこれに当たると読んで `[例外]` に分類した。ただし記録の読み出しは `upstream.py`（2.1 の境界）であり継ぎ目そのものではない。**`SeamFailure` で送出するのが妥当か、別の扱いが要るかは 2.1 が判断すること。**
+- タスク1.2: **`context`（実測値と判定基準）は基底 `M1ValidationError` に置いた。** `world_frame_calibration.errors` は失敗側（`CalibrationFailure`）にだけ持たせているが、design.md「Errors」は「例外には実測値と判定に用いた基準を載せる」と例外一般について書いている。設定の誤りも「どの値がどの範囲を外れたか」が無ければ直せないので、2系統で形を分けなかった。`str(exc)` に理由を前置したい `SeamFailure` のために、基底はキーワード専用の `message` を受ける。
+- タスク1.2: 渡された `context` は**複製して**保持する。例外が運ぶのは「その時点で観測された事実」であり、呼び出し側が使い回す辞書を後から書き換えても変わってはならない（負の対照で確認済み: 参照で持つと当該テスト1件だけが落ちる）。
+- タスク1.2: **タスク1.1 の申し送りが早速効いた。** `test_errors.py` は `tests/sensing_foundation/test_errors.py` と衝突するため `test_m1_errors.py` とした（リポジトリの既存の言い回しに揃えている: `test_tracking_errors.py` / `test_world_frame_calibration_errors.py`）。
+- タスク1.2: **`m1_validation/__init__.py` の `__all__` は空のままでよい。** tasks.md の現行計画に再エクスポートを足すタスクは無く、本 Spec の利用者は人が叩く `cli.py`（8.1）と、まだ存在しない下流 Spec（M2 / M3）だからである。タスク1.1 の docstring に「後続タスクが足していく」と書いたのは誤りだったので訂正した。
 
 - タスク1.1: **`tests/` 配下のファイル名は既存4 Spec のどれとも衝突させてはならない。** `tests/**` には `__init__.py` を置かない規約のため、モジュール名は pytest セッション全体でフラットな `sys.modules` 名前空間を共有する。同じベース名のテストファイルが2つあると**フルスイートの収集自体が落ちる**（`tests/m1_validation/test_package_skeleton.py` を置いた時点で `tests/flying_object_tracking/test_package_skeleton.py` と衝突し、実際に落ちた。単独ディレクトリの実行では再現しないので、**フルスイートで確かめるまで気づけない**）。`test_m1_package_skeleton.py` へ改名して解消した。
 - タスク1.1（後続タスクへの申し送り）: **design.md「File Structure Plan」が本 Spec に定めるテストファイル名のうち、以下は既存 Spec と衝突する。** そのまま作らず `m1_` を冠するなどして避けること —— `test_types.py` / `test_config.py` / `test_boundaries.py`（いずれも `tests/prediction_core/`）、`test_determinism.py`（`tests/trajectory_sim/`）、`synthetic.py`（`sensing_foundation` / `flying_object_tracking` / `world_frame_calibration` の3箇所）、`fakes.py`（`flying_object_tracking`）。`conftest.py` だけは pytest がディレクトリごとに特別扱いするため衝突しない。
