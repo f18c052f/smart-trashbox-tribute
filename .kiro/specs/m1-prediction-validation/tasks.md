@@ -21,7 +21,7 @@
 
 - [ ] 1. 基盤: パッケージ骨組み・型・レイアウト・設定
 
-- [ ] 1.1 パッケージ骨組みとテスト実行基盤を用意する
+- [x] 1.1 パッケージ骨組みとテスト実行基盤を用意する
   - `src/m1_validation/` と `tests/m1_validation/` を作成し、既存の `src/` レイアウトに合わせる
   - ルートの `pyproject.toml` に**追記のみ**を行う: wheel の `packages` に自パッケージを足し、
     `[project.optional-dependencies]` に可視化用の任意依存を新設する
@@ -591,3 +591,14 @@
   - _Requirements: 11.1, 11.2, 11.3, 11.4, 11.5, 11.6, 11.7, 11.8_
   - _Depends: 9.3, 9.5_
   - _Boundary: docs/requirements.md（§3 のみ）_
+
+
+## Implementation Notes
+
+> 各タスクで判明した、後続タスクが同じ失敗を繰り返さないための知見を1行ずつ足す。
+
+- タスク1.1: **`tests/` 配下のファイル名は既存4 Spec のどれとも衝突させてはならない。** `tests/**` には `__init__.py` を置かない規約のため、モジュール名は pytest セッション全体でフラットな `sys.modules` 名前空間を共有する。同じベース名のテストファイルが2つあると**フルスイートの収集自体が落ちる**（`tests/m1_validation/test_package_skeleton.py` を置いた時点で `tests/flying_object_tracking/test_package_skeleton.py` と衝突し、実際に落ちた。単独ディレクトリの実行では再現しないので、**フルスイートで確かめるまで気づけない**）。`test_m1_package_skeleton.py` へ改名して解消した。
+- タスク1.1（後続タスクへの申し送り）: **design.md「File Structure Plan」が本 Spec に定めるテストファイル名のうち、以下は既存 Spec と衝突する。** そのまま作らず `m1_` を冠するなどして避けること —— `test_types.py` / `test_config.py` / `test_boundaries.py`（いずれも `tests/prediction_core/`）、`test_determinism.py`（`tests/trajectory_sim/`）、`synthetic.py`（`sensing_foundation` / `flying_object_tracking` / `world_frame_calibration` の3箇所）、`fakes.py`（`flying_object_tracking`）。`conftest.py` だけは pytest がディレクトリごとに特別扱いするため衝突しない。
+- タスク1.1: **`synthetic.py` / `fakes.py` は改名だけでは足りず、`importlib` でのロードが要る。** `tests/flying_object_tracking/conftest.py` が確立した回避策（`spec_from_file_location` で `_<spec>_tests.<basename>` という一意名でロードし、フィクスチャとしてモジュールを渡す）を踏襲する。**衝突を避ける側は常に後から入る Spec が持つ**——上流3 Spec の `tests/**` は本 Spec の変更対象外である。申し送りは `tests/m1_validation/conftest.py` の docstring にも書いた。
+- タスク1.1: **`m1-viz` extras の追記により `uv.lock` が変わる**（matplotlib + 推移依存8件）。`pyproject.toml` の追記だけをコミットして lock を置き去りにしないこと。`uv run --all-extras` は matplotlib を実際に入れるため、フルスイート初回実行時に約10秒のインストールが走る。
+- タスク1.1: 着手前提（`tests/prediction_core/test_packaging.py` の `ALLOWED_OPTIONAL_EXTRAS` に `m1-viz` が含まれること）は **landing 済みであることを確認した**。`sensing-foundation` が4 Spec 分をまとめて登録している。**本 Spec は同テストを改変しない**——許可リストが戻された場合、赤くなるのは上流側の当該テストであり、本 Spec のテストには失敗が出ない。
