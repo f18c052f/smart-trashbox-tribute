@@ -50,7 +50,9 @@ PROVISIONAL_NOTICE = (
     "ここに出ている既定値は**暫定の評価候補であって必須性能ではない**。"
     "特に min_valid_throws（試行数の下限）・band_mm（収束の帯域）・"
     "direction_agreement_deg（向きが整合するとみなす角度差）・"
-    "bootstrap_iterations（帰属の再抽出回数）は、"
+    "bootstrap_iterations（帰属の再抽出回数）・"
+    "residual_significance_ratio（残差を大きいとみなす倍率）・"
+    "range_band_mm（距離帯の幅）は、"
     "実測前に置いた仮の値である。合否条件として扱ってはならない。"
 )
 
@@ -109,12 +111,24 @@ class AttributionConfig:
             向くのかの判別に使う。
         bias_significance_ratio: 共通偏りを有意とみなす「偏りの大きさ /
             ばらつき」の下限。
+        residual_significance_ratio: ばらつきが観測由来の範囲を超えたとき、
+            フィットの残差代表値を「大きい」とみなす倍率（要件 6.7）。
+            残差代表値が**再抽出で見積もった予測ばらつき**のこの倍以上なら
+            モデル由来（予測）とする。⚠️ **既定値 1.0 は暫定の評価候補で
+            あって必須性能ではない**（要件 13.7）。絶対値の目標を置かず、
+            同一測定内の量どうしの相対比較にするための倍率である。
+        range_band_mm: 距離帯の幅（mm。要件 6.11）。カメラから落下地点まで
+            の距離をこの幅で区切り、帯ごとの誤差を提示する。⚠️ **既定値
+            500.0 は暫定の評価候補**であり、実験レイアウトの奥行きが決まって
+            から見直す事項である。
     """
 
     bootstrap_iterations: int = 200
     bootstrap_seed: int = 0
     direction_agreement_deg: float = 30.0
     bias_significance_ratio: float = 1.0
+    residual_significance_ratio: float = 1.0
+    range_band_mm: float = 500.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -255,6 +269,8 @@ class M1Settings:
                 bootstrap_seed=values["bootstrap_seed"],  # type: ignore[arg-type]
                 direction_agreement_deg=values["direction_agreement_deg"],  # type: ignore[arg-type]
                 bias_significance_ratio=values["bias_significance_ratio"],  # type: ignore[arg-type]
+                residual_significance_ratio=values["residual_significance_ratio"],  # type: ignore[arg-type]
+                range_band_mm=values["range_band_mm"],  # type: ignore[arg-type]
             ),
             trials=TrialLimits(
                 min_valid_throws=values["min_valid_throws"],  # type: ignore[arg-type]
@@ -309,6 +325,10 @@ class M1Settings:
                 "bootstrap_seed": self.attribution.bootstrap_seed,
                 "direction_agreement_deg": self.attribution.direction_agreement_deg,
                 "bias_significance_ratio": self.attribution.bias_significance_ratio,
+                "residual_significance_ratio": (
+                    self.attribution.residual_significance_ratio
+                ),
+                "range_band_mm": self.attribution.range_band_mm,
             },
             "trials": {
                 "min_valid_throws": self.trials.min_valid_throws,
@@ -447,6 +467,10 @@ _FIELD_SPECS: dict[str, _FieldSpec] = {
     "bias_significance_ratio": _FieldSpec(
         "attribution", "bias_significance_ratio", _coerce_float
     ),
+    "residual_significance_ratio": _FieldSpec(
+        "attribution", "residual_significance_ratio", _coerce_float
+    ),
+    "range_band_mm": _FieldSpec("attribution", "range_band_mm", _coerce_float),
     "min_valid_throws": _FieldSpec("trials", "min_valid_throws", _coerce_int),
     "min_sessions": _FieldSpec("trials", "min_sessions", _coerce_int),
     "require_live_source": _FieldSpec("trials", "require_live_source", _coerce_bool),
@@ -566,6 +590,14 @@ def _validate_values(values: Mapping[str, object]) -> None:
     )
     _require_positive(
         values, "bias_significance_ratio", why="比の下限0では偏りが常に有意になる"
+    )
+    _require_positive(
+        values,
+        "residual_significance_ratio",
+        why="倍率0では残差が常に大きいとみなされ、規則7（判別不能）が消える",
+    )
+    _require_positive(
+        values, "range_band_mm", why="幅0の距離帯は作れない（要件 6.11）"
     )
 
     direction = values["direction_agreement_deg"]
