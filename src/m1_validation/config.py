@@ -56,7 +56,8 @@ PROVISIONAL_NOTICE = (
     "cpu_saturation_ratio（CPU 使用率を飽和とみなす割合）・"
     "fps_shortfall_ratio（実処理 fps が取得 fps に追いつけていないとみなす割合）・"
     "confidence_level（OQ-05 の材料が用いる信頼水準）・"
-    "interval_widths（OQ-05 の材料が求める信頼区間の全幅）は、"
+    "interval_widths（OQ-05 の材料が求める信頼区間の全幅）・"
+    "segment3_assumed_ms（時間予算表の区間3 の据え置き想定値）は、"
     "実測前に置いた仮の値である。合否条件として扱ってはならない。"
 )
 
@@ -187,6 +188,32 @@ class Oq05Config:
 
 
 @dataclass(frozen=True, slots=True)
+class BudgetConfig:
+    """時間予算表の更新値が用いる据え置きの想定値（要件 11.4, 13.7）。
+
+    Attributes:
+        segment3_assumed_ms: 区間3（予測確定〜移動体が動き出す）の**据え置きの
+            想定値**（ms）。既定値 50.0 は `docs/requirements.md §3` の
+            時間予算表が置いている 0.05 s の写しである。
+
+            ⚠️ **これは実測値ではない。** 区間3 は本 Spec の範囲外であり
+            （M1 に移動体は存在しない）、**M3 で実測する**。この値は
+            時間予算表の区間3 の行を埋めるためのものではなく、
+            NFR-3 の暫定目標を「更新後の表と食い違わない値」へ揃える導出
+            （要件 11.4）で区間3 の寄与を据え置くためだけに使う。
+            表の区間3 の行は欠測のまま残る。
+
+            ⚠️ **暫定の評価候補であって必須性能ではない**（要件 13.7）。
+
+    Invariants:
+        正でなければならない。0 を許すと「区間3 は瞬時である」という未実測の
+        主張が、設定の顔をして導出値へ入る（`_validate_values`）。
+    """
+
+    segment3_assumed_ms: float = 50.0
+
+
+@dataclass(frozen=True, slots=True)
 class TrialLimits:
     """判断を出してよい試行数の下限（要件 5.10, 9.9, 9.10）。
 
@@ -208,6 +235,7 @@ _DEFAULT_CONVERGENCE = ConvergenceConfig()
 _DEFAULT_ATTRIBUTION = AttributionConfig()
 _DEFAULT_OQ27 = Oq27Config()
 _DEFAULT_OQ05 = Oq05Config()
+_DEFAULT_BUDGET = BudgetConfig()
 _DEFAULT_TRIALS = TrialLimits()
 
 
@@ -222,6 +250,7 @@ class M1Settings:
         attribution: 誤差帰属のパラメータ。
         oq27: OQ-27 の判定に使う相対比較の割合。
         oq05: OQ-05 の判断材料が用いる信頼区間の指定。
+        budget: 時間予算表の更新値が据え置く区間3 の想定値。
         trials: 試行数の下限。
         improvements_applied: `development-environment.md §13.2` の改善項目の
             うち適用済みのもの（要件 9.4。未適用が残る間は「不足」を出さない）。
@@ -237,6 +266,7 @@ class M1Settings:
     attribution: AttributionConfig = _DEFAULT_ATTRIBUTION
     oq27: Oq27Config = _DEFAULT_OQ27
     oq05: Oq05Config = _DEFAULT_OQ05
+    budget: BudgetConfig = _DEFAULT_BUDGET
     trials: TrialLimits = _DEFAULT_TRIALS
     improvements_applied: tuple[str, ...] = ()
     output_root: Path = Path("var/m1")
@@ -341,6 +371,9 @@ class M1Settings:
                 confidence_level=values["confidence_level"],  # type: ignore[arg-type]
                 interval_widths=values["interval_widths"],  # type: ignore[arg-type]
             ),
+            budget=BudgetConfig(
+                segment3_assumed_ms=values["segment3_assumed_ms"],  # type: ignore[arg-type]
+            ),
             trials=TrialLimits(
                 min_valid_throws=values["min_valid_throws"],  # type: ignore[arg-type]
                 min_sessions=values["min_sessions"],  # type: ignore[arg-type]
@@ -406,6 +439,9 @@ class M1Settings:
             "oq05": {
                 "confidence_level": self.oq05.confidence_level,
                 "interval_widths": list(self.oq05.interval_widths),
+            },
+            "budget": {
+                "segment3_assumed_ms": self.budget.segment3_assumed_ms,
             },
             "trials": {
                 "min_valid_throws": self.trials.min_valid_throws,
@@ -533,7 +569,15 @@ class _FieldSpec:
     """1つの設定キーが対応する（グループ, 属性名, 型変換）。"""
 
     group: (
-        Literal["seam", "convergence", "attribution", "oq27", "oq05", "trials"]
+        Literal[
+            "seam",
+            "convergence",
+            "attribution",
+            "oq27",
+            "oq05",
+            "budget",
+            "trials",
+        ]
         | None
     )
     attr: str
@@ -573,6 +617,9 @@ _FIELD_SPECS: dict[str, _FieldSpec] = {
     "fps_shortfall_ratio": _FieldSpec("oq27", "fps_shortfall_ratio", _coerce_float),
     "confidence_level": _FieldSpec("oq05", "confidence_level", _coerce_float),
     "interval_widths": _FieldSpec("oq05", "interval_widths", _coerce_float_tuple),
+    "segment3_assumed_ms": _FieldSpec(
+        "budget", "segment3_assumed_ms", _coerce_float
+    ),
     "min_valid_throws": _FieldSpec("trials", "min_valid_throws", _coerce_int),
     "min_sessions": _FieldSpec("trials", "min_sessions", _coerce_int),
     "require_live_source": _FieldSpec("trials", "require_live_source", _coerce_bool),
@@ -586,6 +633,7 @@ _DEFAULT_OBJECTS = {
     "attribution": _DEFAULT_ATTRIBUTION,
     "oq27": _DEFAULT_OQ27,
     "oq05": _DEFAULT_OQ05,
+    "budget": _DEFAULT_BUDGET,
     "trials": _DEFAULT_TRIALS,
 }
 
@@ -712,6 +760,14 @@ def _validate_values(values: Mapping[str, object]) -> None:
     )
     _require_positive(
         values, "range_band_mm", why="幅0の距離帯は作れない（要件 6.11）"
+    )
+    _require_positive(
+        values,
+        "segment3_assumed_ms",
+        why=(
+            "0 を許すと「区間3 は瞬時である」という未実測の主張が、"
+            "設定の顔をして NFR-3 の導出値へ入る（要件 11.4）"
+        ),
     )
 
     direction = values["direction_agreement_deg"]
