@@ -56,7 +56,13 @@ from m1_validation.config import M1Settings
 from m1_validation.errors import FailureReason, M1ConfigError, SeamFailure
 from m1_validation.types import SampleProvenance, SampleReject, ThrowSamples
 from prediction_core import Sample
-from world_frame_calibration import CalibrationResult
+from world_frame_calibration import (
+    CalibrationConfigError,
+    CalibrationFailure,
+    CalibrationResult,
+    check_compatibility,
+    load_calibration,
+)
 
 #: 読める受け渡し形式版。上流の `HANDOFF_VERSION` のみを既知とする。
 #: **未知の版は内容を推測して読まない**（要件 1.5。上流3 Spec 共通の方針）。
@@ -70,6 +76,106 @@ KNOWN_HANDOFF_VERSIONS: frozenset[str] = frozenset({HANDOFF_VERSION})
 #: 不合格」を検証済みとして扱うと、誤差の帰属ができないデータを気づかずに
 #: 判断へ使うことになる（要件 2.2）。
 _VERIFICATION_PASSED = "passed"
+
+#: 上流 `CalibrationFailure.reason` から本 Spec の `FailureReason` への対応。
+#:
+#: **上流の例外型をそのまま外へ出さない**——呼び出し側が
+#: `world_frame_calibration` の例外を捕まえるために import する羽目になると、
+#: 「較正パッケージの接点は本モジュールだけ」という境界が例外の経路から崩れる
+#: （`upstream.py` が `ThrowRecordVersionError` に対して採っているのと同じ方針）。
+_UPSTREAM_FAILURE_REASONS: dict[str, FailureReason] = {
+    "unknown_format_version": FailureReason.UNKNOWN_CALIBRATION_VERSION,
+    "profile_mismatch": FailureReason.PROFILE_MISMATCH,
+}
+
+
+def open_calibration(
+    path: Path,
+    *,
+    settings: M1Settings,
+    signature: object,
+    intrinsics: object,
+    allow_unverified: bool = False,
+) -> CalibrationResult:
+    """キャリブレーション結果を読み、検証ゲートと整合性検査を通す。
+
+    **検証を経ていない誤差は帰属できない。** 座標系が数 cm ずれていても、
+    症状は「予測が悪い」としか見えない——得られた誤差が系統誤差なのか予測
+    誤差なのかを事後に分離する手段が無い。だから未検証の較正で実測を進めると、
+    **その投擲群は丸ごと使えなくなる**。この事実を運用上の注意書きではなく
+    **構造**で表すのが本関数である: 既定で拒否し、続行するには呼び出し側が
+    明示的に許可を書かねばならず、許可した事実は生成物すべてに印として残る
+    （要件 2.1 / 2.2）。
+
+    検査は次の順で行う。**整合性検査を検証ゲートより先に置く**のは、両方が
+    成り立つときに「未検証だから」とだけ言われると、解像度を戻さないまま
+    許可で押し通してしまうからである。
+
+    1. 読み込み（形式版の既知性は上流が見る）
+    2. ストリーム設定・カメラ内部パラメータの一致（要件 1.6）
+    3. 検証ゲート（要件 2.1）
+
+    Args:
+        path: キャリブレーション結果ファイル。
+        settings: `settings.seam.require_verified_calibration` がゲートの
+            既定を決める（**既定は有効**）。
+        signature: 現在の入力元のストリーム識別情報。**本 Spec は中身を
+            解釈せず上流の整合性検査へ素通しする**ため注釈は `object`。
+        intrinsics: 現在の入力元のカメラ内部パラメータ（同上）。
+        allow_unverified: 明示的な許可。`True` なら未検証でも続行する。
+
+    Returns:
+        読み込んだ `CalibrationResult`。
+
+    Raises:
+        SeamFailure: `UNKNOWN_CALIBRATION_VERSION`（形式版が未知。要件 1.5）/
+            `PROFILE_MISMATCH`（ストリーム設定・内部パラメータが不一致。
+            要件 1.6）/ `CALIBRATION_NOT_VERIFIED`（検証未通過かつ
+            `allow_unverified` が偽。要件 2.1）。
+        M1ConfigError: ファイルが読めない・JSON でない・必須キーが欠けている、
+            および上流が本 Spec の失敗理由へ対応付けられない失敗を報告した
+            場合（例: 回転行列が正規直交でない＝保存された結果が壊れている）。
+    """
+    result = _load_calibration_result(path)
+    _check_compatibility(result, signature, intrinsics)
+    _require_verified_calibration(
+        result, settings=settings, allow_unverified=allow_unverified
+    )
+    return result
+
+
+def calibration_summary(calibration: CalibrationResult) -> dict[str, object]:
+    """後段が読める検証の要約を返す（要件 2.3 / 2.4 の材料）。
+
+    投擲ごとの記録とレポートへそのまま載せられるよう、JSON 化できる素の値
+    だけで構成する。**検証を実施していない項目は `None`（欠測）**であり、
+    0 や空で埋めない——「偏りが 0 だった」と「測っていない」は別である。
+
+    `bias_mm`（平均オフセット）と `scatter_rms_mm`（ばらつき）は、
+    誤差帰属が**上流の独立検証と突き合わせる**ための材料である（要件 2.4）。
+    片方だけでは言えないことが、両方あると言える。
+    """
+    verification = calibration.verification
+    state = str(calibration.verification_state)
+    return {
+        "calibration_id": calibration.calibration_id,
+        "verification_state": state,
+        "verified": _is_verified(state),
+        "verified_at_wall_ms": (
+            None if verification is None else verification.verified_at_wall_ms
+        ),
+        "bias_mm": None if verification is None else list(verification.bias_mm),
+        "scatter_rms_mm": (
+            None if verification is None else verification.scatter_rms_mm
+        ),
+        "max_error_norm_mm": (
+            None if verification is None else verification.max_error_norm_mm
+        ),
+        "point_count": None if verification is None else verification.point_count,
+        "independent_point_count": (
+            None if verification is None else verification.independent_point_count
+        ),
+    }
 
 
 def build_samples(
@@ -166,7 +272,7 @@ def build_samples(
         handoff_version=track.handoff_version,
         calibration_id=calibration.calibration_id,
         verification_state=verification_state,
-        verified=verification_state == _VERIFICATION_PASSED,
+        verified=_is_verified(verification_state),
     )
 
 
@@ -266,6 +372,88 @@ def open_tracking(
 # --------------------------------------------------------------------------
 # 内部: 前提の検査と除外規則
 # --------------------------------------------------------------------------
+
+
+def _is_verified(verification_state: str) -> bool:
+    """検証に合格した状態かを返す。**`passed` 以外はすべて未検証扱い**。
+
+    `failed`（検証したが不合格）と `not_judged`（許容値が無く未判定）を
+    検証済みとして扱うと、誤差の帰属ができないデータを気づかずに判断へ
+    使うことになる（要件 2.2）。
+    """
+    return verification_state == _VERIFICATION_PASSED
+
+
+def _load_calibration_result(path: Path) -> CalibrationResult:
+    """上流の `load_calibration()` を呼び、失敗を本 Spec の語彙へ翻訳する。"""
+    try:
+        return load_calibration(Path(path))
+    except CalibrationFailure as exc:
+        raise _translate_failure(exc, path=path) from exc
+    except CalibrationConfigError as exc:
+        raise M1ConfigError(
+            f"キャリブレーション結果を読み込めない: {path}（{exc}）",
+            {"path": str(path)},
+        ) from exc
+
+
+def _check_compatibility(
+    result: CalibrationResult, signature: object, intrinsics: object
+) -> None:
+    """ストリーム設定・カメラ内部パラメータの一致を検査する（要件 1.6）。
+
+    検査そのものは上流の `check_compatibility()` に委ねる——解像度が変われば
+    内部パラメータも変わる、という判断規則は較正側が所有する。本関数は
+    失敗を本 Spec の語彙へ翻訳するだけである。
+    """
+    try:
+        check_compatibility(result, signature, intrinsics)  # type: ignore[arg-type]
+    except CalibrationFailure as exc:
+        raise _translate_failure(exc, path=None) from exc
+
+
+def _require_verified_calibration(
+    result: CalibrationResult,
+    *,
+    settings: M1Settings,
+    allow_unverified: bool,
+) -> None:
+    """検証ゲート（要件 2.1）。既定で未検証を拒否する。"""
+    if not settings.seam.require_verified_calibration or allow_unverified:
+        return
+    state = str(result.verification_state)
+    if _is_verified(state):
+        return
+    raise SeamFailure(
+        FailureReason.CALIBRATION_NOT_VERIFIED,
+        "検証を通過していないキャリブレーション結果では実測を進めない: "
+        f"verification_state={state!r}（calibration_id="
+        f"{result.calibration_id!r}）。"
+        "検証を経ていない誤差は系統誤差と予測誤差に分離できないため、"
+        "この状態で撮った投擲群は後から使えない。"
+        "承知のうえで続けるなら明示的に許可すること（生成物に印が付く）",
+        {
+            "verification_state": state,
+            "calibration_id": result.calibration_id,
+        },
+    )
+
+
+def _translate_failure(exc: CalibrationFailure, *, path: Path | None) -> Exception:
+    """上流の `CalibrationFailure` を本 Spec の例外へ写す。
+
+    対応する `FailureReason` が無い理由（例: `rotation_not_orthonormal`
+    ＝保存された結果そのものが壊れている）は `M1ConfigError` にする。
+    **理由を捏造して既存の `FailureReason` へ丸めない**——「形式版が未知」と
+    「回転行列が壊れている」は直し方が違う。
+    """
+    reason = _UPSTREAM_FAILURE_REASONS.get(str(exc.reason))
+    if reason is None:
+        return M1ConfigError(
+            f"キャリブレーション結果が使えない: {exc}",
+            {"upstream_reason": str(exc.reason), "path": None if path is None else str(path)},
+        )
+    return SeamFailure(reason, str(exc), dict(exc.context))
 
 
 def _require_camera_frame(track: CameraTrack) -> None:
