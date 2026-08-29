@@ -46,7 +46,7 @@
   - _Requirements: 1.4, 1.5, 1.6, 2.1_
   - _Boundary: Errors_
 
-- [ ] 1.3 値オブジェクトと共通の判定結果の形を定義する
+- [x] 1.3 値オブジェクトと共通の判定結果の形を定義する
   - サンプルの由来情報、継ぎ目の出力、真値、判定結果を、不変（frozen かつ slots）で定義する
   - 距離 mm・時刻 ms・角度 deg・画素 px をフィールド名に含める
   - **真値は「値・求め方・不確かさ・測り方の記述」を必ず伴う形**にし、測り方の記述を空にできないようにする
@@ -596,6 +596,13 @@
 ## Implementation Notes
 
 > 各タスクで判明した、後続タスクが同じ失敗を繰り返さないための知見を1行ずつ足す。
+
+- タスク1.3: **design.md の「File Structure Plan」が `types.py` に挙げる型のうち、本タスクが作るのは4つだけである。** ディレクトリ図のコメントは `SampleProvenance / ThrowSamples / TruthValue / ThrowTruth / ThrowMeasurement / Aggregate / Judgement` を列挙しているが、`ThrowTruth` は design.md「TruthDeriver」節（タスク4系）、`ThrowAggregate` は「Aggregator」節（タスク5系）が擬似コードごと定義しており、タスク1.3 の本文が挙げるのは「由来情報・継ぎ目の出力・真値・判定結果」の4つである。**ディレクトリ図の列挙は最終形の見取り図であって、着手範囲ではない。** それぞれの型を作るタスクが自分で `types.py` へ足すこと。
+- タスク1.3: **「空にできない」は文書化ではなく構築時の拒否として実装した。** design.md「M1Types」の Validation は「生成時に検証しない」と書いているが、これは**長さ一致の Precondition について**の記述であり、`TruthValue.source` / `Judgement.criterion` は同じ節の Invariants に別立てで挙がっている。tasks.md 1.3 の本文も「空にできないようにする」と書いており、文書化では字義を満たさない。**空白のみの文字列も拒否する**——`" "` を入れれば通る抜け道を残すと必須にした意味が無い（負の対照で確認済み: 空白の扱いを緩めると3件、検査ごと外すと6件が落ちる）。送出する例外はタスク1.2 の `M1ConfigError`（呼び出し方の誤り）であり、これが `_Depends: 1.2_` の実体である。
+- タスク1.3: **`samples` と `provenance` の長さ一致は構築時に検証しない。** design.md の方針どおり検査の持ち主は継ぎ目（`seam.py`、タスク2.2）である。**タスク2.2 はこの検査を必ず入れること。** 本タスクは「検証しないこと自体」をテストで固定した——検査がどこにも無い状態を見落とさないためであり、あとから「型が守っているはず」と誤解されないためである。あわせて `ThrowSamples` の docstring に、2列を辿るときは `zip(..., strict=True)` を使うことを明記した（既定の `zip()` は黙って短い方へ切り詰め、**別の観測点の品質情報がサンプルに付いたまま集計へ流れる**）。
+- タスク1.3: **`Judgement.evidence` は複製して保持する**（タスク1.2 の `M1ValidationError.context` と同じ理由）。判断は「その時点の根拠でそう決めた」という記録なので、呼び出し側が使い回す辞書を抱えるとレポートの証跡が判断と食い違い得る。`frozen=True, slots=True` の dataclass では `__post_init__` 内で `object.__setattr__` を使う。`MappingProxyType` にしなかったのは、レポート層（タスク7系）がそのまま `json.dumps` できる形を保つためである。
+- タスク1.3: **`Judgement.verdict` の型は `str` であって列挙ではない。** OQ-27 なら `Oq27Verdict`、帰属なら `Attribution` と、`question` ごとに語彙が違うためである。1つの形にすべての判断を載せるための意図的な選択なので、後続タスクが「型が緩い」と感じて列挙へ狭めないこと。
+- タスク1.3: ruff の import 並びは **`prediction_core` を第一者グループ（`m1_validation` と同じ塊）に置く**。両方 `src/` 配下にあるためで、`sensing_foundation/throw_store.py` も同じ並びになっている。新規ファイルは `uvx ruff check --select I001 --fix` を通しておくこと。
 
 - タスク1.2: **`FailureReason` は例外専用の語彙ではない。** design.md「Errors」が列挙する9件のうち、`SeamFailure` として送出されるのは継ぎ目の不成立に当たる6件だけで、`NO_VALID_SAMPLE` / `TRUTH_MISSING` / `INSUFFICIENT_TRIALS` は**値として運ばれる**（design.md「Error Categories and Responses」が「観測の不成立・真値の欠測・判断の未成立は値として扱う」と定める）。失敗投擲の記録・欠測項目・保留の判断が同じ語彙で理由を書けるようにするための共有語彙である。**後続タスクが `SeamFailure(TRUTH_MISSING, ...)` のように送出すると、続けるべき実験が落ちる**——各メンバに `[例外]` / `[値]` の区分をコメントで書いたので、送出前に確認すること。構造的な禁止（コンストラクタでの拒否）はあえて入れていない: design.md は「投擲の前に評価する」という**実行順序**をこのリスクの緩和策として選んでおり、そちらが所有する判断だからである。
 - タスク1.2（タスク2.1 への申し送り）: **`UNKNOWN_RECORD_SCHEMA` の送出場所は 2.1 が決める。** design.md の分類表は継ぎ目の不成立の例として「未知の形式版」を挙げており、Throw Record の記録スキーマ版もこれに当たると読んで `[例外]` に分類した。ただし記録の読み出しは `upstream.py`（2.1 の境界）であり継ぎ目そのものではない。**`SeamFailure` で送出するのが妥当か、別の扱いが要るかは 2.1 が判断すること。**
