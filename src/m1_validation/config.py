@@ -57,7 +57,9 @@ PROVISIONAL_NOTICE = (
     "fps_shortfall_ratio（実処理 fps が取得 fps に追いつけていないとみなす割合）・"
     "confidence_level（OQ-05 の材料が用いる信頼水準）・"
     "interval_widths（OQ-05 の材料が求める信頼区間の全幅）・"
-    "segment3_assumed_ms（時間予算表の区間3 の据え置き想定値）は、"
+    "segment3_assumed_ms（時間予算表の区間3 の据え置き想定値）・"
+    "overhead_cycles（計測 ON/OFF 比較の交互実行の巡回数）・"
+    "overhead_min_samples（計測 ON/OFF 比較が暫定でなくなる生の計測値の件数）は、"
     "実測前に置いた仮の値である。合否条件として扱ってはならない。"
 )
 
@@ -214,6 +216,32 @@ class BudgetConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class OverheadConfig:
+    """計測 ON/OFF 比較の実行条件（要件 7.5, 7.6, 13.7）。
+
+    Attributes:
+        cycles: `(計測無効, 計測有効)` の1巡を繰り返す回数（要件 7.6）。
+            **交互実行（A/B/A/B）の巡回数**であり、条件ごとの連続実行の回数
+            ではない。1巡しかしないと順序効果と時間とともに変化する要因
+            （熱・他プロセス）を打ち消せないので、2以上を推奨する。
+            ⚠️ **既定値 5 は暫定の評価候補であって必須性能ではない**
+            （要件 13.7）。
+        min_samples: 各条件・各対象区間で欲しい生の計測値の件数の下限。
+            下回っても比較そのものは返すが、結果に**暫定の印**を付ける
+            （`TrialLimits.min_valid_throws` と同じ扱い）。
+            ⚠️ **既定値 30 も暫定の評価候補**である。中央値と四分位範囲が
+            落ち着く件数の目安として置いただけで、根拠のある閾値ではない。
+
+    Invariants:
+        どちらも正でなければならない（`_validate_values`）。0 巡は比較に
+        ならず、下限 0 件は「印を付けない」と同義で下限の意味が無い。
+    """
+
+    cycles: int = 5
+    min_samples: int = 30
+
+
+@dataclass(frozen=True, slots=True)
 class TrialLimits:
     """判断を出してよい試行数の下限（要件 5.10, 9.9, 9.10）。
 
@@ -236,6 +264,7 @@ _DEFAULT_ATTRIBUTION = AttributionConfig()
 _DEFAULT_OQ27 = Oq27Config()
 _DEFAULT_OQ05 = Oq05Config()
 _DEFAULT_BUDGET = BudgetConfig()
+_DEFAULT_OVERHEAD = OverheadConfig()
 _DEFAULT_TRIALS = TrialLimits()
 
 
@@ -251,6 +280,7 @@ class M1Settings:
         oq27: OQ-27 の判定に使う相対比較の割合。
         oq05: OQ-05 の判断材料が用いる信頼区間の指定。
         budget: 時間予算表の更新値が据え置く区間3 の想定値。
+        overhead: 計測 ON/OFF 比較の交互実行の条件。
         trials: 試行数の下限。
         improvements_applied: `development-environment.md §13.2` の改善項目の
             うち適用済みのもの（要件 9.4。未適用が残る間は「不足」を出さない）。
@@ -267,6 +297,7 @@ class M1Settings:
     oq27: Oq27Config = _DEFAULT_OQ27
     oq05: Oq05Config = _DEFAULT_OQ05
     budget: BudgetConfig = _DEFAULT_BUDGET
+    overhead: OverheadConfig = _DEFAULT_OVERHEAD
     trials: TrialLimits = _DEFAULT_TRIALS
     improvements_applied: tuple[str, ...] = ()
     output_root: Path = Path("var/m1")
@@ -374,6 +405,10 @@ class M1Settings:
             budget=BudgetConfig(
                 segment3_assumed_ms=values["segment3_assumed_ms"],  # type: ignore[arg-type]
             ),
+            overhead=OverheadConfig(
+                cycles=values["overhead_cycles"],  # type: ignore[arg-type]
+                min_samples=values["overhead_min_samples"],  # type: ignore[arg-type]
+            ),
             trials=TrialLimits(
                 min_valid_throws=values["min_valid_throws"],  # type: ignore[arg-type]
                 min_sessions=values["min_sessions"],  # type: ignore[arg-type]
@@ -442,6 +477,10 @@ class M1Settings:
             },
             "budget": {
                 "segment3_assumed_ms": self.budget.segment3_assumed_ms,
+            },
+            "overhead": {
+                "cycles": self.overhead.cycles,
+                "min_samples": self.overhead.min_samples,
             },
             "trials": {
                 "min_valid_throws": self.trials.min_valid_throws,
@@ -576,6 +615,7 @@ class _FieldSpec:
             "oq27",
             "oq05",
             "budget",
+            "overhead",
             "trials",
         ]
         | None
@@ -620,6 +660,8 @@ _FIELD_SPECS: dict[str, _FieldSpec] = {
     "segment3_assumed_ms": _FieldSpec(
         "budget", "segment3_assumed_ms", _coerce_float
     ),
+    "overhead_cycles": _FieldSpec("overhead", "cycles", _coerce_int),
+    "overhead_min_samples": _FieldSpec("overhead", "min_samples", _coerce_int),
     "min_valid_throws": _FieldSpec("trials", "min_valid_throws", _coerce_int),
     "min_sessions": _FieldSpec("trials", "min_sessions", _coerce_int),
     "require_live_source": _FieldSpec("trials", "require_live_source", _coerce_bool),
@@ -634,6 +676,7 @@ _DEFAULT_OBJECTS = {
     "oq27": _DEFAULT_OQ27,
     "oq05": _DEFAULT_OQ05,
     "budget": _DEFAULT_BUDGET,
+    "overhead": _DEFAULT_OVERHEAD,
     "trials": _DEFAULT_TRIALS,
 }
 
@@ -767,6 +810,20 @@ def _validate_values(values: Mapping[str, object]) -> None:
         why=(
             "0 を許すと「区間3 は瞬時である」という未実測の主張が、"
             "設定の顔をして NFR-3 の導出値へ入る（要件 11.4）"
+        ),
+    )
+
+    _require_positive(
+        values,
+        "overhead_cycles",
+        why="0 巡では計測 ON/OFF の交互実行そのものが行われない（要件 7.6）",
+    )
+    _require_positive(
+        values,
+        "overhead_min_samples",
+        why=(
+            "下限 0 件では暫定の印が決して立たず、"
+            "生の計測値が1件しか無い比較も判断に使えることになる"
         ),
     )
 
