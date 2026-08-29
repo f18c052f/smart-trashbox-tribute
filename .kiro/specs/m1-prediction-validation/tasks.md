@@ -88,7 +88,7 @@
 
 - [ ] 2. 上流との接点と継ぎ目
 
-- [ ] 2.1 上流の取得・記録・ログ基盤への接点を実装する
+- [x] 2.1 上流の取得・記録・ログ基盤への接点を実装する
   - フレーム供給・セッション時計・構造化ログ送出・Throw Record の保存と読み出し・ログ集計の委譲を、
     **1モジュールに閉じて**提供する
   - 予約された段階名と衝突しない**独自の段階名2つ**（予測区間と投擲単位）を定義する
@@ -596,6 +596,13 @@
 ## Implementation Notes
 
 > 各タスクで判明した、後続タスクが同じ失敗を繰り返さないための知見を1行ずつ足す。
+
+- タスク2.1: **自由関数ではなくクラス（`UpstreamGateway`）にした。** design.md の Service Interface は `open_frames` / `session_clock_ms` / `emit` / `get_logger_handle` …を自由関数の擬似コードで示しているが、これらは**すべて1つのセッション時計と1つのログ器を共有する**。自由関数にするとモジュール大域の可変状態が要り、テストが実行順に依存する。コンポーネント名がそもそも `UpstreamGateway` であり、擬似コードの関数名はメソッド名としてそのまま残した。`open_frames(settings, source_spec)` の `source_spec` は `open()` 時に受け取って保持する（1セッション = 1入力元。上流の `cli.py` と同じ組み立て方）。
+- タスク2.1（タスク1.2 からの持ち越しへの回答）: **`UNKNOWN_RECORD_SCHEMA` は `SeamFailure` として送出する。** 上流の `ThrowRecordStore.iter_records()` が送出する `ThrowRecordVersionError` を捕まえて翻訳する。**上流の例外型をそのまま外へ出さないのは、接点を1モジュールに閉じるという制約を例外の経路でも守るため**である——呼び出し側が上流の例外を捕まえるために `sensing_foundation` を import する羽目になると、境界が例外側から崩れる。なお**版の照合そのものは上流が行い、本モジュールは比較し直さない**（同じ判定を2箇所に持つと食い違い得る）。破損行の `ThrowRecordFormatError` には対応する `FailureReason` が無いため、現状はそのまま伝播する——必要になった時点で理由を足すこと。
+- タスク2.1: **`resolve_runtime_settings()` を足した**（design.md の擬似コードには無い）。`cli.py` が上流の `RuntimeSettings` を手に入れる経路がこれしか無いためである（`sensing_foundation` を import してよいのは本モジュールだけ）。`seam.py` の `resolve_tracking_settings()` が同じ理由で design.md に明記されており、取得側にも同じ穴が要る。**上流の `resolve(*, file, env, overrides)` は3つとも必須**で、一部を内部で空に埋めると上流側の環境変数と CLI 上書きが黙って捨てられるので、3つとも呼び出し元から受け取って素通しする。
+- タスク2.1: **`UPSTREAM_RESERVED_STAGES` は上流の写しである。** `sensing_foundation.obslog.RESERVED_STAGES` は公開入口（`__all__`）に出ていないので参照できず、`{"system", "capture", "record"}` を本モジュールに複製した。**上流が予約名を増やしても自動では追随しない**——上流の `obslog` を変更する際はここも確認すること。なお上流の `obslog` は stage 名を実行時に検証しない（区分は文書上の約束）ので、**衝突を防ぐ責任は足す側にある**。
+- タスク2.1: **検証は本物の `sensing_foundation` に対して行った。** tasks.md は「上流公開型を模した最小ダブル」を挙げているが、それは design.md Risks が言うとおり**上流未実装の期間の代替手段**である。上流は実装済みで合成入力なら実機も要らないので、本物で通した（フレーム供給・ログ送出・保存/読み出し・集計のすべて）。集計の委譲は「同じログに対して上流の `summarize_log()` と同一の結果を返す」ことで固定しており、独自実装を持っていないことがそのまま示される。
+- タスク2.1: **`m1_validation` は `sensing_foundation` 経由で numpy に依存する。** `import m1_validation.upstream` は `--extra sensing` 相当が入っていないと失敗する（本 Spec 自身のサードパーティ依存は可視化用の matplotlib だけ、という宣言は変わらない——numpy は上流の extras の中で完結している）。テストは `uv run --all-extras` で回すこと。
 
 - タスク1.5: **`M1Settings.layout` は必須なので、設定キーに `layout_file` / `layout_id` を足した**（design.md の擬似コードには無い）。レイアウトはコードに持たない（要件 13.8）ので、どこかから読む必要があり、その「どこ」を設定として解決するのが本タスクの責務である。**`layout_file` を与えずに `resolve()` は成功しない**——「数値をコードへ埋め込まない」という要求を「与えないと動かない」という形で構造的に満たしている。
 - タスク1.5: **収束帯域の実効値の導出を `M1Settings.effective_convergence_band_mm` に1箇所だけ置いた。** design.md は `band_mm: float | None = None` に「None ならレイアウトの暫定許容窓に揃える」と注記しているが、導出の置き場所を書いていない。利用側（タスク4系）が各所で `band_mm or layout.position_tolerance_mm` と書くと、**設定した値と実際に使う値が食い違う経路が増える**。`describe()` も同じ property を使い、設定値（`band_mm`、null になり得る）と実効値（`effective_band_mm`）の両方を出す——`null` だけを見せると「収束判定が無効」と誤解される。
