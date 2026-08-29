@@ -143,7 +143,7 @@
   - _Depends: 2.2_
   - _Boundary: Seam_
 
-- [ ] 2.4 上流2経路の逆投影が一致することをクロス Spec 契約として固定する ★
+- [x] 2.4 上流2経路の逆投影が一致することをクロス Spec 契約として固定する ★
   - 同一の内部パラメータ・画素座標・生の奥行き値を、**検出・追跡側の逆投影経路**と
     **座標変換（キャリブレーション）側の逆投影経路**の両方へ通し、
     **結果が完全に一致する**ことを確かめる（浮動小数の厳密比較。**許容差を置かない**）
@@ -596,6 +596,12 @@
 ## Implementation Notes
 
 > 各タスクで判明した、後続タスクが同じ失敗を繰り返さないための知見を1行ずつ足す。
+
+- タスク2.4: **前提（逆投影の基本演算の一元化）は landing していたが、「公開入口だけを参照する」という制約は満たせなかった。** `flying_object_tracking.projection.PointEstimator` も `world_frame_calibration.deproject.deproject_region` も上流の `__all__` に無い——**どちらの逆投影経路にも公開の入口が存在しない**。人手の判断を仰ぎ、「テストは上流の内部モジュールを import してよい（要件 13.1 の主語は『M1検証ハーネス』＝本体であり、テストは対象外）」という読みで実装した。**本体側の境界規則は一切緩めていない**（`test_m1_seam.py` / `test_m1_upstream.py` が静的に固定したまま）。⚠️ **上流2 Spec へ「逆投影経路を公開入口へ出す」改修を起票し、landing 後に本テストを公開入口経由へ差し替えること。** タスク2.3 の申し送り（`to_signature` / `to_intrinsics` の公開）と同じ性質の課題であり、まとめて扱える。
+- タスク2.4: **比較は生の Depth 値から始める。** 同一の `CaptureFrame` を両経路へ通し、検出側は `PointEstimator.estimate()`、較正側は `collect_depth()` → `deproject_region()` を実際に走らせる。**mm 換算をテスト側で先に済ませてしまうと、奥行きスケールの適用位置の食い違いを見逃す**（検出側は代表値算出後に1回、較正側は取得直後に画素ごとに1回換算する）。
+- タスク2.4: **許容差を置かない**（浮動小数の厳密比較）。「ほぼ一致」を許すと、その差が丸ごと投擲群の**共通偏り**として実測へ乗り、誤差の帰属が「予測が悪い」という単一の症状に潰れる。負の対照で確認済み: 検出側に `+0.5` の画素中心補正を入れる／較正側の画素を1つずらす／スケールを 1.000000001 倍する、のいずれでも 9〜11 件が落ちる。無効値の扱いを片方だけ変えると該当の1件が落ちる。
+- タスク2.4: **有効画素を1つだけにするフィクスチャ**にした（他は `INVALID_DEPTH_RAW`）。検出側のトリム平均・下限・寸法判定を全部素通しさせる設定（`min_valid_depth_px=1` / `depth_trim_ratio=0.0` / `min_scale=0.0`）と組み合わせると、**代表 raw 値が入力そのものになり、比較が逆投影の式だけを見る**ようになる。候補の妥当性判定が混ざると、何が一致していないのか読めなくなる。
+- タスク2.4: 前提が崩れていないことも別に固定した（`fot_projection.deproject_pixel is deproject_pixel` / `wfc_deproject.deproject_pixel is deproject_pixel`）。**これが無いと、上の一致検査は「2つの独立実装がたまたま同じ式で書かれている」ことしか示さない。**
 
 - タスク2.3（⚠️ **上流への申し送り。タスク8.1 の前提**）: **`world_frame_calibration` には「いま開いている入力元の `StreamSignature` / `Intrinsics` を作る」公開手段が無い。** `check_compatibility(result, signature, intrinsics)` は公開されているが、`StreamSignature` / `Intrinsics` の型も、`StreamProfile` からそれらへ写す `to_signature()` / `to_intrinsics()`（`world_frame_calibration.upstream` にある）も `__all__` に含まれていない。さらに整合性検査は `result.signature != signature` という**オブジェクト同士の比較**なので、構造が同じだけの別クラスを渡すと**常に不一致**になる。本タスクは design.md どおり `signature` / `intrinsics` を不透明値として受け取って素通しするだけなので完了できるが、**`cli.py`（タスク8.1）が実際の値を用意する経路が無い**。これは下流で回避してよい問題ではない（回避するには `world_frame_calibration.types` / `.upstream` という内部モジュールへ直接到達することになり、要件 13.1 に反する）。**`world-frame-calibration` 側に `to_signature` / `to_intrinsics`（または `StreamSignature` / `Intrinsics`）を公開入口へ出す改修を起票すること。** タスク8.1 に着手する前に必要である。
 - タスク2.3: **整合性検査を検証ゲートより先に置いた。** 両方が成り立つときに「未検証だから」とだけ言われると、**解像度を戻さないまま `--allow-unverified` で押し通してしまう**。順序をテストで固定してある（負の対照で、入れ替えると当該テストだけが落ちることを確認済み）。
