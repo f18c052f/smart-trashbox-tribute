@@ -176,6 +176,40 @@ class TruthValue:
 
 
 @dataclass(frozen=True, slots=True)
+class ThrowTruth:
+    """1投擲ぶんの真値一式（design.md「TruthDeriver」Contracts、要件 4.1-4.5）。
+
+    3つの真値を**同じ形（`TruthValue`）で、しかし別々の求め方で**持つ。
+    落下地点は人が測った実測、落下時刻は観測点列の内挿、リリース時刻は
+    推定軌道の外挿であり、**不確かさの性質がそれぞれ違う**。1つにまとめて
+    「真値」と呼ぶと、この違いが消える。
+
+    3つは**独立に欠測しうる**（要件 4.6）。落下地点が未記入でも落下時刻は
+    求まるし、床面を跨ぐ区間が無くてもリリース時刻は求まる。欠測した項目を
+    必要とする実測項目だけが欠測になり、他の集計は止まらない。
+
+    Attributes:
+        record_id: どの投擲の真値か。`ThrowRecord.record_id` と対応する。
+        impact_point_world_mm: 実際の落下地点（World 座標 mm。要件 4.1）。
+            外部から与えられる実測値であり、**測り方の記述が必須**である。
+        impact_time_ms: 実際の落下時刻（ms。要件 4.2）。観測サンプル列が
+            床面高さを跨ぐ隣接2点の内挿。
+        release_time_ms: リリース時刻（ms。要件 4.3）。推定軌道を観測開始
+            より前へ外挿し、レイアウトのリリース高さに達する時刻。
+        external_mark_delta_ms: 外部の合図と外挿値の差（ms。要件 4.5）。
+            合図が記録されていない、または外挿が欠測なら `None`。
+            **0 で埋めない**——「差が 0 だった」と「突き合わせていない」は
+            別である。
+    """
+
+    record_id: str
+    impact_point_world_mm: TruthValue
+    impact_time_ms: TruthValue
+    release_time_ms: TruthValue
+    external_mark_delta_ms: float | None
+
+
+@dataclass(frozen=True, slots=True)
 class SampleProvenance:
     """`Sample` に入れられない観測品質（要件 1.8）。
 
