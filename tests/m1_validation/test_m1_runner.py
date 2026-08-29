@@ -1,8 +1,11 @@
-"""1投擲の実行と Throw Record への記録の検証（タスク 3.1 / 要件 2.3, 3.1-3.6, 7.4）。
+"""1投擲の実行と Throw Record への記録の検証
+（タスク 3.1 / 3.2、要件 2.3, 3.1-3.8, 7.4）。
 
-観測可能な完了状態（tasks.md 3.1）を固定する:
+観測可能な完了状態（tasks.md 3.1 / 3.2）を固定する:
 
 - **合成入力に対して1投擲が通り、記録を読み戻すと予測系列と由来情報が復元される**
+- **検出が1点も出ない入力で失敗理由付きの記録が残り、同一入力の2回実行が
+  同一内容の記録を生成する**
 
 あわせて design.md「ThrowRunner」が定める点も固定する:
 
@@ -43,15 +46,21 @@ from flying_object_tracking import (
 )
 from m1_validation import runner as runner_module
 from m1_validation.config import M1Settings
-from m1_validation.errors import SeamFailure
-from m1_validation.runner import ThrowRunResult, run_throw
+from m1_validation.errors import FailureReason, M1ConfigError, SeamFailure
+from m1_validation.runner import (
+    UPSTREAM_FAILURE,
+    ThrowRunResult,
+    failed_reason_of,
+    run_throw,
+    successful_throws,
+)
 from m1_validation.types import M1_EXTRA_VERSION
 from m1_validation.upstream import (
     STAGE_PREDICT,
     UpstreamGateway,
     resolve_runtime_settings,
 )
-from prediction_core import SCHEMA_VERSION
+from prediction_core import SCHEMA_VERSION, predictions_equivalent
 from sensing_foundation import INVALID_DEPTH_RAW
 
 SRC_DIR = Path(__file__).resolve().parents[2] / "src" / "m1_validation"
@@ -106,7 +115,12 @@ class FakePipeline:
             track_id=self._track_id,
             started_t_ms=5000.0,
             points=tuple(self._appended),
-            state=TrackState.TRACKING,
+            # 点が1つも無い点列を `TRACKING` と名乗らせないための分岐。
+            # **記録からは観測できない**（`extra["m1"]["tracking"]` に
+            # `state` は無い）ので、この分岐を落としても本ファイルのテストは
+            # 全て通る。それでも上流の意味に合わせておく——ダブルがここで
+            # 嘘をつくと、追跡状態を記録へ足す後続タスクが誤った前提に乗る。
+            state=TrackState.TRACKING if self._appended else TrackState.IDLE,
             end_reason=None,
             source=SourceKind.SIMULATED,
             detector_kind="depth_band",
@@ -196,13 +210,16 @@ def _run(
     frame_count: int = 6,
     record_id: str = "throw-0001",
     allow_unverified: bool = False,
-) -> tuple[ThrowRunResult, FakePipeline]:
+    pipeline: object | None = None,
+    supplier: object | None = None,
+) -> tuple[ThrowRunResult, object]:
     calibration_path = write_calibration(
         tmp_path,
         verification=verification_summary() if verification is None else verification,
     )
     signature, intrinsics = _current_profile_of(calibration_path)
-    pipeline = FakePipeline(_falling_points() if points is None else points)
+    if pipeline is None:
+        pipeline = FakePipeline(_falling_points() if points is None else points)
     monkeypatch.setattr(runner_module, "open_tracking", lambda *a, **k: pipeline)
 
     result = run_throw(
@@ -213,7 +230,7 @@ def _run(
         tracking_settings=object(),
         signature=signature,
         intrinsics=intrinsics,
-        supplier=_depth_supplier(frame_count),
+        supplier=_depth_supplier(frame_count) if supplier is None else supplier,
         allow_unverified=allow_unverified,
     )
     return result, pipeline
@@ -583,3 +600,352 @@ class TestResultShape:
         assert result.first_valid_sample_count is None or (
             1 <= result.first_valid_sample_count <= 6
         )
+
+
+# ---------------------------------------------------------------------------
+# タスク 3.2: 失敗投擲の扱いと再実行の一致（要件 3.7, 3.8）
+# ---------------------------------------------------------------------------
+
+
+class ExplodingPipeline:
+    """`fail_at` 枚目のフレームで上流の失敗を模す追跡パイプライン。
+
+    実験中に上流が落ちても**1投擲を失うだけ**で済むことを示すための
+    ダブルである（design.md「ThrowRunner / Implementation Notes」Risks）。
+    """
+
+    def __init__(
+        self,
+        points: list[CameraPoint],
+        *,
+        fail_at: int,
+        error: BaseException | None = None,
+    ) -> None:
+        self._inner = FakePipeline(points)
+        self._fail_at = fail_at
+        self._error = RuntimeError("追跡が落ちた") if error is None else error
+        self.processed_frames = 0
+
+    def process(self, frame: object) -> TrackUpdate:
+        self.processed_frames += 1
+        if self.processed_frames == self._fail_at:
+            raise self._error
+        return self._inner.process(frame)
+
+
+def _exploding_supplier(fail_at: int):
+    """`fail_at` 枚目で落ちるフレーム供給関数（取得側の失敗）。"""
+
+    def supplier(index: int):
+        if index == fail_at:
+            raise RuntimeError("入力元が落ちた")
+        return np.full((HEIGHT_PX, WIDTH_PX), INVALID_DEPTH_RAW + 1, dtype=np.uint16)
+
+    return supplier
+
+
+def _comparable(record) -> dict:
+    """実行ごとに動く**処理時間**を落とした記録の内容。
+
+    `elapsed_ms` は予測1回あたりの処理時間の実測値であり、同じ入力でも
+    呼び出しのたびに変わる。`prediction_core.predictions_equivalent()` が
+    比較から外しているのと同じ理由でここでも落とす——要件 3.7 が言う
+    「同一の予測系列」は**処理時間の一致ではない**。
+    ここ以外（サンプル・予測値・設定・`extra["m1"]` の全体）は
+    **一切落とさずに**比較する。
+    """
+    data = record.to_dict()
+    for prediction in data["predictions"]:
+        prediction.pop("elapsed_ms", None)
+    return data
+
+
+class TestFailedThrowsAreRecordedWithAReason:
+    """有効サンプル0件・追跡不成立の投擲を、理由付きで記録する（要件 3.8）。
+
+    design.md「Error Categories and Responses」は観測の不成立を
+    **値として扱う**と定めている。例外にすると実験そのものが止まり、
+    人が物を投げ直す費用を払わされる。
+    """
+
+    def test_a_throw_with_no_detected_point_is_recorded_as_failed(
+        self, settings, gateway, tmp_path, monkeypatch
+    ) -> None:
+        """**検出が1点も出ない入力で失敗理由付きの記録が残る**（完了状態）。"""
+        result, _ = _run(settings, gateway, tmp_path, monkeypatch, points=[])
+
+        assert result.samples_appended == 0
+        assert result.record.samples == ()
+        assert result.failed_reason == FailureReason.NO_VALID_SAMPLE
+        assert result.record.extra["m1"]["failed_reason"] == "no_valid_sample"
+        # 失敗しても記録そのものは組み立てられる（捨てるのではなく残す）。
+        assert result.record.record_id == "throw-0001"
+        assert result.record.schema_version == SCHEMA_VERSION
+
+    def test_a_throw_whose_points_are_all_rejected_keeps_the_reject_counts(
+        self, settings, gateway, tmp_path, monkeypatch
+    ) -> None:
+        """有効サンプル0件でも**なぜ0件なのか**が記録から読める。
+
+        追跡は成立していた（点は来た）が継ぎ目が全点を除外した、という
+        場合を「検出が1点も出なかった」と混同すると、原因が検出側なのか
+        観測品質なのかが後から切り分けられない。
+        """
+        points = [
+            _camera_point(t_ms=5000.0 + 33.0 * i, z_mm=2500.0, valid_depth_px=0)
+            for i in range(3)
+        ]
+        result, _ = _run(settings, gateway, tmp_path, monkeypatch, points=points)
+
+        assert result.failed_reason == FailureReason.NO_VALID_SAMPLE
+        assert dict(result.rejected) == {"insufficient_valid_pixels": 3}
+        assert result.record.extra["m1"]["rejected"] == [
+            {"reason": "insufficient_valid_pixels", "count": 3}
+        ]
+        # 追跡自体は成立していたので、追跡の識別情報は残る。
+        assert result.record.extra["m1"]["tracking"]["track_id"] == 7
+
+    def test_a_successful_throw_carries_no_reason(
+        self, settings, gateway, tmp_path, monkeypatch
+    ) -> None:
+        """成功した投擲に理由は付かない（失敗の印が常時点いていない）。"""
+        result, _ = _run(settings, gateway, tmp_path, monkeypatch)
+        assert result.failed_reason is None
+        assert result.record.extra["m1"]["failed_reason"] is None
+
+
+class TestUpstreamFailuresAreCapturedPerThrow:
+    """上流の失敗を投擲単位で捕捉し、次の投擲へ進める。
+
+    design.md「ThrowRunner / Implementation Notes」Risks:
+    **実験中に例外で落ちると1試行を失う。**
+    """
+
+    def test_a_failure_from_the_tracking_pipeline_does_not_escape(
+        self, settings, gateway, tmp_path, monkeypatch
+    ) -> None:
+        pipeline = ExplodingPipeline(_falling_points(), fail_at=4)
+        result, _ = _run(settings, gateway, tmp_path, monkeypatch, pipeline=pipeline)
+
+        assert result.failed_reason == UPSTREAM_FAILURE
+        assert result.record.extra["m1"]["failed_reason"] == UPSTREAM_FAILURE
+
+    def test_the_samples_collected_before_the_failure_are_kept(
+        self, settings, gateway, tmp_path, monkeypatch
+    ) -> None:
+        """中断までに観測できた点は捨てない（原因究明の材料である）。"""
+        pipeline = ExplodingPipeline(_falling_points(), fail_at=4)
+        result, _ = _run(settings, gateway, tmp_path, monkeypatch, pipeline=pipeline)
+
+        assert result.samples_appended == 3
+        assert len(result.record.samples) == 3
+        assert len(result.record.extra["m1"]["provenance"]) == 3
+
+    def test_a_failure_from_the_frame_source_is_captured_too(
+        self, settings, gateway, tmp_path, monkeypatch
+    ) -> None:
+        """取得側で落ちた場合も同じ扱いにする（追跡側だけを守らない）。"""
+        result, _ = _run(
+            settings,
+            gateway,
+            tmp_path,
+            monkeypatch,
+            supplier=_exploding_supplier(3),
+        )
+        assert result.failed_reason == UPSTREAM_FAILURE
+
+    def test_a_seam_failure_during_the_throw_is_not_turned_into_a_record(
+        self, settings, gateway, tmp_path, monkeypatch
+    ) -> None:
+        """継ぎ目の不成立は**投擲中でも例外のまま**出す（失敗投擲へ丸めない）。
+
+        design.md「Error Handling / Error Strategy」:「継ぎ目の不成立は例外
+        とする。座標系・形式版・設定が食い違ったまま値が下流へ流れることは、
+        本 Spec が防ごうとしている事故そのものだからである」。`errors.py` も
+        「ここだけは、**呼び出し側が戻り値の確認を怠っても処理が止まる形に
+        する**」と定めている。
+
+        **継ぎ目の拒否は上流の失敗ではなく本 Spec 自身の拒否**であり、要件
+        3.8 が言う「追跡が成立しなかった場合」でもない。値にすると、上流が
+        `handoff_version` を上げたときに一度も送出されないまま、全投擲が
+        失敗理由付きの記録として静かに積み上がる（設計どおりなら最初の1投で
+        止まり、その場で直せる）。
+        """
+
+        def refuse(track: object, calibration: object, *, settings: object):
+            raise SeamFailure(
+                FailureReason.UNKNOWN_HANDOFF_VERSION,
+                "受け渡し形式版が未知である",
+                {},
+            )
+
+        monkeypatch.setattr(runner_module, "build_samples", refuse)
+
+        with pytest.raises(SeamFailure) as caught:
+            _run(settings, gateway, tmp_path, monkeypatch)
+
+        assert caught.value.reason == FailureReason.UNKNOWN_HANDOFF_VERSION
+
+    def test_the_next_throw_still_runs_after_a_failed_one(
+        self, settings, gateway, tmp_path, monkeypatch
+    ) -> None:
+        """**次の投擲へ進める**（1試行の失敗がセッションを終わらせない）。"""
+        failed, _ = _run(
+            settings,
+            gateway,
+            tmp_path,
+            monkeypatch,
+            pipeline=ExplodingPipeline(_falling_points(), fail_at=2),
+            record_id="throw-0009",
+        )
+        ok, _ = _run(settings, gateway, tmp_path, monkeypatch, record_id="throw-0010")
+
+        assert failed.failed_reason == UPSTREAM_FAILURE
+        assert ok.failed_reason is None
+        assert ok.samples_appended == 6
+
+    def test_a_keyboard_interrupt_is_not_swallowed(
+        self, settings, gateway, tmp_path, monkeypatch
+    ) -> None:
+        """人が実験を止める手段を奪わない（Ctrl-C は失敗投擲ではない）。"""
+        pipeline = ExplodingPipeline(
+            _falling_points(), fail_at=3, error=KeyboardInterrupt()
+        )
+        with pytest.raises(KeyboardInterrupt):
+            _run(settings, gateway, tmp_path, monkeypatch, pipeline=pipeline)
+
+    def test_a_configuration_error_is_not_recorded_as_a_failed_throw(
+        self, settings, gateway, tmp_path, monkeypatch
+    ) -> None:
+        """設定の誤りは**起動時に拒否する**分類であり、投擲単位で飲み込まない。
+
+        design.md「Error Categories and Responses」。飲み込むと、同じ設定
+        誤りで**全投擲が静かに失敗し続ける**（失敗理由は「上流が落ちた」に
+        見えるので、設定を直せば済むことに気付けない）。
+        """
+
+        def refuse(self, stage: str, event: str, data: object) -> None:
+            raise M1ConfigError("段階名が予約と衝突している", {"stage": stage})
+
+        monkeypatch.setattr(UpstreamGateway, "emit", refuse)
+        with pytest.raises(M1ConfigError):
+            _run(settings, gateway, tmp_path, monkeypatch)
+
+
+class TestFailedThrowsAreExcludedFromAggregation:
+    """失敗投擲を成功試行の集計から除外する（要件 3.8）。
+
+    除外は**記録を捨てることではない**。理由付きで残したうえで、集計の
+    入口で外す（design.md「Error Categories and Responses」: 観測の不成立は
+    値として扱い、集計から除く）。
+    """
+
+    def test_only_the_successful_records_are_left_for_aggregation(
+        self, settings, gateway, tmp_path, monkeypatch
+    ) -> None:
+        failed, _ = _run(
+            settings,
+            gateway,
+            tmp_path,
+            monkeypatch,
+            points=[],
+            record_id="throw-fail",
+        )
+        ok, _ = _run(settings, gateway, tmp_path, monkeypatch, record_id="throw-ok")
+
+        kept = successful_throws([failed.record, ok.record])
+
+        assert [record.record_id for record in kept] == ["throw-ok"]
+
+    def test_the_reason_is_readable_from_a_stored_record(
+        self, settings, gateway, tmp_path, monkeypatch
+    ) -> None:
+        """保存して読み戻した記録からも失敗と理由が読める（完了状態）。
+
+        集計は**後から**ログ・記録を読んで行う（`tech.md` 開発標準5）ので、
+        判定がメモリ上の値オブジェクトでしか成立しないなら意味が無い。
+        """
+        failed, _ = _run(
+            settings, gateway, tmp_path, monkeypatch, points=[], record_id="throw-fail"
+        )
+        ok, _ = _run(settings, gateway, tmp_path, monkeypatch, record_id="throw-ok")
+        path = tmp_path / "throws.ndjson"
+        gateway.store_record(failed.record, path)
+        gateway.store_record(ok.record, path)
+
+        loaded = list(gateway.load_records(path))
+
+        assert [failed_reason_of(record) for record in loaded] == [
+            "no_valid_sample",
+            None,
+        ]
+        assert [record.record_id for record in successful_throws(loaded)] == [
+            "throw-ok"
+        ]
+
+    def test_a_record_without_the_m1_extra_is_not_treated_as_failed(
+        self, settings, gateway, tmp_path, monkeypatch
+    ) -> None:
+        """本 Spec の拡張を持たない記録を失敗と決めつけない。
+
+        `extra["m1"]` が無いのは「本 Spec が失敗と判定した事実が無い」と
+        いうだけであり、失敗の証拠ではない。
+        """
+        result, _ = _run(settings, gateway, tmp_path, monkeypatch)
+        bare = dataclasses.replace(result.record, extra={})
+
+        assert failed_reason_of(bare) is None
+        assert successful_throws([bare]) == (bare,)
+
+
+class TestRerunningTheSameInputRepeatsItself:
+    """同一の記録済み入力に対する再実行が同一の結果を返す（要件 3.7）。
+
+    **同一入力の2回実行が同一内容の記録を生成する**（完了状態）。ここが
+    崩れると、記録を読み直して集計をやり直しても前回と同じ結論にならず、
+    「実測で判断する」という本 Spec の前提が立たない。
+    """
+
+    def test_two_runs_produce_equivalent_prediction_sequences(
+        self, settings, gateway, tmp_path, monkeypatch
+    ) -> None:
+        first, _ = _run(settings, gateway, tmp_path, monkeypatch)
+        second, _ = _run(settings, gateway, tmp_path, monkeypatch)
+
+        assert len(first.record.predictions) == 6
+        assert predictions_equivalent(
+            first.record.predictions, second.record.predictions
+        )
+
+    def test_two_runs_produce_the_same_record_content(
+        self, settings, gateway, tmp_path, monkeypatch
+    ) -> None:
+        first, _ = _run(settings, gateway, tmp_path, monkeypatch)
+        second, _ = _run(settings, gateway, tmp_path, monkeypatch)
+
+        left = _comparable(first.record)
+        # 比較対象が空でないこと（何も入っていない dict 同士を比べていない）。
+        assert left["extra"]["m1"]["provenance"] and left["samples"]
+        assert left == _comparable(second.record)
+
+    def test_two_runs_of_a_failed_throw_produce_the_same_record(
+        self, settings, gateway, tmp_path, monkeypatch
+    ) -> None:
+        """失敗投擲でも再実行が一致する（失敗の記録も後から読み直せる）。"""
+        first, _ = _run(settings, gateway, tmp_path, monkeypatch, points=[])
+        second, _ = _run(settings, gateway, tmp_path, monkeypatch, points=[])
+
+        assert first.failed_reason == FailureReason.NO_VALID_SAMPLE
+        assert _comparable(first.record) == _comparable(second.record)
+
+    def test_the_same_measured_values_are_returned(
+        self, settings, gateway, tmp_path, monkeypatch
+    ) -> None:
+        """返り値側の実測値も一致する（記録だけが揃っても足りない）。"""
+        first, _ = _run(settings, gateway, tmp_path, monkeypatch)
+        second, _ = _run(settings, gateway, tmp_path, monkeypatch)
+
+        assert first.samples_appended == second.samples_appended
+        assert first.rejected == second.rejected
+        assert first.first_valid_sample_count == second.first_valid_sample_count
+        assert first.failed_reason == second.failed_reason

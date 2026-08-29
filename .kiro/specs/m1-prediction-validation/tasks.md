@@ -191,7 +191,7 @@
   - _Depends: 2.1, 2.3_
   - _Boundary: ThrowRunner_
 
-- [ ] 3.2 失敗投擲の扱いと再実行の一致を固定する
+- [x] 3.2 失敗投擲の扱いと再実行の一致を固定する
   - 有効サンプルが0件、または追跡が成立しなかった投擲を、**理由付きで記録**する
   - 失敗投擲が成功試行の集計から除外されることを固定する
   - 上流の失敗を投擲単位で捕捉し、次の投擲へ進めるようにする
@@ -608,6 +608,12 @@
 ## Implementation Notes
 
 > 各タスクで判明した、後続タスクが同じ失敗を繰り返さないための知見を1行ずつ足す。
+
+- タスク3.2: **「失敗を値にする」と「失敗を例外にする」の線引きは design.md「Error Categories and Responses」の表がすべてであり、実装の都合で動かしてはならない。** 初回実装は投擲中の `SeamFailure` も値化して `failed_reason` に載せたが、独立レビューが差し戻した。design.md「Error Strategy」は「継ぎ目の不成立は例外とする。座標系・形式版・設定が食い違ったまま値が下流へ流れることは、本 Spec が防ごうとしている事故そのもの」と理由まで書いており、`errors.py` も「呼び出し側が戻り値の確認を怠っても処理が止まる形にする」と定めている。**そしてタスク3.2 はそれを要求していない**——箇条は「**上流**の失敗を投擲単位で捕捉し」であり、`SeamFailure` は上流の失敗ではなく本 Spec 自身の拒否である。値化したときの筋書き: 上流が `handoff_version` を上げると、設計どおりなら最初の投擲で止まって直せるところ、**全投擲が `failed_reason="unknown_handoff_version"` の記録として静かに積み上がる**。
+- タスク3.2: `run_throw()` の `except` は **`M1ConfigError` → `SeamFailure` → `Exception`** の順で、前2つは `raise`、最後だけ値化する。**順序が load-bearing** である（`except Exception` を前に置くと再送出が効かなくなる。負の対照で確認済み）。値化するのは design.md の「観測の不成立」区分だけ——有効サンプル0件・追跡不成立・上流由来の例外である。
+- タスク3.2: `UPSTREAM_FAILURE = "upstream_failure"` は `runner.py` の局所定数である。`FailureReason`（`errors.py`）に対応メンバが無く、追加は design.md「Revalidation Triggers」に触れるうえ `errors.py` は本タスクの境界外だった。**失敗理由の語彙が2箇所に分かれている**ので、`errors.py` を触るタスクが来たら昇格を検討すること。
+- タスク3.2（後続タスクへの申し送り 2件）: (1) **捕捉した上流例外の detail がどこにも残らない。** design.md「Monitoring」は stage `m1` に「投擲の開始・継ぎ目の結果・予測更新・終了」を残すと定めており `extra` のキー表を変えずに置き場所があるが、**そのログイベントを実装するタスクが tasks.md に存在しない**（3.1 にも 7.x にも無い）。(2) broad `except Exception` は `run_throw` 自身のバグ（例 `zip(..., strict=True)` の `ValueError`）も `upstream_failure` として記録する。`gateway.emit` 経由の失敗は上流ロガー由来なのでラベルは正しいが、**自モジュール由来のバグだけは帰属が誤る**。どちらもフィーチャレベル検証で扱うこと。
+- タスク3.2: `FakePipeline` の `TrackState` 分岐は**記録から観測できない**（`extra["m1"]["tracking"]` のキー表に `state` が無い）。常時 `TRACKING` に戻しても44件すべて通る。分岐自体は上流の意味に合わせて残したが、**「追跡不成立を表現している」と読める形にしないこと**——観測できない値でテストの意図を語ると、後続が誤った前提に乗る。
 
 - タスク3.1: **負の対照が、またテストの空振りを1件見つけた。** 「`extra` を丸ごと置き換える」と壊しても、`set(record.extra) == {"m1"}` という検査は通ってしまう——`ThrowPredictionTracker.to_record()` が返す `extra` は常に空だからである。公開経路からは「既存キーが残るか」を確かめられないので、**この1件だけは私有ヘルパ `_with_m1_extra()` を直接呼ぶテスト**にした（既存キーを持つ record を渡す）。タスク2.2 の `started_t_ms=0.0` と同じ形の空振りであり、**「その差が現れない入力でだけ検査している」パターンは繰り返し出る**。
 - タスク3.1: **継ぎ目へは追加された1点だけを渡す**（`dataclasses.replace(update.track, points=(update.appended,))`）。累積の点列を毎回渡すと変換をやり直すことになり、**除外件数も二重に数える**（負の対照で確認済み: 5件が落ちる）。`runner.py` は `flying_object_tracking` を import しないが、`dataclasses.replace()` は型を知らなくても使えるのでこれで足りる。

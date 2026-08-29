@@ -1,7 +1,7 @@
 """1投擲を取得から逐次予測・記録まで通して実行する。
 
 design.md「Components and Interfaces / L3: 実行 / ThrowRunner」、
-tasks.md タスク 3.1、要件 2.3, 3.1-3.6, 7.4。
+tasks.md タスク 3.1 / 3.2、要件 2.3, 3.1-3.8, 7.4。
 
 並びは **取得 → 検出・追跡 → 継ぎ目 → 逐次予測 → 記録** である。本モジュールが
 持つのは**この並びだけ**であり、検出も変換も予測も自分では行わない。
@@ -29,15 +29,28 @@ tasks.md タスク 3.1、要件 2.3, 3.1-3.6, 7.4。
 **予測経路の中で集計しない**（`tech.md` 開発標準5）。計測は送出するだけで、
 統計処理はログを後から読む側の仕事である。取得中に集計が乗ると、計測対象
 そのものを歪める。
+
+**観測の不成立は値にする**（要件 3.8、design.md「Error Categories and
+Responses」）。有効サンプル0件・追跡不成立・上流の失敗のいずれも、理由付き
+の記録として返し、例外で実験を止めない——例外で落ちると1試行を失い、人が
+もう一度投げる羽目になる。失敗投擲は記録に残したうえで、集計の入口
+（`successful_throws()`）で除く。
+
+**ただし継ぎ目の不成立は例外のまま**である（design.md「Error Strategy」）。
+検証ゲート・整合性検査は投擲を始める前に、座標系・形式版の食い違いは投擲中
+に、いずれも `SeamFailure` として送出する。**これらは上流の失敗ではなく本
+Spec 自身の拒否**であり、値にすると食い違ったまま実験が進んでしまう。
 """
 
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
 from m1_validation.config import M1Settings
+from m1_validation.errors import FailureReason, M1ConfigError, SeamFailure
 from m1_validation.seam import (
     build_samples,
     calibration_summary,
@@ -53,6 +66,16 @@ from prediction_core import (
     ThrowPredictionTracker,
     ThrowRecord,
 )
+
+#: 上流（取得・追跡）が投擲の途中で落ちたときの失敗理由。
+#:
+#: `FailureReason` に対応するメンバが無い。あちらは継ぎ目・真値・判断の
+#: 語彙であり、**上流が落ちたという事象はそのどれでもない**。有効サンプル
+#: 0件（`NO_VALID_SAMPLE`）へ丸めると、6点まで観測できて途中で落ちた投擲が
+#: 「1点も取れなかった投擲」と同じ理由になり、原因が読めなくなる。
+#: `errors.py` へメンバを足すのは下流の再検証を要する変更（design.md
+#: 「Revalidation Triggers」）であり、本タスクの境界の外である。
+UPSTREAM_FAILURE = "upstream_failure"
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,9 +134,21 @@ def run_throw(
         `UpstreamGateway.store_record()` で行う（実行と保存を分けることで、
         失敗投擲の扱いを呼び出し側が決められる）。
 
+        投擲が始まった後の**観測の不成立**は返り値として返す（要件 3.8）。
+        `failed_reason` に理由が入り、そこまでに得たサンプルは記録に残る:
+
+        - 有効サンプルが0件（追跡不成立を含む）: `no_valid_sample`
+        - 上流（取得・追跡）が落ちた: `UPSTREAM_FAILURE`
+
     Raises:
-        SeamFailure: 検証ゲート・整合性検査・継ぎ目の前提が成立しない場合。
-            **いずれもフレームを引く前、または引いた直後に判明する**。
+        SeamFailure: 検証ゲート・整合性検査が成立しない場合（**フレームを
+            引く前**に判明する。投げてから拒否しない）、および**投擲中に
+            継ぎ目が拒否した場合**（座標系・形式版の食い違い）。継ぎ目の
+            不成立は失敗投擲へ丸めない——値にすると、食い違ったまま実験が
+            進む（design.md「Error Handling / Error Strategy」）。
+        M1ConfigError: 設定の誤り。投擲単位の失敗として飲み込まない
+            （design.md「Error Categories and Responses」）。
+        KeyboardInterrupt: 人が実験を止めた場合。失敗投擲にしない。
 
     設計上の逸脱（design.md の擬似コード署名との違い）:
         - `source_spec` ではなく `gateway` を受け取る。入力元の指定は
@@ -148,47 +183,74 @@ def run_throw(
     provenance: list[SampleProvenance] = []
     first_valid_sample_count: int | None = None
     last_track: object | None = None
+    interrupted_by: str | None = None
 
-    for frame in gateway.open_frames(supplier=supplier):
-        update = pipeline.process(frame)
-        last_track = update.track
-        if update.appended is None:
-            continue
+    # 取得から予測までを投擲単位で囲う。**ここで捕まえないと1試行を失う**
+    # （design.md「ThrowRunner」Risks）。捕まえた失敗は理由付きの記録に
+    # なり、呼び出し側は次の投擲へ進める。
+    try:
+        for frame in gateway.open_frames(supplier=supplier):
+            update = pipeline.process(frame)
+            last_track = update.track
+            if update.appended is None:
+                continue
 
-        # 継ぎ目へは**追加された1点だけ**を渡す。累積の点列を毎回渡すと
-        # 変換をやり直すことになり、除外件数も二重に数えてしまう。
-        single_point_track = dataclasses.replace(
-            update.track, points=(update.appended,)
-        )
-        built = build_samples(single_point_track, calibration, settings=settings)
-        for reason, count in built.rejected:
-            rejected[reason] = rejected.get(reason, 0) + count
-
-        for sample, sample_provenance in zip(
-            built.samples, built.provenance, strict=True
-        ):
-            outcome = tracker.add_sample(sample)
-            provenance.append(sample_provenance)
-            sample_count = len(tracker.samples)
-            if first_valid_sample_count is None and isinstance(outcome, Prediction):
-                first_valid_sample_count = sample_count
-            # fire-and-forget。ここで集計しない（`tech.md` 開発標準5）。
-            gateway.emit(
-                STAGE_PREDICT,
-                "update",
-                {
-                    "record_id": record_id,
-                    "sample_t_ms": sample.t_ms,
-                    "sample_count": sample_count,
-                    # end-to-end は「観測時刻 → その観測に基づく予測」と
-                    # 定義されている（要件 7.2）。**両端を残す**——片方だけ
-                    # では後から算出できない。
-                    "predicted_at_ms": gateway.session_clock_ms(),
-                    "valid": isinstance(outcome, Prediction),
-                },
+            # 継ぎ目へは**追加された1点だけ**を渡す。累積の点列を毎回渡すと
+            # 変換をやり直すことになり、除外件数も二重に数えてしまう。
+            single_point_track = dataclasses.replace(
+                update.track, points=(update.appended,)
             )
+            built = build_samples(single_point_track, calibration, settings=settings)
+            for reason, count in built.rejected:
+                rejected[reason] = rejected.get(reason, 0) + count
 
-    failed_reason = None if provenance else "no_valid_sample"
+            for sample, sample_provenance in zip(
+                built.samples, built.provenance, strict=True
+            ):
+                outcome = tracker.add_sample(sample)
+                provenance.append(sample_provenance)
+                sample_count = len(tracker.samples)
+                if first_valid_sample_count is None and isinstance(outcome, Prediction):
+                    first_valid_sample_count = sample_count
+                # fire-and-forget。ここで集計しない（`tech.md` 開発標準5）。
+                gateway.emit(
+                    STAGE_PREDICT,
+                    "update",
+                    {
+                        "record_id": record_id,
+                        "sample_t_ms": sample.t_ms,
+                        "sample_count": sample_count,
+                        # end-to-end は「観測時刻 → その観測に基づく予測」と
+                        # 定義されている（要件 7.2）。**両端を残す**——片方
+                        # だけでは後から算出できない。
+                        "predicted_at_ms": gateway.session_clock_ms(),
+                        "valid": isinstance(outcome, Prediction),
+                    },
+                )
+    except M1ConfigError:
+        # 設定の誤りは**起動時に拒否する**分類であり（design.md「Error
+        # Categories and Responses」）、投擲単位の失敗ではない。飲み込むと
+        # 同じ誤りで全投擲が静かに失敗し続け、設定を直せば済むことに
+        # 気付けなくなる。
+        raise
+    except SeamFailure:
+        # 継ぎ目の不成立は**例外のまま**外へ出す（design.md「Error Handling /
+        # Error Strategy」および「Error Categories and Responses」）。座標系・
+        # 形式版・設定の食い違いは上流の失敗ではなく**本 Spec 自身の拒否**で
+        # あり、`errors.py` が言うとおり「呼び出し側が戻り値の確認を怠っても
+        # 処理が止まる形」にしておく必要がある。値にすると、たとえば上流が
+        # `handoff_version` を上げたときに一度も送出されず、**全投擲が失敗
+        # 記録として静かに積み上がる**（設計どおりなら最初の投擲で止まり、
+        # その場で直せる）。
+        raise
+    except Exception:  # noqa: BLE001 - 意図的な広い捕捉（要件 3.8）
+        # `BaseException` は捕まえない——`KeyboardInterrupt` を失敗投擲に
+        # すると、人が実験を止める手段が奪われる。
+        interrupted_by = UPSTREAM_FAILURE
+
+    failed_reason = interrupted_by or (
+        None if provenance else str(FailureReason.NO_VALID_SAMPLE)
+    )
     record = _with_m1_extra(
         tracker.to_record(),
         settings=settings,
@@ -207,6 +269,35 @@ def run_throw(
         first_valid_sample_count=first_valid_sample_count,
         failed_reason=failed_reason,
     )
+
+
+def failed_reason_of(record: ThrowRecord) -> str | None:
+    """記録に残された失敗理由を返す。成功した投擲なら `None`（要件 3.8）。
+
+    理由の置き場所（`extra["m1"]["failed_reason"]`）を知っているのは
+    **記録を組み立てた本モジュールだけ**である。集計側が拡張領域の構造を
+    各所で覚え直すと、置き場所が変わったときに黙って全件が「成功」に
+    見える。
+
+    `extra["m1"]` を持たない記録は**失敗と決めつけない**——本 Spec の拡張が
+    無いことは「本 Spec が失敗と判定した事実が無い」というだけである。
+    """
+    payload = record.extra.get("m1")
+    if not isinstance(payload, Mapping):
+        return None
+    reason = payload.get("failed_reason")
+    return None if reason is None else str(reason)
+
+
+def successful_throws(records: Iterable[ThrowRecord]) -> tuple[ThrowRecord, ...]:
+    """失敗投擲を除いた記録を返す（要件 3.8）。
+
+    **除外は記録を捨てることではない。** 失敗投擲は理由付きで残したうえで、
+    集計の入口で外す（design.md「Error Categories and Responses」: 観測の
+    不成立は値として扱い、集計から除く）。混ぜたままにすると、成功試行の
+    ばらつきに0件の投擲や中断した投擲が算入され、実測値が歪む。
+    """
+    return tuple(record for record in records if failed_reason_of(record) is None)
 
 
 def _with_m1_extra(
