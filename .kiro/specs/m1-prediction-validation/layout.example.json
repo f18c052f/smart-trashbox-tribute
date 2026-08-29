@@ -1,0 +1,27 @@
+{
+  "format_version": "1.0",
+  "layouts": [
+    {
+      "layout_id": "throw-a",
+      "release_position_world_mm": [-2000.0, 0.0, 1500.0],
+      "release_height_mm": 1500.0,
+      "throw_direction_deg": 0.0,
+      "standby_position_world_mm": [0.0, 0.0],
+      "object_diameter_mm": 65.0,
+      "aperture_diameter_mm": 200.0,
+      "camera_position_world_mm": [0.0, -1500.0, 1000.0],
+      "notes": "⚠️ 仮値。確定ではない（要件 13.9: 投擲レイアウトの確定は本 Spec の範囲外）。実験の前に実測値へ置き換えること。object_diameter_mm=65 / aperture_diameter_mm=200 は docs/requirements.md NFR-5 の例（空き缶 φ65 / 開口 φ200 → ±67.5mm）に揃えた仮値であり、対象物の最終スコープは OQ-02 として未決。release_position_world_mm / release_height_mm / camera_position_world_mm は形式を示すための丸めた仮値で、実測していない。standby_position_world_mm を原点に置いたのは docs/requirements.md §「原点」が『床面上の1点（例: ゴミ箱の待機位置）』を挙げているためだが、原点の取り方自体も未定である。"
+    },
+    {
+      "layout_id": "throw-b",
+      "release_position_world_mm": [0.0, -2000.0, 1500.0],
+      "release_height_mm": 1500.0,
+      "throw_direction_deg": 90.0,
+      "standby_position_world_mm": [0.0, 0.0],
+      "object_diameter_mm": 65.0,
+      "aperture_diameter_mm": 200.0,
+      "camera_position_world_mm": [0.0, -1500.0, 1000.0],
+      "notes": "⚠️ 仮値。確定ではない。throw-a と投擲方向を 90 度変えた2箇所目であり、誤差帰属の縮退対策（research.md Decision 4 Follow-up: 投擲位置を固定すると World 固定方向とカメラ視線方向が縮退して判別できない）の実例として置いてある。実際に2箇所目で投げるかは実験時の判断であり、ここに書いてあること自体は実施を意味しない。"
+    }
+  ]
+}
