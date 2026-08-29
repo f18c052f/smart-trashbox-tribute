@@ -71,7 +71,7 @@
   - _Requirements: 4.3, 5.6, 13.7, 13.8, 13.9_
   - _Boundary: ThrowLayout_
 
-- [ ] 1.5 設定の解決と起動時検証を実装する
+- [x] 1.5 設定の解決と起動時検証を実装する
   - 継ぎ目の除外規則、収束の帯域、帰属のパラメータ（再抽出回数・乱数種・向きの許容角・偏りの有意比）、
     試行数下限、改善適用済み項目、出力先を設定として定義する
   - **キャリブレーション検証の要求を既定で有効**にする
@@ -596,6 +596,13 @@
 ## Implementation Notes
 
 > 各タスクで判明した、後続タスクが同じ失敗を繰り返さないための知見を1行ずつ足す。
+
+- タスク1.5: **`M1Settings.layout` は必須なので、設定キーに `layout_file` / `layout_id` を足した**（design.md の擬似コードには無い）。レイアウトはコードに持たない（要件 13.8）ので、どこかから読む必要があり、その「どこ」を設定として解決するのが本タスクの責務である。**`layout_file` を与えずに `resolve()` は成功しない**——「数値をコードへ埋め込まない」という要求を「与えないと動かない」という形で構造的に満たしている。
+- タスク1.5: **収束帯域の実効値の導出を `M1Settings.effective_convergence_band_mm` に1箇所だけ置いた。** design.md は `band_mm: float | None = None` に「None ならレイアウトの暫定許容窓に揃える」と注記しているが、導出の置き場所を書いていない。利用側（タスク4系）が各所で `band_mm or layout.position_tolerance_mm` と書くと、**設定した値と実際に使う値が食い違う経路が増える**。`describe()` も同じ property を使い、設定値（`band_mm`、null になり得る）と実効値（`effective_band_mm`）の両方を出す——`null` だけを見せると「収束判定が無効」と誤解される。
+- タスク1.5: **`describe()` は `provisional_notice` を必ず出す**（要件 13.7）。design.md「M1Settings」Risks が名指しする3つ（`min_valid_throws` / `band_mm` / `direction_agreement_deg`）を注記の本文に含め、テストで固定した。`--print-settings` を見た人が 20回・67.5mm・30° を必須条件と受け取ると、**根拠のない基準から逆算した「不足」判断が独り歩きする**。
+- タスク1.5: 起動時検証は design.md の Preconditions 3件（`bootstrap_iterations > 0` / `0 < direction_agreement_deg < 90` / `min_valid_throws > 0`）に加え、定義域が自明な数値（`min_sessions` / `min_valid_depth_px` / `max_depth_spread_mm` / `bias_significance_ratio` / `convergence_band_mm`）も拒否する。**`floor_margin_mm` だけは符号を縛っていない**——既定は -50.0（床面より下の余裕）だが、正の値も「床面から +50mm より下を捨てる」という有効な選択であり得るためである。
+- タスク1.5: 環境変数の接頭辞は `STB_M1_`。**上流の `STB_SF_` / `STB_FOT_` を読まないことをテストで固定した**（同名キーの取り違えを防ぐ）。未知の `STB_M1_*` は無視するが、**設定ファイルと実行時指定の未知キーは拒否する**——上流2 Spec と同じ方針で、環境変数だけ緩いのは本パッケージが知らない用途にも使われ得るからである。
+- タスク1.5（後続タスクへの申し送り）: 4段の解決順序は上流 `sensing_foundation.config` の構造をそのまま踏襲した（`_FieldSpec` / `_FIELD_SPECS` / `_apply_layer` / `_extract_env` / `_validate_values`）。**設定キーを足すときは `_FIELD_SPECS` に1行足すだけでよく、既定値は各グループの dataclass 側に置く。** ruff は新規ファイルに `UP037`（`-> \"M1Settings\"` の引用符）と `PYI061`（`Literal[..., None]` は `Literal[...] | None` にする）を出す——上流 `config.py` は同じ指摘を抱えたままだが、新規ファイルは解消しておくこと。
 
 - タスク1.4: **「投擲位置を2箇所以上にできる形」は、`ThrowLayout` を複数持てる形にすることで満たした。** design.md の擬似コードは `release_position_world_mm` を単数で持つので、フィールドを複数化するのではなく**1ファイルに複数のレイアウトを書き、実行時に `layout_id` で選ぶ**形にした（`M1Settings.layout` も単数であり、1回の実行は1レイアウトである）。`research.md` Decision 4 Follow-up が求めるのは「後から追加できるようにしておく」ことなので、これで足りる。
 - タスク1.4: **複数のレイアウトがあるとき `load_layout()` は黙って先頭を選ばず拒否する。** 取り違えると「別の投擲位置のレイアウトで撮ったことになった投擲群」が生まれる。誤差の帰属（要件 6）は**投擲位置ごとに向きが変わること**を使って World 固定方向とカメラ視線方向を切り分けるので、この取り違えは結論を直接ねじ曲げる（負の対照で確認済み）。
