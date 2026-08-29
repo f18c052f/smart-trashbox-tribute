@@ -52,7 +52,9 @@ PROVISIONAL_NOTICE = (
     "direction_agreement_deg（向きが整合するとみなす角度差）・"
     "bootstrap_iterations（帰属の再抽出回数）・"
     "residual_significance_ratio（残差を大きいとみなす倍率）・"
-    "range_band_mm（距離帯の幅）は、"
+    "range_band_mm（距離帯の幅）・"
+    "cpu_saturation_ratio（CPU 使用率を飽和とみなす割合）・"
+    "fps_shortfall_ratio（実処理 fps が取得 fps に追いつけていないとみなす割合）は、"
     "実測前に置いた仮の値である。合否条件として扱ってはならない。"
 )
 
@@ -132,6 +134,32 @@ class AttributionConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class Oq27Config:
+    """OQ-27（Pi 4 継続可否）の判定に使う相対比較の割合（要件 9.2, 9.7）。
+
+    **どちらも同一測定内の量どうしの比であり、絶対値の目標ではない**
+    （要件 9.2、`tech.md` 開発標準1）。fps も CPU 使用率も「何 fps なら十分」
+    「何 % なら十分」という形では持たない——実測がまだ無い以上そういう数値に
+    根拠は無く、置いた瞬間に既成事実化する。
+
+    Attributes:
+        cpu_saturation_ratio: CPU 使用率の平均が**全負荷**（使用率という
+            測定量そのものの上限である 100%）のこの割合以上なら、計算資源が
+            飽和しているとみなす。100% は性能目標ではなく**その量の目盛りの
+            端**であり、「飽和」とは目盛りの端に張り付いている状態を指す。
+            ⚠️ **既定値 0.9 は暫定の評価候補であって必須性能ではない**
+            （要件 13.7）。
+        fps_shortfall_ratio: 実処理 fps が取得 fps のこの割合を下回れば、
+            取得した分を処理し切れていない（＝資源が飽和している）とみなす。
+            **同一測定内の2量の比**であり、絶対値の fps 目標を置かない。
+            ⚠️ **既定値 0.95 も暫定の評価候補**である。
+    """
+
+    cpu_saturation_ratio: float = 0.9
+    fps_shortfall_ratio: float = 0.95
+
+
+@dataclass(frozen=True, slots=True)
 class TrialLimits:
     """判断を出してよい試行数の下限（要件 5.10, 9.9, 9.10）。
 
@@ -151,6 +179,7 @@ class TrialLimits:
 _DEFAULT_SEAM = SeamConfig()
 _DEFAULT_CONVERGENCE = ConvergenceConfig()
 _DEFAULT_ATTRIBUTION = AttributionConfig()
+_DEFAULT_OQ27 = Oq27Config()
 _DEFAULT_TRIALS = TrialLimits()
 
 
@@ -163,6 +192,7 @@ class M1Settings:
         seam: 継ぎ目の除外規則。
         convergence: 収束の判定規則。
         attribution: 誤差帰属のパラメータ。
+        oq27: OQ-27 の判定に使う相対比較の割合。
         trials: 試行数の下限。
         improvements_applied: `development-environment.md §13.2` の改善項目の
             うち適用済みのもの（要件 9.4。未適用が残る間は「不足」を出さない）。
@@ -176,6 +206,7 @@ class M1Settings:
     seam: SeamConfig = _DEFAULT_SEAM
     convergence: ConvergenceConfig = _DEFAULT_CONVERGENCE
     attribution: AttributionConfig = _DEFAULT_ATTRIBUTION
+    oq27: Oq27Config = _DEFAULT_OQ27
     trials: TrialLimits = _DEFAULT_TRIALS
     improvements_applied: tuple[str, ...] = ()
     output_root: Path = Path("var/m1")
@@ -272,6 +303,10 @@ class M1Settings:
                 residual_significance_ratio=values["residual_significance_ratio"],  # type: ignore[arg-type]
                 range_band_mm=values["range_band_mm"],  # type: ignore[arg-type]
             ),
+            oq27=Oq27Config(
+                cpu_saturation_ratio=values["cpu_saturation_ratio"],  # type: ignore[arg-type]
+                fps_shortfall_ratio=values["fps_shortfall_ratio"],  # type: ignore[arg-type]
+            ),
             trials=TrialLimits(
                 min_valid_throws=values["min_valid_throws"],  # type: ignore[arg-type]
                 min_sessions=values["min_sessions"],  # type: ignore[arg-type]
@@ -329,6 +364,10 @@ class M1Settings:
                     self.attribution.residual_significance_ratio
                 ),
                 "range_band_mm": self.attribution.range_band_mm,
+            },
+            "oq27": {
+                "cpu_saturation_ratio": self.oq27.cpu_saturation_ratio,
+                "fps_shortfall_ratio": self.oq27.fps_shortfall_ratio,
             },
             "trials": {
                 "min_valid_throws": self.trials.min_valid_throws,
@@ -439,7 +478,9 @@ def _coerce_str_tuple(raw: object) -> tuple[str, ...]:
 class _FieldSpec:
     """1つの設定キーが対応する（グループ, 属性名, 型変換）。"""
 
-    group: Literal["seam", "convergence", "attribution", "trials"] | None
+    group: (
+        Literal["seam", "convergence", "attribution", "oq27", "trials"] | None
+    )
     attr: str
     coerce: Callable[[object], object]
 
@@ -471,6 +512,10 @@ _FIELD_SPECS: dict[str, _FieldSpec] = {
         "attribution", "residual_significance_ratio", _coerce_float
     ),
     "range_band_mm": _FieldSpec("attribution", "range_band_mm", _coerce_float),
+    "cpu_saturation_ratio": _FieldSpec(
+        "oq27", "cpu_saturation_ratio", _coerce_float
+    ),
+    "fps_shortfall_ratio": _FieldSpec("oq27", "fps_shortfall_ratio", _coerce_float),
     "min_valid_throws": _FieldSpec("trials", "min_valid_throws", _coerce_int),
     "min_sessions": _FieldSpec("trials", "min_sessions", _coerce_int),
     "require_live_source": _FieldSpec("trials", "require_live_source", _coerce_bool),
@@ -482,6 +527,7 @@ _DEFAULT_OBJECTS = {
     "seam": _DEFAULT_SEAM,
     "convergence": _DEFAULT_CONVERGENCE,
     "attribution": _DEFAULT_ATTRIBUTION,
+    "oq27": _DEFAULT_OQ27,
     "trials": _DEFAULT_TRIALS,
 }
 
@@ -595,6 +641,16 @@ def _validate_values(values: Mapping[str, object]) -> None:
         values,
         "residual_significance_ratio",
         why="倍率0では残差が常に大きいとみなされ、規則7（判別不能）が消える",
+    )
+    _require_positive(
+        values,
+        "cpu_saturation_ratio",
+        why="割合0では CPU 使用率が常に飽和とみなされ、規則3（条件付き継続）が消える",
+    )
+    _require_positive(
+        values,
+        "fps_shortfall_ratio",
+        why="割合0では実処理 fps がどれだけ落ちても飽和とみなされない",
     )
     _require_positive(
         values, "range_band_mm", why="幅0の距離帯は作れない（要件 6.11）"
