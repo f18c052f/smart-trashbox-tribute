@@ -49,7 +49,8 @@ ENV_PREFIX = "STB_M1_"
 PROVISIONAL_NOTICE = (
     "ここに出ている既定値は**暫定の評価候補であって必須性能ではない**。"
     "特に min_valid_throws（試行数の下限）・band_mm（収束の帯域）・"
-    "direction_agreement_deg（向きが整合するとみなす角度差）は、"
+    "direction_agreement_deg（向きが整合するとみなす角度差）・"
+    "bootstrap_iterations（帰属の再抽出回数）は、"
     "実測前に置いた仮の値である。合否条件として扱ってはならない。"
 )
 
@@ -95,7 +96,12 @@ class AttributionConfig:
     """誤差帰属のパラメータ（要件 6.8, 6.9）。
 
     Attributes:
-        bootstrap_iterations: 観測サンプルの再抽出回数。
+        bootstrap_iterations: 観測サンプルの再抽出回数（要件 6.8）。
+            ⚠️ **既定値 200 は暫定の評価候補であって必須性能ではない**
+            （要件 13.7）。ブートストラップの慣行的な出発点であり、何回で
+            見積もりが安定するかは実測してから決める。**合否条件として
+            扱わない**——`PROVISIONAL_NOTICE` が `--print-settings` の
+            読み手へ必ずその旨を出す。
         bootstrap_seed: 再抽出の乱数種。**決定性のため既定で固定する**
             （要件 3.7: 同一入力に同一の集計値と同一の判定）。
         direction_agreement_deg: 2つの向きが整合するとみなす角度差の上限
