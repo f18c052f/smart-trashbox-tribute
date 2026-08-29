@@ -54,7 +54,9 @@ PROVISIONAL_NOTICE = (
     "residual_significance_ratio（残差を大きいとみなす倍率）・"
     "range_band_mm（距離帯の幅）・"
     "cpu_saturation_ratio（CPU 使用率を飽和とみなす割合）・"
-    "fps_shortfall_ratio（実処理 fps が取得 fps に追いつけていないとみなす割合）は、"
+    "fps_shortfall_ratio（実処理 fps が取得 fps に追いつけていないとみなす割合）・"
+    "confidence_level（OQ-05 の材料が用いる信頼水準）・"
+    "interval_widths（OQ-05 の材料が求める信頼区間の全幅）は、"
     "実測前に置いた仮の値である。合否条件として扱ってはならない。"
 )
 
@@ -160,6 +162,31 @@ class Oq27Config:
 
 
 @dataclass(frozen=True, slots=True)
+class Oq05Config:
+    """OQ-05 の判断材料が用いる信頼区間の指定（要件 10.3, 13.7）。
+
+    **本設定は判断ではなく材料の作り方を決める。** OQ-05（NFR-7 の目標成功率と
+    試行回数 N）は M1 単独では決着しない（要件 10.4）ので、ここに置く値は
+    「どの精度で材料を出すか」であって合否条件ではない。
+
+    Attributes:
+        confidence_level: 必要試行回数を求めるときの信頼水準（0 < x < 1）。
+            ⚠️ **既定値 0.95 は暫定の評価候補であって必須性能ではない**
+            （要件 13.7）。区間推定の慣行的な出発点にすぎない。
+        interval_widths: 求める信頼区間の**全幅**（割合。0 < x <= 1）。
+            片側の幅ではない——「±5%」を求めるなら 0.1 を指定する。並びは
+            そのまま結果のキー順になる（実装側で並べ替えない。要件 12.4）。
+            ⚠️ **既定値も暫定の評価候補**である。
+
+    Invariants:
+        `interval_widths` は空にできない（1つも求めない指定は材料にならない）。
+    """
+
+    confidence_level: float = 0.95
+    interval_widths: tuple[float, ...] = (0.2, 0.1, 0.05)
+
+
+@dataclass(frozen=True, slots=True)
 class TrialLimits:
     """判断を出してよい試行数の下限（要件 5.10, 9.9, 9.10）。
 
@@ -180,6 +207,7 @@ _DEFAULT_SEAM = SeamConfig()
 _DEFAULT_CONVERGENCE = ConvergenceConfig()
 _DEFAULT_ATTRIBUTION = AttributionConfig()
 _DEFAULT_OQ27 = Oq27Config()
+_DEFAULT_OQ05 = Oq05Config()
 _DEFAULT_TRIALS = TrialLimits()
 
 
@@ -193,6 +221,7 @@ class M1Settings:
         convergence: 収束の判定規則。
         attribution: 誤差帰属のパラメータ。
         oq27: OQ-27 の判定に使う相対比較の割合。
+        oq05: OQ-05 の判断材料が用いる信頼区間の指定。
         trials: 試行数の下限。
         improvements_applied: `development-environment.md §13.2` の改善項目の
             うち適用済みのもの（要件 9.4。未適用が残る間は「不足」を出さない）。
@@ -207,6 +236,7 @@ class M1Settings:
     convergence: ConvergenceConfig = _DEFAULT_CONVERGENCE
     attribution: AttributionConfig = _DEFAULT_ATTRIBUTION
     oq27: Oq27Config = _DEFAULT_OQ27
+    oq05: Oq05Config = _DEFAULT_OQ05
     trials: TrialLimits = _DEFAULT_TRIALS
     improvements_applied: tuple[str, ...] = ()
     output_root: Path = Path("var/m1")
@@ -307,6 +337,10 @@ class M1Settings:
                 cpu_saturation_ratio=values["cpu_saturation_ratio"],  # type: ignore[arg-type]
                 fps_shortfall_ratio=values["fps_shortfall_ratio"],  # type: ignore[arg-type]
             ),
+            oq05=Oq05Config(
+                confidence_level=values["confidence_level"],  # type: ignore[arg-type]
+                interval_widths=values["interval_widths"],  # type: ignore[arg-type]
+            ),
             trials=TrialLimits(
                 min_valid_throws=values["min_valid_throws"],  # type: ignore[arg-type]
                 min_sessions=values["min_sessions"],  # type: ignore[arg-type]
@@ -368,6 +402,10 @@ class M1Settings:
             "oq27": {
                 "cpu_saturation_ratio": self.oq27.cpu_saturation_ratio,
                 "fps_shortfall_ratio": self.oq27.fps_shortfall_ratio,
+            },
+            "oq05": {
+                "confidence_level": self.oq05.confidence_level,
+                "interval_widths": list(self.oq05.interval_widths),
             },
             "trials": {
                 "min_valid_throws": self.trials.min_valid_throws,
@@ -474,12 +512,29 @@ def _coerce_str_tuple(raw: object) -> tuple[str, ...]:
     )
 
 
+def _coerce_float_tuple(raw: object) -> tuple[float, ...]:
+    """数値の並びへ変換する。環境変数のためにカンマ区切りも受ける。
+
+    **並びをここで整列しない。** 指定した順序がそのまま結果のキー順になる
+    （要件 12.4 の決定性は「同じ入力に同じ出力」であって、実装が並べ替えて
+    よいという意味ではない）。
+    """
+    if isinstance(raw, str):
+        return tuple(_coerce_float(item) for item in raw.split(",") if item.strip())
+    if isinstance(raw, Sequence):
+        return tuple(_coerce_float(item) for item in raw)
+    raise M1ConfigError(
+        f"数値の並びを期待したが {type(raw).__name__} を受け取った: {raw!r}"
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class _FieldSpec:
     """1つの設定キーが対応する（グループ, 属性名, 型変換）。"""
 
     group: (
-        Literal["seam", "convergence", "attribution", "oq27", "trials"] | None
+        Literal["seam", "convergence", "attribution", "oq27", "oq05", "trials"]
+        | None
     )
     attr: str
     coerce: Callable[[object], object]
@@ -516,6 +571,8 @@ _FIELD_SPECS: dict[str, _FieldSpec] = {
         "oq27", "cpu_saturation_ratio", _coerce_float
     ),
     "fps_shortfall_ratio": _FieldSpec("oq27", "fps_shortfall_ratio", _coerce_float),
+    "confidence_level": _FieldSpec("oq05", "confidence_level", _coerce_float),
+    "interval_widths": _FieldSpec("oq05", "interval_widths", _coerce_float_tuple),
     "min_valid_throws": _FieldSpec("trials", "min_valid_throws", _coerce_int),
     "min_sessions": _FieldSpec("trials", "min_sessions", _coerce_int),
     "require_live_source": _FieldSpec("trials", "require_live_source", _coerce_bool),
@@ -528,6 +585,7 @@ _DEFAULT_OBJECTS = {
     "convergence": _DEFAULT_CONVERGENCE,
     "attribution": _DEFAULT_ATTRIBUTION,
     "oq27": _DEFAULT_OQ27,
+    "oq05": _DEFAULT_OQ05,
     "trials": _DEFAULT_TRIALS,
 }
 
@@ -664,6 +722,30 @@ def _validate_values(values: Mapping[str, object]) -> None:
             "World 固定方向とカメラ視線方向を区別できなくなる）",
             {"key": "direction_agreement_deg", "value": direction},
         )
+
+    level = values["confidence_level"]
+    if not isinstance(level, int | float) or not 0 < level < 1:
+        raise M1ConfigError(
+            "confidence_level は 0 より大きく 1 より小さくなければならない: "
+            f"{level!r}（信頼水準 1 の区間は幅が無限になり、"
+            "信頼水準 0 の区間は材料にならない）",
+            {"key": "confidence_level", "value": level},
+        )
+
+    widths = values["interval_widths"]
+    if not isinstance(widths, tuple) or not widths:
+        raise M1ConfigError(
+            f"interval_widths を空にはできない: {widths!r}"
+            "（1つも求めない指定では必要試行回数が出ない。要件 10.3）",
+            {"key": "interval_widths", "value": widths},
+        )
+    for width in widths:
+        if not isinstance(width, int | float) or not 0 < width <= 1:
+            raise M1ConfigError(
+                "interval_widths の各要素は 0 より大きく 1 以下でなければならない: "
+                f"{width!r}（割合の**全幅**であり、片側の幅ではない）",
+                {"key": "interval_widths", "value": widths, "element": width},
+            )
 
     band = values["convergence_band_mm"]
     if band is not None and (not isinstance(band, int | float) or band <= 0):
