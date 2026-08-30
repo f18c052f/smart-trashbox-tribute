@@ -1102,6 +1102,103 @@ def select_files_from_commits_touching_this_spec(git_log_output: str) -> list[st
     return selected
 
 
+def parse_porcelain_paths(status_output: str) -> list[str]:
+    """`git status --porcelain` の出力から変更ファイルパスを取り出す。
+
+    `XY path` 形式（`XY` はステータス2文字）なのでパスはインデックス3以降。
+    リネームの `old -> new` 形式は右辺（新しい名前）のみを使う。
+    """
+    paths: list[str] = []
+    for line in status_output.splitlines():
+        if not line.strip():
+            continue
+        raw_path = line[3:]
+        if " -> " in raw_path:
+            raw_path = raw_path.split(" -> ", 1)[1]
+        paths.append(raw_path)
+    return paths
+
+
+def select_uncommitted_files_touching_this_spec(status_output: str) -> list[str]:
+    """未コミットの作業ツリーを、**本 Spec の作業かどうかで丸ごと採否を決める**
+    （タスク 9.2 での是正）。
+
+    タスク 9.1 はコミット側だけを「本 Spec の作業を含むコミット」へ絞り、
+    **未コミット側は丸ごと検査対象に残していた**。その結果、本 Spec のコミットを
+    載せたブランチの上で**他 Spec の未コミット作業**があると、その作業が本 Spec の
+    境界違反として報告された——タスク 7.5 が是正し、9.1 が半分だけ是正した問題の
+    残り半分である。
+
+    絞り込みの規則はコミット側と**対称**である。未コミットの集合が本 Spec の所有パスを
+    1つでも含むなら、その集合は本 Spec の作業であるから**全件を検査する**
+    （同一の作業で越境していれば引き続き違反として報告される）。1つも含まないなら
+    別 Spec の作業であり、本検査の対象ではない。
+
+    ⚠️ **コミット側と同じ取引をしている。** 本 Spec の越境を、本 Spec のファイルを
+    1つも含まない未コミット集合として作れば検出されない——ただし未コミットの変更は
+    いずれ「本 Spec のファイルを含むコミット」か「本 Spec のファイルを含む未コミット集合」
+    のどちらかへ入るのが通常の作業の流れであり、コミット側のギャップ（分離コミット）
+    ほど作りやすくはない。**この判断を変えるときは、まず誤検出が実際に起きる構成を
+    再現してから設計を決めること。**
+
+    Returns:
+        本 Spec の所有パスを含む場合はすべての未コミットパス、含まない場合は空列。
+    """
+    paths = parse_porcelain_paths(status_output)
+    if not contains_world_frame_calibration_changes(paths):
+        return []
+    return paths
+
+
+def test_uncommitted_selection_keeps_everything_when_this_spec_is_being_worked_on() -> None:
+    """本 Spec のファイルを含む未コミット集合は、全件が検査対象に残る。
+
+    同じ作業で禁止ディレクトリを触っていれば、それは本 Spec の作業が越境した
+    ということであり、引き続き検出されなければならない。
+    """
+    status_output = (
+        " M src/world_frame_calibration/profile.py\n"
+        " M src/sensing_foundation/types.py\n"
+    )
+    selected = select_uncommitted_files_touching_this_spec(status_output)
+
+    assert selected == [
+        "src/world_frame_calibration/profile.py",
+        "src/sensing_foundation/types.py",
+    ]
+    # 越境が検出可能なまま残っていること（この検査が空振りでないことの担保）
+    assert find_forbidden_boundary_changes(selected) == ["src/sensing_foundation/types.py"]
+
+
+def test_uncommitted_selection_drops_another_specs_work_in_progress() -> None:
+    """本 Spec のファイルを1つも含まない未コミット集合は検査対象から外れる。
+
+    これがタスク 9.2 が是正した当のケースである——本 Spec のコミットを載せた
+    ブランチの上で下流 Spec の作業を進めると、その未コミットファイルが本 Spec の
+    境界違反として報告されていた。
+    """
+    status_output = (
+        " M src/m1_validation/seam.py\n"
+        "?? src/m1_validation/cli.py\n"
+        "?? tests/m1_validation/test_m1_cli.py\n"
+    )
+
+    assert select_uncommitted_files_touching_this_spec(status_output) == []
+    # 判定関数そのものが無力なのではないこと
+    assert find_out_of_boundary_changes(["src/m1_validation/seam.py"]) == [
+        "src/m1_validation/seam.py"
+    ]
+
+
+def test_uncommitted_selection_reads_the_new_name_of_a_rename() -> None:
+    """リネームは `old -> new` 形式で出るので、新しい名前を採る。"""
+    status_output = "R  src/world_frame_calibration/old.py -> src/world_frame_calibration/new.py\n"
+
+    assert select_uncommitted_files_touching_this_spec(status_output) == [
+        "src/world_frame_calibration/new.py"
+    ]
+
+
 def test_commit_selection_keeps_files_of_a_commit_touching_this_spec() -> None:
     """本 Spec のパスを触るコミットの変更ファイルは、そのコミットの分がすべて残る。
 
@@ -1280,16 +1377,7 @@ def test_actual_working_tree_changes_since_main_stay_within_boundary() -> None:
         return
 
     committed_files = select_files_from_commits_touching_this_spec(log_result.stdout)
-    # `git status --porcelain` は `XY path` 形式（XY はステータス2文字）。
-    # パスはインデックス3以降。リネームの `old -> new` 形式は右辺のみを使う。
-    uncommitted_files = []
-    for line in status_result.stdout.splitlines():
-        if not line.strip():
-            continue
-        raw_path = line[3:]
-        if " -> " in raw_path:
-            raw_path = raw_path.split(" -> ", 1)[1]
-        uncommitted_files.append(raw_path)
+    uncommitted_files = select_uncommitted_files_touching_this_spec(status_result.stdout)
 
     changed_files = committed_files + uncommitted_files
     if not changed_files:

@@ -466,6 +466,23 @@
   - _Note: 下流 `m1-prediction-validation` のタスク8.1〜8.5 がこの改修を待って保留になっている
     （同 Spec tasks.md の `_Blocked:` 注記）。landing 後に向こうの保留を外すこと。_
 
+- [ ] 9.2 未コミット側の絞り込みをコミット側と対称にする
+  - タスク9.1 は**コミット側だけ**を「本 Spec の作業を含むコミット」へ絞り、
+    **未コミットの作業ツリーは丸ごと検査対象に残した**。そのため本 Spec のコミットを
+    載せたブランチの上で他 Spec の未コミット作業があると、それが本 Spec の境界違反として
+    報告される（タスク7.5 の問題クラスの**4度目の再発**）
+  - 未コミットの集合についても**本 Spec の所有パスを1つでも含むかどうかで丸ごと採否を決める**。
+    含むなら従来どおり全件を検査し（同一の作業で越境すれば引き続き検出される）、
+    1つも含まないなら別 Spec の作業として検査対象から外す
+  - **検出能力を落とさないこと**: 本 Spec のファイルと越境が同じ未コミット集合に同居する場合は
+    引き続き違反として報告されること
+  - 観測可能な完了状態: 他 Spec の未コミット作業だけがあるとき当該テストが緑になり、
+    本 Spec のファイルと越境が同居する未コミット集合では引き続き赤になることを、
+    crafted 入力のテストで固定する
+  - _Requirements: 11.5_
+  - _Depends: 9.1_
+  - _Boundary: tests/world_frame_calibration/test_world_frame_calibration_boundaries.py_
+
 ## Implementation Notes
 
 - タスク1.2: `CalibrationConfigError` は `prediction_core.PredictionConfigError` / `sensing_foundation.SensingConfigError` と異なり `ValueError` を継承しない。design.md の例外契約スニペットが `ValueError` に一切触れていないため契約どおりに実装した結果であり、実装上の欠陥ではない。今後 design.md を改訂する場合は、他パッケージとの `except ValueError` 互換性を意図的に持たせるかどうかを判断すること。
