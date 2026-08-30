@@ -43,6 +43,18 @@ types` のような内部モジュールへ直接 import しない（要件 8.2�
 （内部パラメータを提供できない入力元）の場合もキャリブレーションを続行
 できないため `CalibrationConfigError` とする。
 
+**上流 `StreamProfile` → 自 Spec の値オブジェクトへの写像
+（`to_intrinsics` / `to_signature`）は `profile.py` が持つ。** 本モジュール
+はそこから**再 import して**使うだけであり、同じ写像をここに書き直さない
+（タスク 9.1）。切り出した理由は、下流が公開入口から `check_compatibility`
+の引数を作れるようにするためである——本モジュールは `sensing_foundation`
+をモジュールレベルで import するため、ここから公開入口へ写像を出すと
+「上流が未導入でも `import world_frame_calibration` が成功する」という契約
+が壊れる。`profile.py` は `StreamProfile` を型注釈にしか使わないため、その
+実行時依存を持たない。上流由来の値を扱う `__all__` の再エクスポートは
+互換のために残す（既存の呼び出し側は `upstream.to_intrinsics` のまま動く。
+`profile.py` の関数と**同一オブジェクト**である）。
+
 **タスク 6.2（本ファイルの下半分）が追加するもの**: 構造化ロギングへの
 計測値送出（`CALIBRATE_STAGE` / `stage_logger` / `timed` / `timed_apply`、
 要件 10.1〜10.5）。`collect_depth` はロギングが有効なら `collect` イベント
@@ -86,8 +98,9 @@ from sensing_foundation import (
 )
 
 from world_frame_calibration.errors import CalibrationConfigError
+from world_frame_calibration.profile import to_intrinsics, to_signature
 from world_frame_calibration.transform import WorldTransform
-from world_frame_calibration.types import DepthImage, Intrinsics, StreamSignature
+from world_frame_calibration.types import DepthImage
 
 __all__ = [
     "CALIBRATE_STAGE",
@@ -171,54 +184,6 @@ def _valid_ratio(valid_count: "np.ndarray") -> float:
     if total == 0:
         return 0.0
     return float(np.count_nonzero(valid_count > 0)) / float(total)
-
-
-def to_intrinsics(profile: StreamProfile) -> Intrinsics:
-    """`StreamProfile.intrinsics`（上流 `CameraIntrinsics`）を自 Spec の
-    `Intrinsics` へ写像する。
-
-    フィールド名は `types.Intrinsics` の docstring が定めるとおり
-    `sensing_foundation.CameraIntrinsics` と完全に一致しているため、機械的な
-    1:1 転記である（design.md GeoTypes「Integration」）。
-
-    Raises:
-        CalibrationConfigError: `profile.intrinsics` が `None` の場合
-            （入力元が内部パラメータを提供できない。要件 8.4 により独自の
-            固定値で埋めることはできないため、続行できず失敗させる）。
-    """
-    if profile.intrinsics is None:
-        raise CalibrationConfigError(
-            "StreamProfile.intrinsics is None: the input source did not "
-            "provide camera intrinsics, and world-frame-calibration must not "
-            "substitute an independently-held fixed value (requirement 8.4)"
-        )
-    intr = profile.intrinsics
-    return Intrinsics(
-        width_px=intr.width_px,
-        height_px=intr.height_px,
-        fx_px=intr.fx_px,
-        fy_px=intr.fy_px,
-        ppx_px=intr.ppx_px,
-        ppy_px=intr.ppy_px,
-        model=intr.model,
-        coeffs=intr.coeffs,
-    )
-
-
-def to_signature(profile: StreamProfile) -> StreamSignature:
-    """上流 `StreamProfile` を整合性検査対象の `StreamSignature` へ写像する。
-
-    フィールド名は `types.StreamSignature` の docstring が定めるとおり
-    `sensing_foundation.StreamProfile` の対応部分と完全に一致する
-    （design.md GeoTypes「Integration」）。
-    """
-    return StreamSignature(
-        width_px=profile.width_px,
-        height_px=profile.height_px,
-        fps=profile.fps,
-        depth_scale_mm=profile.depth_scale_mm,
-        color_enabled=profile.color_enabled,
-    )
 
 
 def collect_depth(

@@ -68,10 +68,17 @@ SOURCE_FILES: dict[str, Path] = _source_files()
 
 
 def test_source_files_enumeration_matches_expected_modules() -> None:
-    """`SOURCE_FILES` が想定どおりの15モジュールを走査対象にしている。
+    """`SOURCE_FILES` が想定どおりの16モジュールを走査対象にしている。
 
     ここがずれると、以降の全チェックが一部モジュールを見落としたまま
     「成功」してしまうため、走査対象自体を固定する。
+
+    `profile`（タスク 9.1）は、上流 `StreamProfile` から自 Spec の
+    `StreamSignature` / `Intrinsics` への写像を `upstream` から切り出した
+    L2 モジュールである。切り出しの目的は、下流が公開入口から
+    `check_compatibility` の引数を作れるようにしつつ、
+    「`sensing_foundation` 未導入の環境でも `import world_frame_calibration`
+    が成功する」という既存契約を保つことにある（要件 6.4 / 8.2 / 8.6）。
     """
     assert set(SOURCE_FILES) == {
         "__init__",
@@ -83,6 +90,7 @@ def test_source_files_enumeration_matches_expected_modules() -> None:
         "linalg",
         "plan",
         "plane",
+        "profile",
         "report",
         "result",
         "transform",
@@ -98,6 +106,22 @@ def test_source_files_enumeration_matches_expected_modules() -> None:
 # ---------------------------------------------------------------------------
 
 SENSING_FOUNDATION_ALLOWED_MODULES: frozenset[str] = frozenset({"upstream", "deproject", "cli"})
+
+#: `sensing_foundation` を **`if TYPE_CHECKING:` 下でだけ** import してよい
+#: モジュール（タスク 9.1）。
+#:
+#: `profile.py` は上流 `StreamProfile` を**型注釈にしか使わない**。
+#: `from __future__ import annotations` により型注釈は実行時に評価されない
+#: ため、`TYPE_CHECKING` 下の import だけで足り、**実行時依存を持たない**。
+#: これは design.md「Allowed Dependencies」の緩和ではない——同節が禁じている
+#: のは「上流の実装への依存」であり、実行時に一切読み込まれない型注釈用の
+#: 参照はそれに当たらない。実行時 import は引き続き禁止であり、
+#: `test_profile_imports_sensing_foundation_only_under_type_checking` が
+#: 「TYPE_CHECKING 下にしかない」ことと「実際にそこにある」ことの両方を、
+#: `test_world_frame_calibration_public_api.py` /
+#: `test_world_frame_calibration_profile.py` が「上流を遮断した
+#: サブプロセスでも動く」ことを実測で固定する。
+SENSING_FOUNDATION_TYPE_CHECKING_ONLY_MODULES: frozenset[str] = frozenset({"profile"})
 
 
 def find_sensing_foundation_import_lines(source: str) -> list[int]:
@@ -123,16 +147,103 @@ def find_sensing_foundation_import_lines(source: str) -> list[int]:
     return linenos
 
 
+def _is_type_checking_test(test: ast.expr) -> bool:
+    """`if` の条件式が `TYPE_CHECKING` / `typing.TYPE_CHECKING` かを判定する。"""
+    if isinstance(test, ast.Name):
+        return test.id == "TYPE_CHECKING"
+    if isinstance(test, ast.Attribute):
+        return test.attr == "TYPE_CHECKING"
+    return False
+
+
+def _type_checking_guarded_import_lines(tree: ast.Module) -> set[int]:
+    """`if TYPE_CHECKING:` ブロック配下にある import 文の行番号集合を返す。"""
+    guarded: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.If) and _is_type_checking_test(node.test):
+            for child in node.body:
+                for sub in ast.walk(child):
+                    if isinstance(sub, (ast.Import, ast.ImportFrom)):
+                        guarded.add(sub.lineno)
+    return guarded
+
+
+def find_runtime_sensing_foundation_import_lines(source: str) -> list[int]:
+    """`sensing_foundation` への**実行時** import の行番号一覧を返す。
+
+    `if TYPE_CHECKING:` ブロック配下の import は実行時に評価されないため
+    除外する。空リストであれば実行時依存なし。
+    """
+    tree = ast.parse(source)
+    guarded = _type_checking_guarded_import_lines(tree)
+    return [
+        lineno
+        for lineno in find_sensing_foundation_import_lines(source)
+        if lineno not in guarded
+    ]
+
+
 def test_only_upstream_deproject_cli_import_sensing_foundation() -> None:
-    """許可された3モジュール以外に `sensing_foundation` 参照が無い。"""
+    """許可された3モジュール以外に `sensing_foundation` 参照が無い。
+
+    `SENSING_FOUNDATION_TYPE_CHECKING_ONLY_MODULES`（`profile`）だけは
+    `if TYPE_CHECKING:` 下の型注釈用 import を許すが、**実行時 import は
+    他のモジュールと同じく禁止**である。
+    """
     for module_name, path in SOURCE_FILES.items():
         if module_name in SENSING_FOUNDATION_ALLOWED_MODULES:
             continue
         source = path.read_text(encoding="utf-8")
+
+        runtime_linenos = find_runtime_sensing_foundation_import_lines(source)
+        assert runtime_linenos == [], (
+            f"{module_name}.py が sensing_foundation を実行時 import している"
+            f"（行 {runtime_linenos}）"
+        )
+
+        if module_name in SENSING_FOUNDATION_TYPE_CHECKING_ONLY_MODULES:
+            continue
         linenos = find_sensing_foundation_import_lines(source)
         assert linenos == [], (
             f"{module_name}.py が sensing_foundation を import している（行 {linenos}）"
         )
+
+
+def test_profile_imports_sensing_foundation_only_under_type_checking() -> None:
+    """`profile.py` の上流参照が `TYPE_CHECKING` 下にのみ存在する（タスク 9.1）。
+
+    両方向を固定する: (a) 実行時 import が1つも無いこと、(b) 型注釈用の
+    import が**実際に存在する**こと。(b) が無いと、上流参照を丸ごと消した
+    実装でも (a) が空虚に通ってしまう。
+    """
+    source = SOURCE_FILES["profile"].read_text(encoding="utf-8")
+
+    assert find_runtime_sensing_foundation_import_lines(source) == []
+    assert find_sensing_foundation_import_lines(source) != []
+
+
+def test_runtime_finder_detects_module_level_import_in_crafted_source() -> None:
+    """違反ケース: `TYPE_CHECKING` 下でないモジュールレベル import が検出される。"""
+    fake_source = "from sensing_foundation import StreamProfile\n"
+    assert find_runtime_sensing_foundation_import_lines(fake_source) != []
+
+
+def test_runtime_finder_ignores_type_checking_guarded_import_in_crafted_source() -> None:
+    """誤検知回避: `if TYPE_CHECKING:` 下の import は実行時依存として数えない。"""
+    fake_source = (
+        "from typing import TYPE_CHECKING\n"
+        "\n"
+        "if TYPE_CHECKING:\n"
+        "    from sensing_foundation import StreamProfile\n"
+    )
+    assert find_runtime_sensing_foundation_import_lines(fake_source) == []
+    assert find_sensing_foundation_import_lines(fake_source) != []
+
+
+def test_runtime_finder_detects_import_under_non_type_checking_if_in_crafted_source() -> None:
+    """違反ケース: `TYPE_CHECKING` 以外の条件下に隠した import は実行時依存である。"""
+    fake_source = "import sys\n\nif sys.version_info:\n    import sensing_foundation\n"
+    assert find_runtime_sensing_foundation_import_lines(fake_source) != []
 
 
 def test_upstream_deproject_cli_actually_reference_sensing_foundation() -> None:
@@ -415,16 +526,29 @@ DEPENDENCY_ALLOWED_TARGETS: dict[str, frozenset[str]] = {
     # Layer 2
     "plan": frozenset({"errors", "linalg", "types"}),
     "deproject": frozenset({"errors", "linalg", "types"}),
+    # `profile`（タスク 9.1）は上流型からの写像のみを持つ L2 モジュール。
+    # 参照してよいのは L0（`errors`）と L1（`types`）だけである。
+    "profile": frozenset({"errors", "linalg", "types"}),
     # Layer 3
-    "plane": frozenset({"errors", "linalg", "types", "plan", "deproject"}),
-    "transform": frozenset({"errors", "linalg", "types", "plan", "deproject"}),
+    "plane": frozenset({"errors", "linalg", "types", "plan", "profile", "deproject"}),
+    "transform": frozenset({"errors", "linalg", "types", "plan", "profile", "deproject"}),
     # Layer 4
     "anchors": frozenset(
-        {"errors", "linalg", "types", "plan", "deproject", "plane", "transform"}
+        {"errors", "linalg", "types", "plan", "profile", "deproject", "plane", "transform"}
     ),
     # Layer 5
     "frame": frozenset(
-        {"errors", "linalg", "types", "plan", "deproject", "plane", "transform", "anchors"}
+        {
+            "errors",
+            "linalg",
+            "types",
+            "plan",
+            "profile",
+            "deproject",
+            "plane",
+            "transform",
+            "anchors",
+        }
     ),
     # Layer 6
     "result": frozenset(
@@ -433,6 +557,7 @@ DEPENDENCY_ALLOWED_TARGETS: dict[str, frozenset[str]] = {
             "linalg",
             "types",
             "plan",
+            "profile",
             "deproject",
             "plane",
             "transform",
@@ -447,6 +572,7 @@ DEPENDENCY_ALLOWED_TARGETS: dict[str, frozenset[str]] = {
             "linalg",
             "types",
             "plan",
+            "profile",
             "deproject",
             "plane",
             "transform",
@@ -462,6 +588,7 @@ DEPENDENCY_ALLOWED_TARGETS: dict[str, frozenset[str]] = {
             "linalg",
             "types",
             "plan",
+            "profile",
             "deproject",
             "plane",
             "transform",
@@ -480,6 +607,7 @@ DEPENDENCY_ALLOWED_TARGETS: dict[str, frozenset[str]] = {
             "linalg",
             "types",
             "plan",
+            "profile",
             "deproject",
             "plane",
             "transform",
@@ -495,6 +623,7 @@ DEPENDENCY_ALLOWED_TARGETS: dict[str, frozenset[str]] = {
             "linalg",
             "types",
             "plan",
+            "profile",
             "deproject",
             "plane",
             "transform",
@@ -512,6 +641,7 @@ DEPENDENCY_ALLOWED_TARGETS: dict[str, frozenset[str]] = {
             "linalg",
             "types",
             "plan",
+            "profile",
             "deproject",
             "plane",
             "transform",
@@ -911,20 +1041,299 @@ def test_other_spec_only_list_is_exactly_the_false_positive_being_fixed() -> Non
     assert contains_world_frame_calibration_changes(changed) is False
 
 
+def select_files_from_commits_touching_this_spec(git_log_output: str) -> list[str]:
+    """`git log --format=%x00%H --name-only` の出力から、**本 Spec の作業を
+    含むコミット**の変更ファイルだけを取り出す（タスク 9.1 での是正）。
+
+    タスク 7.5 は「本 Spec の変更が1つも無いブランチは検査対象外」という
+    skip 条件を入れたが、**本 Spec の作業と他 Spec の作業が同じブランチに
+    同居する場合**（例: `spec/m1-prediction-validation` の上で本 Spec の
+    上流側タスクを進める）には、他 Spec の正当な変更が本 Spec の境界違反
+    として報告されてしまう。ブランチ全体を1つの塊として見るかぎり、
+    「本 Spec が禁止ディレクトリを触った」のか「別 Spec がそこを正当に
+    触った」のかを区別できないためである。
+
+    コミット単位で見れば区別できる。**本 Spec が所有するパスを触っている
+    コミット**の中に禁止ディレクトリへの変更が混ざっていれば、それは本 Spec
+    の作業が境界を越えたということである。逆に、本 Spec のパスを一切
+    触っていないコミットは別 Spec の作業であり、本検査の対象ではない。
+
+    ⚠️ **この絞り込みは検出範囲を狭める。** 旧実装（`git diff --name-only
+    <merge-base>...HEAD`）は、本 Spec の変更を1つでも含むブランチでは
+    レンジ内の全ファイルを検査していた。本関数はそうではない。**次の2つの
+    前提が成り立つ場合にのみ、従来どおり越境を検出する。**
+
+    1. **越境が、本 Spec のファイルを含む同じコミット（または未コミットの
+       作業ツリー）に現れること。** 本 Spec の越境を、本 Spec のファイルを
+       1つも含まない**別コミットへ分離した場合は検出されない**
+       （`test_commit_selection_misses_a_crossing_split_into_a_separate_commit`
+       がこのギャップを明示的に固定する）。これは意図的な取引である——
+       他 Spec の正当な変更を違反として報告する誤検出（タスク 7.5 で一度
+       是正し、本 Spec が下流 Spec のブランチ上で改修されたことで再発した）
+       を止めるのに、コミットより細かい帰属情報は git の変更ファイル名からは
+       得られない。
+    2. **越境がマージコミットに現れないこと。** `git log --name-only` は
+       **マージコミットについて変更ファイル名を一切出力しない**（`-m` /
+       `--first-parent` を付けない既定の挙動）。したがってコンフリクト解決で
+       持ち込まれた変更は本関数から見えない。旧実装の `git diff` 版はこれを
+       見ていた。**このギャップは塞いでいない**——マージを第1親との差分として
+       開くと、マージ元ブランチが持ち込む全ファイルが「そのコミットの変更」
+       として現れ、他 Spec の変更を違反として報告する誤検出が別の形で戻って
+       くるためである
+       （`test_commit_selection_misses_merge_commit_files_because_git_log_omits_them`
+       がこの盲点を固定する）。
+
+    Args:
+        git_log_output: `git log --format=%x00%H --name-only <range>` の標準出力。
+            各コミットが NUL 文字で始まり、ハッシュ行に続いて変更ファイル名が
+            並ぶ。
+
+    Returns:
+        本 Spec の所有パスを含むコミットの、変更ファイルパスの列（重複可）。
+    """
+    selected: list[str] = []
+    for chunk in git_log_output.split("\0"):
+        lines = [line.strip() for line in chunk.splitlines() if line.strip()]
+        if not lines:
+            continue
+        files = lines[1:]  # 先頭行はコミットハッシュ
+        if contains_world_frame_calibration_changes(files):
+            selected.extend(files)
+    return selected
+
+
+def parse_porcelain_paths(status_output: str) -> list[str]:
+    """`git status --porcelain` の出力から変更ファイルパスを取り出す。
+
+    `XY path` 形式（`XY` はステータス2文字）なのでパスはインデックス3以降。
+    リネームの `old -> new` 形式は右辺（新しい名前）のみを使う。
+    """
+    paths: list[str] = []
+    for line in status_output.splitlines():
+        if not line.strip():
+            continue
+        raw_path = line[3:]
+        if " -> " in raw_path:
+            raw_path = raw_path.split(" -> ", 1)[1]
+        paths.append(raw_path)
+    return paths
+
+
+def select_uncommitted_files_touching_this_spec(status_output: str) -> list[str]:
+    """未コミットの作業ツリーを、**本 Spec の作業かどうかで丸ごと採否を決める**
+    （タスク 9.2 での是正）。
+
+    タスク 9.1 はコミット側だけを「本 Spec の作業を含むコミット」へ絞り、
+    **未コミット側は丸ごと検査対象に残していた**。その結果、本 Spec のコミットを
+    載せたブランチの上で**他 Spec の未コミット作業**があると、その作業が本 Spec の
+    境界違反として報告された——タスク 7.5 が是正し、9.1 が半分だけ是正した問題の
+    残り半分である。
+
+    絞り込みの規則はコミット側と**対称**である。未コミットの集合が本 Spec の所有パスを
+    1つでも含むなら、その集合は本 Spec の作業であるから**全件を検査する**
+    （同一の作業で越境していれば引き続き違反として報告される）。1つも含まないなら
+    別 Spec の作業であり、本検査の対象ではない。
+
+    ⚠️ **コミット側と同じ取引をしている。** 本 Spec の越境を、本 Spec のファイルを
+    1つも含まない未コミット集合として作れば検出されない——ただし未コミットの変更は
+    いずれ「本 Spec のファイルを含むコミット」か「本 Spec のファイルを含む未コミット集合」
+    のどちらかへ入るのが通常の作業の流れであり、コミット側のギャップ（分離コミット）
+    ほど作りやすくはない。**この判断を変えるときは、まず誤検出が実際に起きる構成を
+    再現してから設計を決めること。**
+
+    Returns:
+        本 Spec の所有パスを含む場合はすべての未コミットパス、含まない場合は空列。
+    """
+    paths = parse_porcelain_paths(status_output)
+    if not contains_world_frame_calibration_changes(paths):
+        return []
+    return paths
+
+
+def test_uncommitted_selection_keeps_everything_when_this_spec_is_being_worked_on() -> None:
+    """本 Spec のファイルを含む未コミット集合は、全件が検査対象に残る。
+
+    同じ作業で禁止ディレクトリを触っていれば、それは本 Spec の作業が越境した
+    ということであり、引き続き検出されなければならない。
+    """
+    status_output = (
+        " M src/world_frame_calibration/profile.py\n"
+        " M src/sensing_foundation/types.py\n"
+    )
+    selected = select_uncommitted_files_touching_this_spec(status_output)
+
+    assert selected == [
+        "src/world_frame_calibration/profile.py",
+        "src/sensing_foundation/types.py",
+    ]
+    # 越境が検出可能なまま残っていること（この検査が空振りでないことの担保）
+    assert find_forbidden_boundary_changes(selected) == ["src/sensing_foundation/types.py"]
+
+
+def test_uncommitted_selection_drops_another_specs_work_in_progress() -> None:
+    """本 Spec のファイルを1つも含まない未コミット集合は検査対象から外れる。
+
+    これがタスク 9.2 が是正した当のケースである——本 Spec のコミットを載せた
+    ブランチの上で下流 Spec の作業を進めると、その未コミットファイルが本 Spec の
+    境界違反として報告されていた。
+    """
+    status_output = (
+        " M src/m1_validation/seam.py\n"
+        "?? src/m1_validation/cli.py\n"
+        "?? tests/m1_validation/test_m1_cli.py\n"
+    )
+
+    assert select_uncommitted_files_touching_this_spec(status_output) == []
+    # 判定関数そのものが無力なのではないこと
+    assert find_out_of_boundary_changes(["src/m1_validation/seam.py"]) == [
+        "src/m1_validation/seam.py"
+    ]
+
+
+def test_uncommitted_selection_reads_the_new_name_of_a_rename() -> None:
+    """リネームは `old -> new` 形式で出るので、新しい名前を採る。"""
+    status_output = "R  src/world_frame_calibration/old.py -> src/world_frame_calibration/new.py\n"
+
+    assert select_uncommitted_files_touching_this_spec(status_output) == [
+        "src/world_frame_calibration/new.py"
+    ]
+
+
+def test_commit_selection_keeps_files_of_a_commit_touching_this_spec() -> None:
+    """本 Spec のパスを触るコミットの変更ファイルは、そのコミットの分がすべて残る。
+
+    同じコミットに禁止ディレクトリへの変更が混ざっていれば、それは本 Spec の
+    作業が越境したということであり、引き続き検出されなければならない。
+    """
+    log_output = (
+        "\0aaaa1111\n"
+        "src/world_frame_calibration/profile.py\n"
+        "src/sensing_foundation/types.py\n"
+    )
+    selected = select_files_from_commits_touching_this_spec(log_output)
+
+    assert selected == [
+        "src/world_frame_calibration/profile.py",
+        "src/sensing_foundation/types.py",
+    ]
+    assert find_forbidden_boundary_changes(selected) == ["src/sensing_foundation/types.py"]
+
+
+def test_commit_selection_drops_commits_belonging_to_another_spec() -> None:
+    """本 Spec のパスを一切触らないコミットは検査対象から外れる。
+
+    本 Spec の作業と他 Spec の作業が同じブランチに同居していても、
+    他 Spec の正当な変更が本 Spec の境界違反として報告されない。
+    """
+    log_output = (
+        "\0aaaa1111\n"
+        "src/world_frame_calibration/profile.py\n"
+        "\0bbbb2222\n"
+        "src/sensing_foundation/types.py\n"
+        "src/m1_validation/seam.py\n"
+    )
+    selected = select_files_from_commits_touching_this_spec(log_output)
+
+    assert selected == ["src/world_frame_calibration/profile.py"]
+    assert find_forbidden_boundary_changes(selected) == []
+
+
+def test_commit_selection_returns_nothing_when_no_commit_touches_this_spec() -> None:
+    """本 Spec のパスを触るコミットが1つも無ければ、選ばれるファイルも無い。"""
+    log_output = "\0bbbb2222\nsrc/sensing_foundation/types.py\n"
+
+    assert select_files_from_commits_touching_this_spec(log_output) == []
+
+
+# ---------------------------------------------------------------------------
+# 既知のギャップ（タスク 9.1）。「検出能力は落ちない」とは言えないことを、
+# 文章ではなく**実行される検査**として残す。将来この絞り込みを見直すときに、
+# 何を諦めたのかがここから読み取れる。
+# ---------------------------------------------------------------------------
+
+
+def test_commit_selection_misses_a_crossing_split_into_a_separate_commit() -> None:
+    """**既知のギャップ1**: 本 Spec のファイルを1つも含まない別コミットへ
+    分離された越境は検出されない。
+
+    旧実装（`git diff --name-only <merge-base>...HEAD`）は、本 Spec の変更を
+    含むブランチではレンジ内の全ファイルを検査していたため、この分け方でも
+    検出できた。コミット単位の絞り込みはそれを諦めている——他 Spec の正当な
+    変更を違反として報告する誤検出を止めるための取引である。
+
+    ここで固定しているのは「検出されない」という**現在の挙動**であって、
+    望ましさではない。将来この検査を強化するなら、このテストが最初に落ちる。
+    """
+    log_output = (
+        "\0aaaa1111\n"
+        "src/world_frame_calibration/profile.py\n"
+        "\0cccc3333\n"
+        "src/sensing_foundation/types.py\n"
+    )
+    selected = select_files_from_commits_touching_this_spec(log_output)
+
+    # 越境（`src/sensing_foundation/types.py`）は選ばれない＝検出されない。
+    assert selected == ["src/world_frame_calibration/profile.py"]
+    assert find_forbidden_boundary_changes(selected) == []
+    # 判定関数そのものが無力なのではない: 同じファイルを直接渡せば違反と分かる。
+    assert find_forbidden_boundary_changes(["src/sensing_foundation/types.py"]) != []
+
+
+def test_commit_selection_misses_merge_commit_files_because_git_log_omits_them() -> None:
+    """**既知のギャップ2**: マージコミットの変更ファイルは検査対象から漏れる。
+
+    `git log --name-only` は（`-m` / `--first-parent` を付けない既定の挙動
+    では）**マージコミットについて変更ファイル名を一切出力しない**。実際、
+    現行の `merge-base..HEAD` レンジには
+    `Merge remote-tracking branch 'origin/main' ...` が存在し、その
+    `git log --format=%x00%H --name-only` 出力はハッシュ行だけである。
+    したがってコンフリクト解決で持ち込まれた変更は本検査から見えない
+    （旧実装の `git diff` 版はこれを見ていた）。
+
+    本テストはその出力形（ハッシュ行だけのチャンク）を crafted 入力として
+    与え、盲点の存在を実行される形で残す。
+    """
+    log_output = (
+        "\0aaaa1111\n"
+        "src/world_frame_calibration/profile.py\n"
+        "\0dddd4444\n"  # マージコミット: ファイル名が1行も出力されない
+    )
+    selected = select_files_from_commits_touching_this_spec(log_output)
+
+    assert selected == ["src/world_frame_calibration/profile.py"]
+    assert find_forbidden_boundary_changes(selected) == []
+
+
 def test_actual_working_tree_changes_since_main_stay_within_boundary() -> None:
     """本 Spec の実際の変更（コミット済み + 未コミット）が境界内に閉じている
     ことを、`main` ブランチとの merge-base からの実差分で確認する
     （tasks.md タスク7.3「変更対象が自パッケージ・自テスト・自 Spec
     ディレクトリに閉じていることを確認する」）。
 
-    **前提（タスク 7.5 で明示化）**: 本検査は「作業ツリーの変更のうち本 Spec に
-    属さないものは境界違反である」と読む。これは**このブランチに本 Spec の作業が
-    載っている**ときにのみ成り立つ読み方であり、他 Spec のブランチでは
-    その Spec の正当な変更をすべて違反として報告してしまう。したがって
-    `contains_world_frame_calibration_changes()` が偽のとき、
-    すなわち本 Spec の変更が1つも含まれないときは検査対象が無いものとして
-    `pytest.skip` する。本 Spec の変更が1つでも含まれる場合は、
-    **従来どおり全変更を検査する**（検出能力は落とさない）。
+    **前提（タスク 7.5 で明示化、タスク 9.1 で精緻化）**: 本検査は「変更のうち
+    本 Spec に属さないものは境界違反である」と読む。これは**その変更が本 Spec の
+    作業である**ときにのみ成り立つ読み方であり、他 Spec の変更をすべて違反として
+    報告してしまう。ブランチ単位の skip（タスク 7.5）は「本 Spec の作業が1つも
+    無いブランチ」を救ったが、**本 Spec の作業と他 Spec の作業が同居するブランチ**
+    （本 Spec は上流であり、下流 Spec のブランチ上で改修されることがある）では
+    依然として誤検出する。
+
+    そこでコミット単位へ落とす（`select_files_from_commits_touching_this_spec`）。
+    検査対象は「**本 Spec が所有するパスを触っているコミット**の全変更」と
+    「未コミットの作業ツリーの全変更」である。本 Spec の作業と同じコミットに
+    禁止ディレクトリへの変更が混ざっていれば、従来どおり違反として報告される。
+
+    ⚠️ **検出範囲は旧実装より狭い。** 次の2つの前提が成り立つ場合にのみ
+    従来どおり検出する（詳細と根拠は
+    `select_files_from_commits_touching_this_spec` の docstring を正とする）。
+
+    1. 越境が、本 Spec のファイルを含む同じコミットか未コミットの作業ツリーに
+       現れること。**本 Spec のファイルを含まない別コミットへ分離された越境は
+       検出されない。**
+    2. 越境がマージコミットに現れないこと。**`git log --name-only` は
+       マージコミットの変更ファイル名を出力しない**ため、コンフリクト解決で
+       持ち込まれた変更は検査対象から漏れる（現行の `merge-base..HEAD`
+       レンジにも実際にマージコミットが存在する）。
 
     `git` 自体、または `main` ブランチや共通祖先が見つからない環境では
     前提が成立しないため `pytest.skip` する（境界違反の有無とは無関係な
@@ -947,8 +1356,8 @@ def test_actual_working_tree_changes_since_main_stay_within_boundary() -> None:
             )
         merge_base = merge_base_result.stdout.strip()
 
-        diff_result = subprocess.run(
-            ["git", "diff", "--name-only", f"{merge_base}...HEAD"],
+        log_result = subprocess.run(
+            ["git", "log", "--format=%x00%H", "--name-only", f"{merge_base}..HEAD"],
             cwd=REPO_ROOT,
             capture_output=True,
             text=True,
@@ -967,17 +1376,8 @@ def test_actual_working_tree_changes_since_main_stay_within_boundary() -> None:
         pytest.skip(f"git 情報が取得できないため skip: {exc}")
         return
 
-    committed_files = [line for line in diff_result.stdout.splitlines() if line.strip()]
-    # `git status --porcelain` は `XY path` 形式（XY はステータス2文字）。
-    # パスはインデックス3以降。リネームの `old -> new` 形式は右辺のみを使う。
-    uncommitted_files = []
-    for line in status_result.stdout.splitlines():
-        if not line.strip():
-            continue
-        raw_path = line[3:]
-        if " -> " in raw_path:
-            raw_path = raw_path.split(" -> ", 1)[1]
-        uncommitted_files.append(raw_path)
+    committed_files = select_files_from_commits_touching_this_spec(log_result.stdout)
+    uncommitted_files = select_uncommitted_files_touching_this_spec(status_result.stdout)
 
     changed_files = committed_files + uncommitted_files
     if not changed_files:

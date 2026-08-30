@@ -241,10 +241,15 @@ graph TB
         REP[Reporter]
         PLOT[Plotter]
     end
+    CLI[CLI] --> UG
+    CLI --> SEAM
+    CLI --> RUN
     SF --> UG
     FOT --> SEAM
     WFC --> SEAM
     PC --> SEAM
+    PC --> RUN
+    PC --> ATTR
     UG --> RUN
     SEAM --> RUN
     RUN --> TR
@@ -254,9 +259,11 @@ graph TB
     LOG --> MET
     TRUTH --> MET
     MET --> ATTR
+    TR --> ATTR
     ATTR --> JUDGE
     MET --> JUDGE
     JUDGE --> REP
+    ATTR --> REP
     MET --> PLOT
     ATTR --> PLOT
 ```
@@ -418,13 +425,16 @@ sequenceDiagram
     participant Upstream
     participant Seam
     participant Tracker as ThrowPredictionTracker
-    CLI->>Seam: キャリブレーション結果を読み検証状態を確認
-    alt 検証未通過かつ許可なし
-        Seam-->>CLI: 実行を拒否
-    end
-    CLI->>Upstream: Logger ハンドルを取得
     CLI->>Seam: 上流の追跡設定を解決（素通し）
-    CLI->>Runner: 投擲開始（追跡設定と Logger を同伴）
+    CLI->>Upstream: 入力元のストリーム識別を取り出す
+    CLI->>Seam: 整合性検査の2値へ写す（上流の写像へ素通し）
+    CLI->>Runner: 投擲開始（窓口・追跡設定・ストリーム識別を同伴）
+    Runner->>Seam: キャリブレーション結果を読み整合性と検証状態を確認
+    alt 設定不一致 / 検証未通過かつ許可なし
+        Seam-->>Runner: 実行を拒否
+        Runner-->>CLI: 失敗（投擲を始めない）
+    end
+    Runner->>Upstream: Logger ハンドルを取得
     Runner->>Seam: 追跡パイプラインを生成（設定と Logger を素通し）
     Runner->>Upstream: フレーム供給を開く
     loop フレームごと
@@ -439,11 +449,18 @@ sequenceDiagram
             Runner->>Upstream: 除外理由の計数を送出
         end
     end
-    Runner->>Upstream: Throw Record を保存
+    Runner-->>CLI: ThrowRunResult（記録を同梱）
+    CLI->>Upstream: Throw Record を保存
 ```
 
 **流れ上の決定**:
-- **検証ゲートは投擲を始める前に評価する。** 走らせてから拒否すると実験時間を捨てることになる
+- **検証ゲートは投擲を始める前に評価する。** 走らせてから拒否すると実験時間を捨てることになる。
+  **整合性検査を検証ゲートより先に置く**——両方が成り立たないとき「未検証だから」とだけ言われると、
+  解像度を戻さないまま許可フラグで押し通してしまう
+- **調達と実行を分ける。** 上流由来の値（追跡設定・ストリーム識別）を用意するのは入口の責務、
+  それを解釈せず素通しするのが実行層の責務である。**Logger だけは入口が持ち回らない**——
+  取り出せるのは接点だけであり、入口が空呼びして持ち回るのは死にコードになる
+- **記録の保存は入口が行う**（実行と保存を分けることで、記録先の決定を入口に集約できる）
 - 追跡が1点も出さなかった投擲は**失敗として理由付きで記録**し、成功試行の集計から除く（要件 3.8）
 - 計測の送出は fire-and-forget（上流のロガーに委譲）。**予測経路の中で集計しない**（`tech.md` 開発標準5）
 
@@ -456,22 +473,31 @@ graph TB
     LOG[structured log] --> LAT[段階別レイテンシ]
     ITEMS --> AGG[投擲群への集計]
     LAT --> AGG
-    AGG --> ATTR[誤差の帰属]
+    REC --> ATTR[誤差の帰属]
+    AGG --> ATTR
     AGG --> OQ27[OQ-27 判定]
     LAT --> OQ27
     AGG --> OQ05[OQ-05 材料]
     AGG --> BUDGET[時間予算表の更新値]
-    ATTR --> REPORT[レポート]
+    LAT --> BUDGET
+    BENCH[計測 ON/OFF 比較] --> REPORT[レポート]
+    ATTR --> REPORT
     OQ27 --> REPORT
     OQ05 --> REPORT
     BUDGET --> REPORT
-    REPORT --> DOCS[docs requirements の 3 節を更新]
+    ATTR --> PLOT[可視化]
+    AGG --> PLOT
+    OQ05 --> PLOT
 ```
 
 **流れ上の決定**:
 - **`BUDGET` は実測値の存在をゲートとする**（要件 11.1）。揃わない場合は更新値を出さずに欠測を返す
 - `OQ27` は `BUDGET` に依存しない（時間予算表が未更新でも判定できる）が、
   **GATE 0 / 1 / 2 を通らなければ `deferred` を返す**
+- **`ATTR` は集計だけでは足りない。** カメラ視線方向・フィット残差・落下地点の真値・検証レポート要約は
+  `ThrowAggregate` に無いので、**記録そのものも受け取る**
+- ⚠️ **`REPORT` は文書を書き換えない。** `docs/requirements.md` の更新は、値を見た人が差分を目で確認して
+  行う実機タスクの仕事である（`BudgetUpdater` の「値を算出するだけ」と同じ規律）
 
 ### 誤差帰属の判定（要件 6）
 
@@ -480,23 +506,32 @@ graph TB
     E[投擲群の誤差ベクトル] --> DEC[共通偏りとばらつきに分解]
     DEC --> B{共通偏りは有意か}
     B -->|いいえ| S1[偏り成分なし]
-    B -->|はい| DIR{向きは何に整合するか}
-    DIR -->|World 固定かつ検証レポートの偏りと整合| CAL[キャリブレーション由来]
-    DIR -->|カメラ視線方向かつ検証は偏りなし| DET[検出由来の候補]
-    DIR -->|どちらとも整合しない、または両者が縮退| UNK[判別不能]
-    S1 --> V{ばらつきは観測由来の範囲内か}
+    B -->|はい| DEG{2方向が縮退しているか}
+    DEG -->|はい| UNK[判別不能]
+    DEG -->|いいえ| DIR{向きは何に整合するか}
+    DIR -->|検証レポートの偏りと符号付きで整合| CAL[キャリブレーション由来]
+    DIR -->|カメラ視線方向と軸で整合 かつ レポートで偏りが認められない| DET[検出由来の候補]
+    DIR -->|どちらとも整合しない| UNK
+    S1 --> V{ばらつきは再抽出の見積もり以内か}
     CAL --> V
     DET --> V
     UNK --> V
-    V -->|範囲内| NOISE[観測ノイズ由来]
-    V -->|超過かつ残差大| MODEL[モデル由来]
-    V -->|超過だが残差小| UNK2[判別不能]
+    V -->|以内| NOISE[観測ノイズ由来]
+    V -->|超過 かつ 残差代表値が見積もりの規定倍以上| MODEL[モデル由来]
+    V -->|超過 だが 残差がそれ未満| UNK2[判別不能]
 ```
 
 **流れ上の決定**:
 - **判別不能は正常な結果**である（要件 6.10）。無理に一つの原因へ割り当てると、
   OQ-27 や時間予算の判断まで誤らせる
 - 偏りとばらつきは**独立に判定する**。両方が同時に存在しうる
+- **縮退の判定は向きの判定より先に置く**（順序が load-bearing である）。
+  投擲位置が1箇所だと World 固定方向とカメラ視線方向が一致してしまい、
+  先に向きを見ると「キャリブレーション由来」と断定してしまう
+- **符号の扱いが左右で違う。** 検証レポートとは**符号付き**（較正のずれは World 上で符号を保つ）、
+  カメラ視線とは**軸**（Depth が対象物のカメラ側表面を測る寄りは視線とは逆を向く）
+- **レポートの偏りは3値**（認められる / 認められない / **測っていない**）。
+  「測っていない」を「認められない」と同一視すると、検証していないだけの群が検出由来へ倒れる
 
 ---
 
@@ -745,6 +780,27 @@ class AttributionConfig:
     bootstrap_seed: int = 0                     # 決定性のため固定（要件 12.4）
     direction_agreement_deg: float = 30.0       # 向きが整合するとみなす角度差
     bias_significance_ratio: float = 1.0        # 共通偏りの大きさ / ばらつきの比の下限
+    residual_significance_ratio: float = 1.0    # 規則6 の残差比（自己言及の解消。タスク5.2）
+    range_band_mm: float = 500.0                # 距離帯の幅。固定幅・データ非依存（要件 6.11）
+
+@dataclass(frozen=True, slots=True)
+class Oq27Config:
+    cpu_saturation_ratio: float = 0.9           # 使用率の満量（100%）に対する割合
+    fps_shortfall_ratio: float = 0.95           # 実処理 fps / 取得 fps の下限
+
+@dataclass(frozen=True, slots=True)
+class Oq05Config:
+    confidence_level: float = 0.95
+    interval_widths: tuple[float, ...] = (0.2, 0.1, 0.05)
+
+@dataclass(frozen=True, slots=True)
+class BudgetConfig:
+    segment3_assumed_ms: float = 50.0           # ⚠️ 実測値ではない据え置き（要件 11.4）
+
+@dataclass(frozen=True, slots=True)
+class OverheadConfig:
+    cycles: int = 5                             # A/B/A/B の巡回数
+    min_samples: int = 30
 
 @dataclass(frozen=True, slots=True)
 class TrialLimits:
@@ -758,6 +814,10 @@ class M1Settings:
     seam: SeamConfig
     convergence: ConvergenceConfig
     attribution: AttributionConfig
+    oq27: Oq27Config
+    oq05: Oq05Config
+    budget: BudgetConfig
+    overhead: OverheadConfig
     trials: TrialLimits
     improvements_applied: tuple[str, ...] = ()   # §13.2 の適用済み項目（要件 9.4）
     output_root: Path = Path("var/m1")
@@ -775,8 +835,14 @@ class M1Settings:
 
 - Integration: 環境変数は `STB_M1_` 接頭辞（上流の `STB_SF_` / `STB_FOT_` と衝突しない）
 - Validation: 不正は**起動時**に拒否する（要件 13.6）
-- Risks: `min_valid_throws=20` / `band_mm` / `direction_agreement_deg` は**暫定の評価候補**であり、
+- Risks: `min_valid_throws=20` / `band_mm` / `direction_agreement_deg` / `residual_significance_ratio` /
+  `range_band_mm` / `cpu_saturation_ratio` / `fps_shortfall_ratio` / `confidence_level` /
+  `interval_widths` / `segment3_assumed_ms` / `cycles` / `min_samples` は**暫定の評価候補**であり、
   必須性能ではない。`--help` と docstring に明記する（要件 13.7、`tech.md` 開発標準1）
+- Risks: ⚠️ **`require_live_source` の説明と効き先が食い違っている。** 上の docstring は
+  「OQ-27 の GATE 2」と呼ぶが、[決着させる未決事項](#決着させる未決事項) の GATE 2 とタスク箇条は
+  どちらも**無条件**（実機由来の投擲が無ければ保留）であり、実装も無条件である。
+  当該設定が実際に支配しているのは `ThrowAggregator` の暫定印だけである。**説明を整理すること**
 
 ### L2: 上流との接点
 
@@ -992,16 +1058,28 @@ class ThrowRunResult:
     first_valid_sample_count: int | None    # 初回予測が成立したサンプル数（要件 5.3）
     failed_reason: str | None               # 追跡不成立などの失敗理由（要件 3.8）
 
-def run_throw(*, settings: M1Settings, source_spec: object,
+UPSTREAM_FAILURE: str          # 上流由来の失敗を表す failed_reason（要件 3.8）
+
+def run_throw(*, settings: M1Settings, gateway: "UpstreamGateway",
               calibration_path: Path, record_id: str,
-              tracking_settings: object, logger: object,
+              tracking_settings: object, signature: object, intrinsics: object,
+              supplier: object = None,
               allow_unverified: bool = False) -> ThrowRunResult: ...
+def failed_reason_of(record: "ThrowRecord") -> str | None: ...
+def successful_throws(records: Iterable["ThrowRecord"]) -> tuple["ThrowRecord", ...]: ...
 ```
 
-- `tracking_settings` は `flying_object_tracking.TrackingSettings`、`logger` は
-  `sensing_foundation.Logger` である。**どちらも `cli.py` が用意し、本関数は
-  `Seam.open_tracking()` へ素通しするだけ**である（型注釈を `object` に留めるのは、
+- `tracking_settings` は `flying_object_tracking.TrackingSettings`、`signature` / `intrinsics` は
+  `world_frame_calibration` のストリーム識別と内部パラメータである。**いずれも `cli.py` が用意し、
+  本関数は `Seam` へ素通しするだけ**である（型注釈を `object` に留めるのは、
   本モジュールが上流パッケージを import しないという制約を型注釈の上でも守るため）
+- **入力元は `gateway` として開いた状態で受け取る**（`source_spec` を受けて自分で開かない）。
+  ゲートウェイの生存期間を CLI が持つことで、1セッションの中で複数投擲を回せる
+- ⚠️ **例外の扱いの線引きは load-bearing である**（タスク3.2 で確定）:
+  `M1ConfigError` と **`SeamFailure` は投擲の中でも再送出する**。
+  値へ倒すのは**上流由来の失敗だけ**（`UPSTREAM_FAILURE`）である。
+  継ぎ目の不成立を値にすると、たとえば上流の受け渡し版が上がったとき
+  **1投擲目で止まらずに失敗記録を積み続ける**
 
 ##### Batch / Job Contract
 
@@ -1052,9 +1130,20 @@ class ThrowTruth:
     release_time_ms: TruthValue           # リリース時刻（要件 4.3）
     external_mark_delta_ms: float | None  # 外部の合図との差（要件 4.5）
 
-def load_truth_file(path: Path) -> Mapping[str, Mapping[str, object]]: ...
+@dataclass(frozen=True, slots=True)
+class TruthIngest:
+    records: tuple["ThrowRecord", ...]     # 真値を追記した記録（要件 4.7）
+    truths: tuple[ThrowTruth, ...]
+    unknown_record_ids: tuple[str, ...]    # 記録に無い識別子。警告として返す（黙って捨てない）
+
+def load_truth_file(path: Path | str, *,
+                    expected_layout_id: str | None = None) -> Mapping[str, Mapping[str, object]]: ...
 def derive_truth(record: "ThrowRecord", entry: Mapping[str, object] | None,
                  *, layout: ThrowLayout) -> ThrowTruth: ...
+def truth_to_dict(truth: ThrowTruth) -> dict[str, object]: ...
+def attach_truth(record: "ThrowRecord", truth: ThrowTruth) -> "ThrowRecord": ...
+def ingest_truth(records: Iterable["ThrowRecord"], entries: Mapping[str, Mapping[str, object]],
+                 *, layout: ThrowLayout) -> TruthIngest: ...
 ```
 
 - Preconditions: 落下地点が与えられる場合、`source`（測り方）が非空であること
@@ -1063,9 +1152,21 @@ def derive_truth(record: "ThrowRecord", entry: Mapping[str, object] | None,
 **Implementation Notes**
 
 - Integration: 外挿は最終予測の軌道パラメータを用いる。**新しいフィッティングを実装しない**
-- Validation: 内挿は床面高さを**跨ぐ**区間に限る。片側外挿で落下時刻を作らない
+- Integration: 真値の入力は投擲の実行と分離するので、**実行後に追記する経路**（`ingest_truth` /
+  `attach_truth`）を公開面に持つ（要件 4.7）。記録に存在しない識別子の真値は
+  **警告として返し、黙って捨てない**——1件の書き間違いで他の投擲の集計を止めないため、
+  例外ではなく値で返す
+- Validation: 内挿は床面高さを**跨ぐ**区間に限る。片側外挿で落下時刻を作らない。
+  **床面 z = 0 は本 Spec が決め直してはならない値である**——`prediction_core` も落下地点を
+  `z = 0` との交点として定義しており、内挿による落下時刻と予測の落下時刻が違う平面を指すと、
+  その差は誤差ではなく**定義の食い違い**になる
 - Risks: **外挿の不確かさが区間1 の実測値をそのまま左右する。**
   外挿区間の長さと軌道の残差から不確かさの目安を算出し、必ず併記する（要件 4.4）
+- Risks: ⚠️ **要件 4.2 と `SeamConfig.floor_margin_mm = -50.0` が実データで干渉しうる。**
+  落下時刻の内挿には床面を跨ぐ隣接2点、すなわち床下側のサンプルが1点要るが、継ぎ目は
+  `z < -50mm` を除外し、接地時の鉛直速度は約 5.8 mm/ms なので 60fps でも1フレームで約96mm 落ちる。
+  **サンプルが `(-50, 0]` に入るのは約半分の投擲だけ**で、残りは要件 4.2 どおり正当に欠測になる。
+  **実測項目5 が系統的に欠測になりうる**ので、実験計画か既定値の見直しで扱うこと
 
 #### FlightMetrics
 
@@ -1079,11 +1180,14 @@ def derive_truth(record: "ThrowRecord", entry: Mapping[str, object] | None,
 ```python
 @dataclass(frozen=True, slots=True)
 class FlightResult:
-    total_flight_ms: float | None          # 項目1: 落下時刻 − リリース時刻
-    release_to_detect_ms: float | None     # 項目2: 最初の有効サンプル時刻 − リリース時刻 ★未検証区間
-    aim_error_mm: float | None             # 項目6: 待機位置 → 実落下地点の水平距離
-    uncertainty_ms: float | None           # 項目1 / 2 に伝播した不確かさ
+    total_flight_ms: float | None                  # 項目1: 落下時刻 − リリース時刻
+    total_flight_uncertainty_ms: float | None      # 内挿＋外挿の単純和（上界）
+    release_to_detect_ms: float | None             # 項目2: 最初の有効サンプル時刻 − リリース時刻 ★未検証区間
+    release_to_detect_uncertainty_ms: float | None # 外挿のみに依存
+    aim_error_mm: float | None                     # 項目6: 待機位置 → 実落下地点の水平距離
+    aim_error_uncertainty_mm: float | None         # 落下地点の実測不確かさのみ
     methods: Mapping[str, TruthMethod]
+    emphasis: Mapping[str, str]                    # 項目2 を強調する旨の文面（要件 5.2）
 
 def measure_flight(record: "ThrowRecord", truth: ThrowTruth,
                    *, layout: ThrowLayout) -> FlightResult: ...
@@ -1093,7 +1197,16 @@ def measure_flight(record: "ThrowRecord", truth: ThrowTruth,
 
 - Integration: 項目2 は §3 区間1 に対応し、**プロジェクトで最も未検証な量**である。
   求め方（外挿）と不確かさを結果に必ず含め、レポートで強調する
-- Risks: リリース時刻が欠測なら項目1 / 2 は欠測。**他項目の集計を止めない**（要件 4.6）
+- Validation: **不確かさは項目別に持つ。** 項目1 は2つの真値（内挿＋外挿）に依存し、
+  項目2 は**観測された時刻そのもの**を終点とするため外挿のみに依存する。
+  1フィールドへ畳むと**項目1 の過小申告か項目2 の水増しのどちらかになる**
+- Risks:
+  - リリース時刻が欠測なら項目1 / 2 は欠測。**他項目の集計を止めない**（要件 4.6）
+  - 項目1 の不確かさは**単純和（上界）**である。内挿と外挿がどちらも同じ残差を分子に持つため、
+    共通成分を持つ量に二乗和を使うと過小評価になる。
+    **タスク4.1 の不確かさの導出式が変われば、ここも再検討が要る**
+  - 項目6 の不確かさは**待機位置の測り方の誤差を含まない**（`ThrowLayout` が不確かさを持たないため）。
+    実験計画側で待機位置の測り方を記録する必要がある
 
 #### AccuracyMetrics
 
@@ -1120,6 +1233,7 @@ class AccuracyResult:
     errors: tuple[PredictionError, ...]
     first_valid: PredictionError | None
     final: PredictionError | None
+    invalid_counts: tuple[tuple[InvalidReason, int], ...]   # 理由ごとの無効件数
 
 def measure_accuracy(record: "ThrowRecord", truth: ThrowTruth) -> AccuracyResult: ...
 ```
@@ -1127,8 +1241,13 @@ def measure_accuracy(record: "ThrowRecord", truth: ThrowTruth) -> AccuracyResult
 **Implementation Notes**
 
 - Integration: 誤差は**スカラーではなくベクトルとして保持する**。帰属（要件 6.3）が向きを使う
-- Validation: 無効な予測（`InvalidPrediction`）は系列から除き、理由ごとに数える
-- Risks: 真値が欠測なら誤差も欠測。集計側で試行数として数えない
+- Validation: 無効な予測（`InvalidPrediction`）は系列から除き、**理由ごとに数えて
+  `invalid_counts` へ載せる**。理由の語彙は `prediction_core.InvalidReason` をそのまま使い、
+  **本 Spec で新しい理由を定義しない**
+- Risks:
+  - 真値が欠測なら誤差も欠測。集計側で試行数として数えない
+  - ⚠️ **`errors` が空のとき、「有効予測が0件」と「落下地点の真値が未記入」を戻り値だけでは
+    区別できない。** 集計側は `truth.impact_point_world_mm.method` を見て試行数から外すこと
 
 #### ConvergenceAnalyzer
 
@@ -1145,6 +1264,11 @@ def measure_accuracy(record: "ThrowRecord", truth: ThrowTruth) -> AccuracyResult
 > 最小の N** を収束サンプル数とする。`band_mm` の既定はレイアウトの暫定許容窓に揃える。
 > 収束しない投擲は「未収束」を正常な結果として返す。
 > **収束サンプル数と最終誤差を必ず併記する**（最終予測自体がずれている場合、収束は速く見えるため）。
+>
+> ⚠️ **縮退の解消（タスク4.4 で確定）**: 上の規則は字義どおりだと、**最終予測が自分自身との距離 0 で
+> 必ず条件を満たすため「未収束」が到達不能**になる。同じ段落が「収束しない投擲は『未収束』を
+> 正常な結果として返す」と述べていることと矛盾するので、**「最終予測より前の予測が1つも
+> 帯域内に留まらなければ未収束」**と解釈して確定させた。この解釈は `criterion` の文面へ書き込む。
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -1155,15 +1279,23 @@ class ConvergenceResult:
     final_error_mm: float | None
     judgement: Judgement          # criterion に上記の規則の説明文を持つ
 
-def analyze_convergence(accuracy: AccuracyResult, *, settings: M1Settings,
-                        layout: ThrowLayout) -> ConvergenceResult: ...
+def convergence_criterion(*, band_mm: float, require_monotonic_tail: bool) -> str: ...
+def analyze_convergence(record: "ThrowRecord", accuracy: AccuracyResult,
+                        *, settings: M1Settings) -> ConvergenceResult: ...
 ```
 
 **Implementation Notes**
 
 - Integration: この結果が **FR-1 の「3」の妥当性**の材料になる。
   収束サンプル数の分布を集計し、`min_samples` の見直し材料としてレポートへ出す
-- Risks: 真値と無関係に定義しているため、**最終誤差の併記を欠かすと誤読される**
+- Validation: **`record` を引数に取る。** `AccuracyResult` からは要件 5.7 の「有効サンプル数」が
+  出せない——誤差系列は有効な予測しか持たず、末尾の予測が無効な投擲で過少になり、真値が欠測なら
+  0 になる。`layout` を落としたのは `settings.layout` が同一物であり、帯域導出への経路が2つあると
+  設定を1箇所へ集めた意味が消えるためである
+- Risks:
+  - 真値と無関係に定義しているため、**最終誤差の併記を欠かすと誤読される**
+  - **有効予測が1件だけの投擲は規則上つねに「未収束」**になり、**真値が欠測した投擲は「測定不能」**
+    になる（未収束とは別）。集計側は両者を別々に数えること
 
 #### LatencyAggregator
 
@@ -1188,32 +1320,62 @@ def analyze_convergence(accuracy: AccuracyResult, *, settings: M1Settings,
 @dataclass(frozen=True, slots=True)
 class StageLatency:
     stage: str
+    event: str
+    field: str
+    source: str                           # "log" / "record" / "derived"（二重計上の防止）
     count: int
-    p50_ms: float
-    p95_ms: float
-    iqr_ms: float
+    p50_ms: float | None
+    p95_ms: float | None
+    mean_ms: float | None                 # 上流 FieldStats に p25/p75 が無いため IQR ではない
+    min_ms: float | None
+    max_ms: float | None
+
+@dataclass(frozen=True, slots=True)
+class FirstPredictionLatency:
+    record_id: str
+    detection_start_ms: float | None
+    first_prediction_at_ms: float | None
+    first_prediction_sample_count: int | None
+    detect_to_first_prediction_ms: float | None
 
 @dataclass(frozen=True, slots=True)
 class LatencyResult:
     definition: str                       # end-to-end の定義文（要件 7.2）
+    first_prediction_basis: str           # 初回予測を基準としている旨（要件 5.3、D-1）
+    stage_note: str                       # 段階の合計と end-to-end が一致しない旨
     stages: tuple[StageLatency, ...]
     end_to_end: StageLatency
-    detect_to_first_prediction_ms: tuple[float, ...]   # 実測項目3（投擲ごと）
+    detect_to_first_prediction: tuple[FirstPredictionLatency, ...]   # 実測項目3（投擲ごと）
     capture_fps: float | None
     process_fps: float | None
     cpu_percent_mean: float | None
     rss_bytes_max: int | None
-    frames_dropped: int
-    frames_missing: int
+    frames_dropped: int | None            # 欠測を 0 で埋めない
+    frames_missing: int | None
     unknown_stages: tuple[str, ...]       # 読めたが本 Spec が知らない stage
+    foreign_prediction_events: int
+    unusable_prediction_events: int
+    log_lines_dropped: int
+    log_lines_skipped: int
 
-def aggregate_latency(log_path: Path, records: Sequence["ThrowRecord"]) -> LatencyResult: ...
+def is_duration_field(name: str) -> bool: ...
+def aggregate_latency(log_path: Path, records: Sequence["ThrowRecord"],
+                      *, summarize: StageSummarizer) -> LatencyResult: ...
 ```
 
 **Implementation Notes**
 
 - Integration: 資源値（CPU・メモリ）は上流が Linux の `/proc` から取得する。**取得できない環境では欠測**
-- Validation: 未知 stage は捨てずに `unknown_stages` として残す（要件 7.3）
+- Integration: **段階別の集計は上流の集計器へ委譲し、書き直さない**（`research.md` Decision 7）。
+  その集計器は**引数 `summarize` として注入で受け取る**——集計のためだけに gateway を開くと
+  要件 7.9 に正面から反し、本モジュールが `sensing_foundation` を直接 import する羽目になって
+  接点1モジュール規則も壊れる。`iqr_ms` を `mean/min/max` にしたのも、上流 `FieldStats` に
+  p25/p75 が無く、導出には生ログの再走査＝集計器の二重化が要るためである
+- Validation: 未知 stage は捨てずに `unknown_stages` として残す（要件 7.3）。
+  所要時間フィールドの判別は**命名規約だけ**で行い、**段階名の許可リストで絞らない**——
+  上流が段階を足しても集計側の改修が要らないようにする
+- Validation: `source` の札（ログ由来 / 記録由来 / 算出値）は、**同じ量を別の出所から二重に載せない**
+  ための安全機構である。予測所要時間は Throw Record 側から読んでいるため、札が無いと二重計上に気づけない
 - Risks: 段階の合計と end-to-end は一致しない（待ち時間・スケジューリングを含むため）。
   **一致しないことを定義文に明記する**
 
@@ -1238,26 +1400,59 @@ class Distribution:
     missing: int
 
 @dataclass(frozen=True, slots=True)
+class ThrowMetrics:
+    record: "ThrowRecord"
+    truth: ThrowTruth
+    flight: FlightResult
+    accuracy: AccuracyResult
+    convergence: ConvergenceResult
+
+@dataclass(frozen=True, slots=True)
+class ThrowRow:
+    record_id: str
+    session_id: str | None
+    source: str
+    live: bool
+    truth_available: bool
+    error_vector_mm: tuple[float, float] | None
+    values: Mapping[str, float | None]
+
+@dataclass(frozen=True, slots=True)
 class ThrowAggregate:
     calibration_id: str                 # 混在させない（要件 2.5）
+    verified: bool                      # 検証状態も群の鍵の一部（要件 2.2）
     session_ids: tuple[str, ...]
-    verified: bool
-    live_throw_count: int
+    throw_count: int
+    failed_throw_count: int
     valid_throw_count: int
-    provisional: bool                   # 試行数下限未達（要件 5.10）
+    live_throw_count: int
+    converged_count: int
+    not_converged_count: int
+    not_measurable_count: int           # 真値欠測。未収束として数えない
+    single_prediction_throw_count: int  # 規則上つねに未収束になる投擲の内数
+    provisional: bool                   # 試行数下限未達ほか（要件 5.10）
+    provisional_reasons: tuple[str, ...]
     items: Mapping[str, Distribution]   # 実測7項目の分布
-    error_vectors: tuple[tuple[float, float], ...]   # 帰属の入力
-    per_throw: tuple[Mapping[str, object], ...]
+    error_vectors: tuple[tuple[float, float], ...]   # 帰属の入力（向きを保つ）
+    per_throw: tuple[ThrowRow, ...]
 
-def aggregate(results: Sequence[Mapping[str, object]], *,
-              settings: M1Settings) -> tuple[ThrowAggregate, ...]: ...
+def aggregate(results: Sequence[ThrowMetrics], *, settings: M1Settings,
+              latency: LatencyResult | None = None) -> tuple[ThrowAggregate, ...]: ...
 ```
 
 **Implementation Notes**
 
-- Integration: **キャリブレーション識別子ごとに分けて集計する**（要件 2.5）。
-  混ぜて平均すると、座標系の入れ替わりがばらつきとして紛れ込む
-- Validation: 未検証キャリブレーションで得た投擲は、検証済みのものと**同じ集計に混ぜない**
+- Integration: **群の鍵は `(calibration_id, verified)` の対**である（要件 2.5 / 2.2）。
+  混ぜて平均すると、座標系の入れ替わりがばらつきとして紛れ込む。
+  **`verified` を `provisional` へ畳まない**——検証状態と試行数は直し方の違う別の軸であり、
+  1つに畳むと「未検証だが試行数十分」と「検証済みだが試行数不足」が区別できなくなる
+- Integration: 入力は**型付きの `ThrowMetrics`** である。素のマッピングを受けると
+  キーの綴り違いが黙って欠測になり、本モジュールが防ごうとしている壊れ方を入口で許す。
+  実測項目3 は `LatencyAggregator` にしか無いので `latency` を引数で受け取る
+  （再計算は `research.md` Decision 7 に反する）
+- Validation: 未検証キャリブレーションで得た投擲は、検証済みのものと**同じ集計に混ぜない**。
+  有効試行の判定は `truth.impact_point_world_mm.method` で行い、
+  **`AccuracyResult.errors` の空きでは判定しない**
 - Risks: 試行数下限は暫定値である。**未達でも集計は返し、暫定印を付けるだけ**にする（判断側で使う）
 
 ### L6: 帰属 ★
@@ -1285,18 +1480,32 @@ def aggregate(results: Sequence[Mapping[str, object]], *,
 > **偏り成分**
 > 1. 共通偏りの大きさ ÷ ばらつきが `bias_significance_ratio` 未満 → **偏り成分なし**
 > 2. 有意なとき、その向きが検証レポートの平均オフセット方向と `direction_agreement_deg` 以内で
->    一致する → **キャリブレーション由来**
+>    一致する → **キャリブレーション由来**（**符号付き**で比べる。較正のずれは World 上で符号を保つ）
 > 3. 有意なとき、その向きが投擲ごとのカメラ視線方向と一貫して整合し、かつ検証レポートで偏りが
->    認められない → **検出由来の候補**（Depth が対象物のカメラ側表面を測ることによる系統的な寄り）
+>    認められない → **検出由来の候補**（Depth が対象物のカメラ側表面を測ることによる系統的な寄り）。
+>    **こちらは軸として比べる**（同じ向きと逆向きを区別しない）——表面を測る寄りは視線とは**逆**を
+>    向くため、符号付きで比べると物理的に正しい向きが落ちる
 > 4. どちらとも整合しない、または**両者が縮退して区別できない**（投擲位置が1箇所でカメラ視線方向が
->    World 固定方向と一致してしまう場合を含む）→ **判別不能**
+>    World 固定方向と一致してしまう場合を含む）→ **判別不能**。
+>    **縮退の判定は規則2 より先に行う**（順序が load-bearing である）
 >
 > **ばらつき成分**
 > 5. ばらつきがブートストラップで見積もった予測ばらつきの範囲内 → **観測ノイズ由来**
-> 6. 範囲を超え、かつフィットの残差代表値が投擲群の上位側にある → **モデル由来（予測）**
+> 6. 範囲を超え、かつ**フィットの残差代表値が `residual_significance_ratio` × 再抽出見積もり以上**
+>    → **モデル由来（予測）**
 > 7. 範囲を超えるが残差が小さい → **判別不能**
 >
 > **絶対値の目標を置かない。** すべて同一測定内の量どうしの相対比較で定義する。
+>
+> ⚠️ **規則6 の自己言及の解消（タスク5.2 で確定）**: 原文の「残差代表値が投擲群の**上位側**にある」は、
+> 代表値に中央値を採る限り**定義上つねに群の中位**であり、そのままでは真にならない。
+> 上記のとおり「**残差代表値 ≥ `residual_significance_ratio` × 再抽出で見積もった予測ばらつき**」と
+> 解釈して確定させ、`criterion` へ書き込んだ。
+>
+> ⚠️ **検証レポートの偏りは3値である**（タスク5.2 で確定）: 「認められる」「認められない」
+> 「**測っていない**」。design 原文は2値しか想定していないが、**「測っていない」を「認められない」と
+> 同一視すると、検証を実施していないだけの群がまるごと検出由来へ倒れる**（要件 2.2 違反）。
+> 「認められる」の定義（レポート自身のばらつきとの相対比較）も本 Spec で確定させ `criterion` に書いた。
 
 **Dependencies**
 
@@ -1308,20 +1517,29 @@ def aggregate(results: Sequence[Mapping[str, object]], *,
 
 ```python
 @dataclass(frozen=True, slots=True)
+class BootstrapSpread:
+    rms_mm: float | None                         # 見積もれなかったときは None（0 で埋めない）
+    mean_hit_mm: tuple[float, float] | None
+    iterations: int
+    valid_count: int
+    invalid_counts: tuple[tuple[InvalidReason, int], ...]
+    seed: int                                    # 用いた種を結果と同じ場所へ残す（要件 12.4）
+
+@dataclass(frozen=True, slots=True)
 class BiasComponent:
     vector_mm: tuple[float, float]
     norm_mm: float
-    significance_ratio: float
-    world_fixed_agreement_deg: float | None      # 検証レポートの偏りとの角度差
-    camera_ray_agreement_deg: float | None       # カメラ視線方向との角度差
+    significance_ratio: float | None             # ばらつきが 0 / 算出不能なら None
+    world_fixed_agreement_deg: float | None      # 検証レポートの偏りとの角度差（符号付き）
+    camera_ray_agreement_deg: float | None       # カメラ視線方向との角度差（軸）
     degenerate: bool                             # 2方向が縮退して判別できない
     attribution: Attribution
 
 @dataclass(frozen=True, slots=True)
 class ScatterComponent:
-    rms_mm: float
-    bootstrap_rms_mm: float
-    residual_median_mm: float
+    rms_mm: float | None                         # 誤差ベクトルが2件未満なら None
+    bootstrap_rms_mm: float | None
+    residual_median_mm: float | None             # 残差の記録が無ければ None
     attribution: Attribution
 
 @dataclass(frozen=True, slots=True)
@@ -1339,23 +1557,44 @@ class AttributionResult:
     calibration_reference: Mapping[str, object]   # 検証レポートから取り込んだ値（要件 2.4）
     judgement: Judgement
 
-def attribute(aggregate: ThrowAggregate, *, settings: M1Settings,
-              layout: ThrowLayout) -> AttributionResult: ...
+def attribution_criterion(*, direction_agreement_deg: float, bias_significance_ratio: float,
+                          residual_significance_ratio: float, range_band_mm: float) -> str: ...
+def attribute(aggregate: ThrowAggregate, records: Sequence["ThrowRecord"],
+              *, settings: M1Settings) -> AttributionResult: ...
 def bootstrap_prediction_spread(record: "ThrowRecord", *,
-                                iterations: int, seed: int) -> float: ...
+                                iterations: int, seed: int) -> BootstrapSpread: ...
 ```
 
 - Preconditions: `aggregate.error_vectors` が1件以上。0件なら `INSUFFICIENT_TRIALS` で失敗
-- Postconditions: **合計誤差の単一値を返さない。** 常に成分ごとの内訳を返す（要件 6.9）
-- Invariants: 同一入力・同一 seed に対して同一結果（要件 12.4）
+- Postconditions: **合計誤差の単一値を返さない。** 常に成分ごとの内訳を返す（要件 6.9）。
+  `judgement.verdict` は `bias=<帰属先>/scatter=<帰属先>` の対とする（単一の帰属先へ畳むと要件 6.9 に反する）
+- Invariants: 同一入力・同一 seed に対して同一結果（要件 12.4）。
+  乱数は `random.Random(seed)` をローカルに持ち、**グローバル乱数状態に触れない**
 
 **Implementation Notes**
 
 - Integration: 検証レポートの値は**記録に埋め込まれた要約**（`extra["m1"]["calibration"]`）から取り込む。
   評価側は `world_frame_calibration` を import しない
 - Validation: ブートストラップは観測サンプルを再抽出して `prediction_core.predict` を呼び直すだけであり、
-  **新しい推定器を実装しない**
+  **新しい推定器を実装しない**。自前で軌道当てはめを書くと、**ばらつきの見積もりが本番予測器の性質では
+  なく自前実装の性質を測ることになり、帰属そのものが無意味になる**
+- Validation: **ばらつきは平均まわり・分母 N の母集団 RMS** に統一する。
+  要件 6.6 は2つの RMS の大小だけで決まるので、片方だけ N-1 にすると比較が「範囲を超えた」側へ偏る
+- Validation: `attribute()` は `records` を引数に取る。**`ThrowAggregate` はカメラ視線方向・
+  フィット残差・落下地点の真値・検証レポート要約のどれも持たない**ので、
+  要件 6.3 / 6.4 / 6.5 / 6.7 / 6.11 / 2.4 を構造的に満たせないためである
+  （`layout` は `settings.layout` へ吸収した）
 - Risks:
+  - ⚠️ **規則5 と規則6 は、比べる2つの量が一致する点で分かれる。** 純粋な観測ノイズだけの群では
+    群のばらつきと再抽出の見積もりが**同じ量を測っている**ので、判定はほぼコイン投げになる
+    （20種の乱数種で比は 0.581〜1.232、**7/20 がモデル由来へ反転**）。**投擲数を 8→64 に増やしても
+    再抽出回数を 24→200 にしても消えない。** 実測でこの分岐を使う前に、
+    範囲の取り方（点比較か帯か）を見直すこと
+  - ⚠️ **ばらつき側の語彙に「検出由来」が無い**（要件 6.6 / 6.7 は3値のみ）。
+    カメラ視線方向の偏りは投擲位置ごとに World 上の向きが変わるため**実際にばらつきも生み**、
+    それが規則6 で「モデル由来」と名指しされる。**偏り成分と併せて読むこと**
+  - ⚠️ **モデル由来は観測窓が長くないと現れない**（実測: n≤20 では判別不能、n=25 以降でモデル由来）。
+    「検出開始から落下まで何サンプル取れるか」が帰属の可否を決める
   - **投擲位置が1箇所だと、World 固定方向とカメラ視線方向が縮退する。**
     その場合 `degenerate=True` として `UNDETERMINED` を返す。
     判別可能性を上げるにはレイアウトで投擲位置を増やす（`ThrowLayout` を外部化してある理由）
@@ -1399,14 +1638,19 @@ class ImprovementRecord:
 class Oq27Result:
     verdict: Oq27Verdict
     bottleneck_stage: str | None
-    end_to_end_p95_ms: float
-    overhead_reference_ms: float       # 同一測定から得た比較対象（要件 9.2 / 9.6）
-    resource_saturated: bool
+    bottleneck_label: str | None
+    bottleneck_p95_ms: float | None
+    end_to_end_p95_ms: float | None      # 欠測を 0 で埋めない
+    overhead_reference_ms: float | None  # 同一測定から得た比較対象（要件 9.2 / 9.6）
+    resource_saturated: bool | None      # 材料が全欠測なら判定不能。「余裕あり」にしない
+    limiting_conditions: tuple[str, ...] # 律速している条件（要件 9.8）
     improvements: tuple[ImprovementRecord, ...]
     judgement: Judgement
 
-def judge_oq27(latency: LatencyResult, aggregate: ThrowAggregate,
-               *, settings: M1Settings) -> Oq27Result: ...
+def oq27_criterion(*, min_valid_throws: int, min_sessions: int,
+                   fps_shortfall_ratio: float, cpu_saturation_ratio: float) -> str: ...
+def judge_oq27(latency: LatencyResult, aggregate: ThrowAggregate, *, settings: M1Settings,
+               improvements: Sequence[ImprovementRecord] = ()) -> Oq27Result: ...
 ```
 
 - Postconditions: `verdict` が `insufficient` のとき、`improvements` の全項目が `applied=True` であること
@@ -1415,7 +1659,21 @@ def judge_oq27(latency: LatencyResult, aggregate: ThrowAggregate,
 **Implementation Notes**
 
 - Integration: 比較対象（`overhead_reference_ms`）は**同一測定で得た実測オーバーヘッド相当値**であり、
-  設計時の想定 0.2〜0.3 s を合否条件として持ち込まない（`tech.md` 開発標準1）
+  設計時の想定 0.2〜0.3 s を合否条件として持ち込まない（`tech.md` 開発標準1）。
+  **中身は「実測項目2 の代表値 ＋ 実測項目3 の代表値」**と確定させた（タスク6.1）——
+  区間3 は本 Spec の範囲外なので含めない。結果として比較対象は真のオーバーヘッドの**下側**であり、
+  判定は「超えた」と言いやすい側へ倒れる
+- Integration: `improvements` は**引数で受け取る**。`M1Settings.improvements_applied` は
+  項目名の並びしか持たず、要件 9.4 が求める `before` / `after` の証跡をどこからも取れないためである
+- Validation: **資源の飽和は同一測定の3 signal**（取りこぼし > 0 ／`process_fps < capture_fps × 割合`
+  ／`cpu_mean ≥ 100% × 割合`）で判定し、**3つとも欠測なら `None`（判定不能）**とする。
+  ⚠️ **CPU の 100% だけは「その量自身の満量」である**——要件 9.2 は絶対値の目標を禁じるが、
+  「飽和」は目盛りの端への張り付きを指す概念で、使用率という量には定義上の上限しか比較対象が無い。
+  **100% が性能目標ではなくその量の満量である旨を、定数・設定・`criterion` の3箇所に明記する**
+- Validation: 要件 9.7 の「取りこぼしの**増加**」は**「1件以上」**と読む。単一の集計に時系列は無く、
+  前後比較を持つのは `OverheadBench`（計測 ON/OFF）である
+- Validation: 判定の順序は **GATE 1（試行数 → セッション数）→ GATE 2（実機）→ 規則1〜4 → GATE 0 veto**。
+  GATE 0 が veto するのは**「不足」だけ**で「継続」は veto しない
 - Validation: `deferred` を正常な結果として扱う。**判断を急いで暫定値でハードを替えない**
 - Risks: 「不足」の判定は購入判断に直結する。**GATE 0 の証跡が無い判定を出せない構造**にしておく
 
@@ -1431,21 +1689,42 @@ def judge_oq27(latency: LatencyResult, aggregate: ThrowAggregate,
 ```python
 @dataclass(frozen=True, slots=True)
 class Oq05Result:
-    window_mm: float                  # レイアウトから導いた暫定許容窓
-    within_window_ratio: float        # 予測が窓に収まる割合（要件 10.1）
-    upper_bound_note: str             # 「予測側から見た上限」である旨（要件 10.2）
-    required_trials: Mapping[str, int]   # 信頼区間幅ごとの必要試行数（要件 10.3）
-    object_scope_note: str            # 対象物の最終スコープが未決である旨（要件 10.5）
-    judgement: Judgement              # verdict は常に "material_only"（要件 10.4）
+    window_mm: float                     # レイアウトから導いた暫定許容窓
+    within_window_ratio: float | None    # 予測が窓に収まる割合（要件 10.1）。誤差0件なら欠測
+    within_window_count: int             # 割合だけでは分母が読めないので内数も持つ
+    evaluated_throw_count: int
+    confidence_level: float              # 実際に用いた信頼水準（設定から）
+    required_trials: Mapping[str, int | None]   # 信頼区間幅ごとの必要試行数（要件 10.3）
+    upper_bound_note: str                # 「予測側から見た上限」である旨（要件 10.2）
+    object_scope_note: str               # 対象物の最終スコープが未決である旨（要件 10.5）
+    material_only_note: str              # 材料の提示にとどめる旨（要件 10.4）
+    judgement: Judgement                 # verdict は常に "material_only"（要件 10.4）
 
-def oq05_material(aggregate: ThrowAggregate, *, layout: ThrowLayout) -> Oq05Result: ...
+def required_trials_key(width: float) -> str: ...
+def oq05_criterion(*, window_mm: float, aperture_diameter_mm: float, object_diameter_mm: float,
+                   confidence_level: float, interval_widths: Sequence[float]) -> str: ...
+def oq05_material(aggregate: ThrowAggregate, *, settings: M1Settings) -> Oq05Result: ...
 ```
 
 **Implementation Notes**
 
-- Integration: 必要試行数は二項比率の信頼区間幅から算出する。**新しい統計手法を導入しない**
+- Integration: 必要試行数は二項比率の信頼区間幅から算出する。**新しい統計手法を導入しない**。
+  ⚠️ **design 原文は区間の種類（Wald / Wilson / Clopper-Pearson）も全幅か片側かも指定していない。**
+  「新しい統計手法を導入しない」に従い **正規近似（Wald）の全幅** `n = ceil(4 z² p(1-p) / W²)` と
+  解釈して確定させ、式・両側分位点の取り方・全幅である旨を `criterion` へ書き込んだ（タスク6.2）
+- Integration: 署名は `settings` を取る。信頼水準と信頼区間幅は `M1Settings.oq05` にしか無く、
+  `layout` は `settings.layout` と同一物だからである
+- Validation: 窓の判定は誤差ベクトルの**ノルム**で行い（境界ちょうどは内側）、片成分でも
+  L∞（矩形窓）でもない。**3つの注記は公開フィールドと証跡の両方へ載せ、相互排他で固定する**
 - Risks: `within_window_ratio` が「キャッチ成功率」として読まれると、
   移動体性能を無視した誤った期待値になる。**注記を出力に含める**（要件 10.2）
+- Risks: ⚠️ **正規近似は割合が 0 / 1 の近傍で破綻する。** 本実装は p が振り切れた群を
+  「ばらつきが 0 で見積もれない」として**欠測**で返すが、**M1 の初期は試行数が少なく p = 1
+  （全投擲が窓に収まる）は現実的に起こる**——そのとき材料2 が丸ごと欠測になり、しかも
+  `provisional` のどちらの項も立たないので**暫定印が付かないまま材料だけが空になる**。
+  区間の取り方（Wilson 等への差し替え・p の平滑化）か暫定印の条件を OQ-05 の場で見直すこと
+- Risks: `ThrowAggregate.error_vectors` は**最終予測の誤差ベクトルしか持たない**。
+  初回予測時点の分布からの上限を材料へ入れたいなら `ThrowAggregator` 側の拡張が要る
 
 #### BudgetUpdater
 
@@ -1469,13 +1748,21 @@ class BudgetRow:
 @dataclass(frozen=True, slots=True)
 class BudgetUpdate:
     ready: bool                  # False なら更新しない（要件 11.1）
-    missing_items: tuple[str, ...]
+    missing_items: tuple[str, ...]              # "item<n>:<列名>" で欠測列を列挙
     rows: tuple[BudgetRow, ...]
     total_flight_ms: Distribution | None
     remaining_time_ms: Distribution | None      # 移動体に残された時間
     derived_latency_target_ms: float | None     # NFR-3 の更新値（要件 11.4）
+    segment3_assumed_ms: float                  # 導出に使った据え置き値（実測値ではない）
+    total_flight_assumed: str                   # §3 本文の想定値（要件 11.2）
+    remaining_time_assumed: str
+    remaining_time_note: str                    # 上側である旨と想定側の非対称
+    provisional_target_note: str                # 暫定目標である旨（要件 11.7）
+    computation_only_note: str                  # 更新対象の限定（要件 11.8）
     judgement: Judgement
 
+def missing_item_key(item: int, column: str) -> str: ...
+def budget_criterion(*, segment3_assumed_ms: float) -> str: ...
 def compute_budget_update(aggregate: ThrowAggregate, latency: LatencyResult,
                           *, settings: M1Settings) -> BudgetUpdate: ...
 ```
@@ -1488,7 +1775,21 @@ def compute_budget_update(aggregate: ThrowAggregate, latency: LatencyResult,
 - Integration: 区間3（予測確定〜移動体が動き出す）は **M1 の範囲外**である（移動体が存在しない）。
   行は残し、`note` に「M3 で実測する」と明記する。**勝手に埋めない**
 - Validation: `derived_latency_target_ms` は更新後の表から導出する。
-  **表と食い違ったまま放置しない**（`docs/requirements.md` NFR-3 の ⚠️）
+  **表と食い違ったまま放置しない**（`docs/requirements.md` NFR-3 の ⚠️）。
+  ⚠️ **要件 11.4 はどの代表値を使うかも未実測の区間3 をどう扱うかも指定していない。**
+  現行 200 ms が §3 の**区間2＋区間3 の想定範囲の上端和**（0.15 s + 0.05 s）から導かれていることに
+  合わせ、**「区間2 の実測 p95 ＋ 区間3 の据え置き想定値」**と解釈して確定させた（タスク6.3）。
+  区間3 を落とすと NFR-3 の定義自体と食い違うので落とさない。**表の区間3 の行は欠測のままである**
+- Validation: オーバーヘッド合計と残り時間は**投擲ごとに算出**する（代表値どうしの引き算ではない）。
+  ゲートは実測7項目の10列すべてに値があることを要求し、
+  **「行はあるが空」も「行が丸ごと無い」も欠測に数える**
+- Risks: ⚠️ **§3 の想定値の側は区間3 を計上しており、実測の側は含まない。**
+  想定オーバーヘッド 0.2〜0.3 s は区間1+2+3 の和、想定の残り時間 0.3〜1.0 s は
+  **区間3 を差し引いた後**の値である。実測側は区間3 を含まないので
+  **オーバーヘッド合計は下側・移動体に残された時間は上側**へ倒れている。
+  **2列を並べるときは「想定側は区間3 を計上し、実測側は含まない」の一文を必ず一緒に出す**
+- Risks: `BudgetConfig.segment3_assumed_ms` は「**設定なのに実測値ではない据え置き**」である。
+  非正値は起動前に拒否し、公開フィールド・証跡・`criterion` の3経路すべてに据え置きである旨を書く
 - Risks: 更新は `docs/` への書き込みを伴う。**本コンポーネントは値を算出するだけ**で、
   文書の書き換えは実装タスクとして人が行う（差分を目で確認するため）
 
@@ -1505,15 +1806,104 @@ def compute_budget_update(aggregate: ThrowAggregate, latency: LatencyResult,
 - **Input / validation**: 同一入力元・同一設定・同一時間で、条件だけを変えて **A/B/A/B** で回す
 - **Output / destination**: `var/m1/overhead-<session>.json` ＋ 判定を `measurements.md` へ
 - **判定基準**（**実測前に確定させる**）: **ON 条件の1予測あたり総処理時間の中央値と OFF 条件の中央値の差が、
-  OFF 条件の四分位範囲以内**であり、かつ**取りこぼしが増えていない**とき「有意に変化しない」と判定する
+  OFF 条件の四分位範囲以内**であり、かつ**取りこぼしが増えていない**とき「有意に変化しない」と判定する。
+  上流2実装と突き合わせた結果、**(a) 差は絶対値 (b) 基準は OFF 条件の IQR (c) 比較は `<=`（境界は合格）
+  (d) 分位点は `k=(n−1)q` の線形補間 (e) 取りこぼしは `on <= off`** の5点で一致している
+
+```python
+@dataclass(frozen=True, slots=True)
+class SegmentRequest:
+    condition: str
+    measurement_enabled: bool
+    cycle: int
+    index: int
+
+@dataclass(frozen=True, slots=True)
+class SegmentObservation:
+    predict_ms: tuple[float, ...]
+    end_to_end_ms: tuple[float, ...]
+    frames_dropped: int | None
+
+class SegmentRunner(Protocol):
+    def __call__(self, request: SegmentRequest) -> SegmentObservation: ...
+
+@dataclass(frozen=True, slots=True)
+class ConditionStats:
+    condition: str
+    target: str                    # "predict" / "end_to_end"
+    target_label: str
+    samples: int
+    p50_ms: float | None
+    p95_ms: float | None
+    iqr_ms: float | None           # 2件未満なら None（0.0 を基準に据えない）
+
+@dataclass(frozen=True, slots=True)
+class OverheadVerdict:
+    target: str
+    target_label: str
+    passed: bool
+    median_delta_ms: float | None
+    baseline_iqr_ms: float | None
+    within_iqr: bool | None        # 「差があった」と「確かめられなかった」を分ける
+    dropped_not_increased: bool | None
+    on_frames_dropped: int | None
+    off_frames_dropped: int | None
+    detail: str
+    unconditional_validity_note: str | None   # 要件 7.8。真のときは None
+
+@dataclass(frozen=True, slots=True)
+class OverheadReport:
+    criterion: str
+    stats: tuple[ConditionStats, ...]
+    verdicts: tuple[OverheadVerdict, ...]
+    raw_samples: Mapping[str, Mapping[str, tuple[float, ...]]]   # 後から再計算できる生値
+    segment_order: tuple[str, ...]            # A/B/A/B の実行順
+    frames_dropped: Mapping[str, int | None]
+    target_labels: Mapping[str, str]
+    upstream_segment_note: str                # 上流の区間と混同させない
+    end_to_end_definition: str
+    unconditional_validity_note: str | None
+    judgement: Judgement
+
+def overhead_criterion(*, cycles: int, min_samples: int) -> str: ...
+def build_condition_stats(*, condition: str, target: str,
+                          values: Sequence[float]) -> ConditionStats: ...
+def compute_verdict(*, on: ConditionStats, off: ConditionStats,
+                    on_frames_dropped: int | None,
+                    off_frames_dropped: int | None) -> OverheadVerdict: ...
+def run_overhead_bench(*, segments: SegmentRunner, settings: M1Settings) -> OverheadReport: ...
+def report_to_dict(report: OverheadReport) -> dict[str, object]: ...
+def write_overhead_report(report: OverheadReport, output_root: Path,
+                          session_id: str) -> Path: ...
+```
 
 **Implementation Notes**
 
 - Integration: 判定基準の形は上流（`sensing-foundation` の `LoggingOverheadBench`、
   `flying-object-tracking` の `bench-overhead`）と**同一の形**にする。同じ問いに違う基準を使わない
 - Validation: 偽と判定された場合、**当該条件の計測結果を無条件に有効として扱わない旨を出力に含める**（要件 7.8）
+- Integration: **1セグメントの実行は注入（`SegmentRunner`）で受け取る。**
+  design 原文は「何を1セグメントとするか」を定めておらず、壁時計に依存した判定はテストで固定できない。
+  実体として**1投擲＝1セグメント**の `ThrowSegmentRunner` を提供する
+- Validation: 判定値は**3値**（有意に変化しない / 有意に変化した / **判定不能**）とする。
+  欠測を「差が無かった」に丸めない。**判定不能のときも「無条件に有効として扱わない」旨を出す**
+- Validation: 分位点は上流と同一の `k=(n−1)q` 線形補間だが、**件数 0 / 1 では `None` を返す**
+  （上流は `0.0` を返す）。1件から算出した `0.0` は「ばらつきが無い」ではなく
+  「**ばらつきを測れていない**」であり、判定の基準に据えるとあらゆる差が有意になる
 - Risks: 本 Spec の計測対象は `predict` 区間と end-to-end であり、上流の区間とは別である。
   出力に対象区間を明示する
+- Risks: ⚠️ **本比較は計測有効側のオーバーヘッドを過小評価する側（＝「有意に変化しない」へ倒れる側）に
+  偏る。** 無効化できるのは `predict` 段への**送出だけ**で、`ThrowRunner` は計測の有無によらず
+  予測時刻の取得と引数の組み立てを行うため、**その残余は両条件に共通で乗って差に現れない**。
+  偏りの向きを `criterion` に書き込む
+- Risks: ⚠️ **取りこぼし件数の調達経路が CLI 側で未決である。** `UpstreamGateway` は
+  `CaptureMetrics` を公開しておらず、probe を渡さないと取りこぼしは常に欠測になり判定は常に
+  判定不能へ落ちる。`LatencyAggregator` の `frames_dropped` から本 Spec 内で読めるので、
+  **CLI が必ずこれを供給すること**
+- Risks: ⚠️ **上流 `sensing_foundation/bench/logging_overhead.py` の docstring は論理が逆である。**
+  絶対値を採る理由を「ON が OFF より速くなるケースを誤って不合格にしないため」と書くが、
+  符号付きなら ON が速いとき負値になり非負の IQR に必ず収まって**合格する**。
+  実装は絶対値で正しい。**上流の文書修正として申し送る**
 
 ### L8-L9: 出力
 
@@ -1527,8 +1917,10 @@ def compute_budget_update(aggregate: ThrowAggregate, latency: LatencyResult,
 **Contracts**: Batch [x]
 
 - **Trigger**: CLI `report`
-- **Output / destination**: `var/m1/report-<session>.json` ＋ 標準出力の要約 ＋
-  結論を `.kiro/specs/m1-prediction-validation/measurements.md` へ
+- **Output / destination**: `var/m1/report-<session>.json` ＋ 標準出力の要約。
+  ⚠️ **`measurements.md` への書き出しは本コンポーネントが行わない**（タスク7.1 で確定）——
+  そこへ実際に書くのは実機タスク群（9.3 / 9.4 / 9.5 / 9.6）が箇条で所有しており、
+  `BudgetUpdater` の「値を算出するだけで文書を書き換えない」規律とも整合する
 - **要約に必ず含めるもの**:
   - 実測7項目を**対応する `docs/requirements.md` の想定値と並べて**表示する（要件 5.11）
   - 帰属の内訳（合計誤差の単一値にしない。要件 6.9）と、上流の読み分け規則
@@ -1536,10 +1928,76 @@ def compute_budget_update(aggregate: ThrowAggregate, latency: LatencyResult,
   - OQ-05 が**材料であって決着ではない**旨（要件 10.4）
   - 未検証キャリブレーションで得たデータが含まれる場合の**警告**（要件 2.2）
 
+**Contracts**（続き）
+
+```python
+@dataclass(frozen=True, slots=True)
+class MeasurementColumn:
+    key: str
+    present: bool                # 行そのものが無い項目を 0 で埋めない
+    count: int | None
+    median: float | None
+    p95: float | None
+    iqr: float | None
+    minimum: float | None
+    maximum: float | None
+    missing: int | None
+
+@dataclass(frozen=True, slots=True)
+class MeasurementRow:
+    item: int
+    label: str                   # docs/requirements.md §8 M1 の表の見出し
+    assumed: str                 # 対応する想定値（要件 5.11）
+    assumed_source: str          # その想定値の出どころ
+    notes: tuple[str, ...]       # 単位の食い違い・想定値が無い旨など
+    columns: tuple[MeasurementColumn, ...]
+
+@dataclass(frozen=True, slots=True)
+class M1Report:
+    report_version: str
+    session_id: str
+    calibration_id: str
+    verified: bool
+    provisional: bool
+    warnings: tuple[str, ...]
+    measurements: tuple[MeasurementRow, ...]
+    attribution: AttributionResult
+    attribution_reading_notes: tuple[str, ...]   # 上流の読み分け規則（要件 6.9 / 6.11）
+    oq27: Oq27Result
+    oq05: Oq05Result
+    budget: BudgetUpdate
+    overhead: OverheadReport | None
+    judgements: tuple[Judgement, ...]            # 全判定の規則説明文
+    provisional_notice: str
+
+def provisional_warning(reasons: Sequence[str]) -> str: ...
+def judgement_to_dict(judgement: Judgement) -> dict[str, object]: ...
+def build_report(*, session_id: str, aggregate: ThrowAggregate,
+                 attribution: AttributionResult, oq27: Oq27Result, oq05: Oq05Result,
+                 budget: BudgetUpdate, overhead: OverheadReport | None = None) -> M1Report: ...
+def report_to_dict(report: M1Report) -> dict[str, object]: ...
+def render_summary(report: M1Report) -> str: ...
+def write_report(report: M1Report, output_root: Path, session_id: str) -> Path: ...
+```
+
+- Postconditions: **全判定（帰属・OQ-27・OQ-05・時間予算・計測 ON/OFF）の `criterion` が、
+  要約と機械可読出力の両方へ全文のまま載る**（数値だけが残って根拠が消える状態を避ける）
+- Invariants: **1レポート = 1キャリブレーション群**（識別子 × 検証状態）。CLI は群ごとに呼ぶ
+
 **Implementation Notes**
 
+- Integration: 想定値は `BudgetUpdate`（区間1 / 2 と総飛行時間）と `Oq05Result`（許容窓）から
+  **運ぶ**。レポート側で再発明しない
+- Validation: **証跡のキー集合と値の型を1箇所で固定する**（`judgement_to_dict` ＋ JSON 安全化）。
+  真偽値を整数より先に判定し、NaN / ±Inf は `None` へ倒す。書き出しは `allow_nan=False`
 - Risks: 数値だけを転記して根拠を落とすと、`structure.md` が最悪と呼ぶ状態になる。
   **判定規則の説明文を要約に必ず含める**
+- Risks: ⚠️ **項目5（落下時刻の予測誤差）には並べる想定値がどの文書にも無い**——NFR-6 は到達時の
+  静定を求めるだけで、方針は OQ-04 で未確定である。**仮の目標値を置かず「並べる相手が無い」旨を
+  明記する**（置くと実測前の数値が合否条件として独り歩きする）
+- Risks: ⚠️ **想定値と実測値の単位が違う**（項目1 / 2 / 3 は秒 対 ミリ秒、項目6 はメートル 対
+  ミリメートル）。**そのまま引き比べない旨を行の注記として出す。**
+  時間予算表側（`BudgetUpdater`）にも同じ注記があるほうが望ましい
 
 #### Plotter
 
@@ -1565,14 +2023,87 @@ def compute_budget_update(aggregate: ThrowAggregate, latency: LatencyResult,
 | 帰属図 | 誤差ベクトルの散布・共通偏り・カメラ視線方向の重ね描き | 8.7 |
 
 - **Trigger**: CLI `plot`
-- **Output / destination**: `var/m1/plots/<record_id>-<kind>.png`
+- **Output / destination**: `var/m1/plots/<record_id>-<kind>.png`。
+  ⚠️ **帰属図だけは `calibration_id` を幹にする**（タスク7.2 で確定）——帰属は投擲群に対する判断であり、
+  1投擲の識別子を付けると別の投擲の図と取り違えられる
+- **軌道図の投影面は鉛直面（X-Z）**とする（上面図の X-Y と重複せず、床面 z = 0 との交わりが読める）
 - **Idempotency**: 同一入力に同一の図。対話的表示を行わない
+
+```python
+class PlotBackend(Protocol):
+    def open_figure(self, *, kind: str, title: str, x_label: str, y_label: str) -> None: ...
+    def points(self, *, label: str, points: Sequence[tuple[float, float]],
+               annotations: Sequence[str]) -> None: ...
+    def polyline(self, *, label: str, points: Sequence[tuple[float, float]]) -> None: ...
+    def reference_line(self, *, label: str, axis: str, value: float) -> None: ...
+    def circle(self, *, label: str, center: tuple[float, float], radius: float) -> None: ...
+    def arrow(self, *, label: str, origin: tuple[float, float],
+              vector: tuple[float, float]) -> None: ...
+    def note(self, *, text: str) -> None: ...
+    def save(self, path: Path) -> None: ...
+    def missing_glyph_count(self) -> int: ...
+
+@dataclass(frozen=True, slots=True)
+class PlotAvailability:
+    available: bool
+    library: str
+    backend: str
+    reason: str | None
+
+@dataclass(frozen=True, slots=True)
+class PlotResult:
+    available: bool
+    reason: str | None
+    kinds: tuple[str, ...]
+    paths: tuple[Path, ...]
+    missing_glyph_count: int      # 既定フォントで描けなかった文字の**種類数**
+    font_warning: str | None      # 字形が欠けている旨（要件 8.3 が成立していない事実）
+
+def visualization_availability(
+        *, backend_factory: Callable[[], PlotBackend] | None = None) -> PlotAvailability: ...
+def matplotlib_backend() -> PlotBackend: ...
+def plot_output_path(output_root: Path | str, stem: str, kind: str) -> Path: ...
+def draw_top_down(backend: PlotBackend, *, record: "ThrowRecord", truth: ThrowTruth,
+                  layout: ThrowLayout, oq05: Oq05Result) -> None: ...
+def draw_timeline(backend: PlotBackend, *, record: "ThrowRecord", truth: ThrowTruth,
+                  accuracy: AccuracyResult) -> None: ...
+def draw_trajectory(backend: PlotBackend, *, record: "ThrowRecord",
+                    trajectory_points_world_mm: Sequence[tuple[float, float, float]]) -> None: ...
+def draw_convergence(backend: PlotBackend, *, accuracy: AccuracyResult,
+                     convergence: ConvergenceResult) -> None: ...
+def draw_attribution(backend: PlotBackend, *, aggregate: ThrowAggregate,
+                     attribution: AttributionResult,
+                     camera_ray_horizontal: tuple[float, float] | None) -> None: ...
+def render_figures(*, output_root: Path | str, record: "ThrowRecord", truth: ThrowTruth,
+                   accuracy: AccuracyResult, convergence: ConvergenceResult,
+                   layout: ThrowLayout, oq05: Oq05Result, aggregate: ThrowAggregate,
+                   attribution: AttributionResult,
+                   trajectory_points_world_mm: Sequence[tuple[float, float, float]] = (),
+                   camera_ray_horizontal: tuple[float, float] | None = None,
+                   backend_factory: Callable[[], PlotBackend] | None = None) -> PlotResult: ...
+```
 
 **Implementation Notes**
 
-- Integration: 描画は非対話バックエンドで行い、画面を要求しない
-- Validation: 依存が無ければ、**利用不可を報告して終了コードで区別する**（例外で全体を落とさない）
+- Integration: 描画は非対話バックエンドで行い、画面を要求しない。
+  **`matplotlib` の import は関数内に置く**（トップレベルに置くと未導入環境で
+  `m1_validation` 全体が壊れる）
+- Integration: **描画はバックエンド越しに行う**（タスク7.2 で確定）。画像の中身は照合できないので、
+  記録用バックエンドを差し込めなければ「何をどこへ描いたか」が一切固定できない
+- Validation: 依存が無ければ、**利用不可を報告して終了コードで区別する**（例外で全体を落とさない）。
+  値へ倒すのは **`ImportError` だけ**である——書き込み失敗まで握ると
+  「任意依存を入れれば直る」と「入れても直らない」が同じ見え方になる
 - Risks: 図に凡例と単位と「暫定目標値」の注記が無いと誤読される。**注記を図の一部として描く**
+- Risks: ⚠️ **推定軌道の点列とカメラ視線方向の水平成分は、上流のどの公開結果型も持っていない。**
+  `ErrorAttributor` が公開するのは角度差だけであり、`Prediction.trajectory` から点列を起こすのは
+  放物運動モデルの解き直しで要件 8.10 に反する。よって**両方を引数で受け取る**。
+  **CLI がこの2値をどこから調達するかは未決**であり、公開ヘルパの追加が要るなら
+  `ErrorAttributor` が所有する
+- Risks: ⚠️ **要件 8.3 は実質未達である。** matplotlib の既定フォント（DejaVu Sans）は CJK の
+  字形を持たず、本 Spec の見出し・凡例・注記はすべて日本語なので、**実際の PNG では文字が豆腐になる**
+  （実測で16種類の字形が欠落）。「図に明示する」は字が読めて初めて満たされる。
+  本コンポーネントは**その事実を `PlotResult.font_warning` として報告するところまで**を担い、
+  **フォントの導入は CLI か実験計画の仕事**である
 
 #### CLI
 

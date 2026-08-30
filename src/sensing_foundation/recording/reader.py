@@ -133,6 +133,34 @@ class SessionReader:
     Invariants:
         `read(i)` はブロブのオフセットとバイト長のみで決まり、内部の
         可変状態（カーソル等）に依存しない。
+        索引行の `i`（記録側の通し番号）は1セッション内で重複しない
+        （重複していれば `__init__` が `RecordingFormatError` を送出する）。
+
+    「フレーム番号」が指す3つの量（design.md「SessionReader /『フレーム番号』が
+    指す3つの量」。タスク 4.7）:
+
+    ========= ============================== ======================================
+    (a) 行位置 `read(i)` の引数 `i`           `0 .. len(self)-1`
+    (b) 記録側 索引行の `i`。`read()` が返す  記録時の `CaptureFrame.index`
+        通し番号 `CaptureFrame.index`         そのもの
+    (c) 再生側 `RecordedSource` が下流へ渡す  再生セッションの 0 始まり通し番号
+        通し番号 `CaptureFrame.index`
+    ========= ============================== ======================================
+
+    3つは**リングが古いフレームを追い出したときだけ**食い違う（追い出しが
+    無ければ一致するため、区別せずに書いたコードでも通常は動いてしまう）。
+    実測例: 181枚取得して直近60枚を保存した記録では、行位置 0 の記録側通し
+    番号は 121 だった。
+
+    本クラスは **(b) を書き換えない**——`read()` が返す `CaptureFrame.index`
+    は記録時の値そのものである。記録に書き込まれた識別子を、読み出し方の
+    都合で振り直さないためである。0 始まりへ揃えるのは `RecordedSource` の
+    責務であり、`FrameSource` の利用者から見た `CaptureFrame` の不変条件
+    （`index` は 0 から欠番なく増加する）はそこで満たされる。
+
+    `ThrowRecord.extra["sensing"]["frame_index_from"]` / `["frame_index_to"]`
+    は **(b)** である（要件 7.7）。(b) から引くには `position_of()` /
+    `read_recorded()` / `iter_recorded_range()` を使う。
     """
 
     def __init__(self, session_dir: Path) -> None:
@@ -162,6 +190,7 @@ class SessionReader:
 
         self._entries: list[_IndexEntry] = self._read_index()
         self._validate_entries(self._entries)
+        self._position_by_recorded_index = self._build_position_map(self._entries)
 
     # -- 公開インタフェース ---------------------------------------------------
 
@@ -182,6 +211,11 @@ class SessionReader:
 
     def read(self, i: int) -> CaptureFrame:
         """索引位置 `i` のフレームを、ブロブから毎回読み直して再構成する。
+
+        **`i` は索引ファイルの行位置**（0 始まり）であり、記録側の通し番号
+        ではない。返る `CaptureFrame.index` のほうが**記録側の通し番号**である
+        （クラス docstring「『フレーム番号』が指す3つの量」参照）。記録側の
+        通し番号で引きたい場合は `read_recorded()` を使うこと。
 
         内部にカーソルを持たないため、任意の順序・任意の回数呼び出しても
         同じ `i` に対しては常に同じ結果を返す（design.md Invariants）。
@@ -221,7 +255,111 @@ class SessionReader:
         for i in range(len(self._entries)):
             yield self.read(i)
 
+    # -- 公開インタフェース: 記録側の通し番号で引く（タスク 4.7） ---------------
+
+    @property
+    def recorded_index_range(self) -> tuple[int, int] | None:
+        """このセッションに実在する記録側通し番号の範囲（**両端を含む**）。
+
+        フレームが1枚も無い記録では `None`。欠番があっても最小値と最大値を
+        返す（連続であることは保証しない——`iter_recorded_range()` が実在する
+        ぶんだけを返すのはこのためである）。
+        """
+        if not self._entries:
+            return None
+        numbers = [entry.i for entry in self._entries]
+        return (min(numbers), max(numbers))
+
+    def position_of(self, recorded_index: int) -> int:
+        """記録側の通し番号から、索引ファイルの行位置を引く。
+
+        Args:
+            recorded_index: 記録側の通し番号（索引行の `i`）。
+
+        Returns:
+            `read()` へ渡せる行位置。
+
+        Raises:
+            IndexError: その通し番号がこのセッションに存在しない場合
+                （リングが追い出した、または行位置と取り違えて渡した）。
+                メッセージには実在する範囲を含める——取り違えた呼び出し側が
+                その場で原因を判別できるようにするため。
+        """
+        position = self._position_by_recorded_index.get(recorded_index)
+        if position is None:
+            span = self.recorded_index_range
+            available = f"{span[0]}..{span[1]}" if span is not None else "（フレームなし）"
+            raise IndexError(
+                f"記録側の通し番号 {recorded_index} はこのセッションに存在しない"
+                f"（実在する範囲: {available}、行位置の範囲: [0, {len(self._entries)})）。"
+                "行位置と取り違えていないか確認すること"
+            )
+        return position
+
+    def read_recorded(self, recorded_index: int) -> CaptureFrame:
+        """記録側の通し番号でフレームを読む（`read(position_of(n))` と同値）。
+
+        Raises:
+            IndexError: `position_of()` と同じ条件。
+            RecordingFormatError: `read()` と同じ条件。
+        """
+        return self.read(self.position_of(recorded_index))
+
+    def iter_recorded_range(
+        self, index_from: int, index_to: int
+    ) -> Iterator[CaptureFrame]:
+        """記録側通し番号の**閉区間** `[index_from, index_to]` を索引順に返す。
+
+        `ThrowRecord.extra["sensing"]` の `frame_index_from` / `frame_index_to`
+        を、そのまま渡せる形にしてある（要件 7.7。両端を含むため
+        `index_from == index_to` は1枚を指す）。
+
+        端点の実在検証は**呼び出した時点で**行い、最初の `next()` まで遅延
+        させない（generator にすると誤った引数が1枚目を取り出すまで発覚せず、
+        呼び出し側のスタックから原因が消えるため）。
+
+        区間の内側に欠番がある場合は**実在するぶんだけ**を返す（記録側の
+        書き込み失敗などで通し番号が飛ぶことがある）。完全性が要るなら
+        呼び出し側が `index_to - index_from + 1` と件数を比べること。
+
+        Raises:
+            IndexError: `index_from > index_to` の場合、または端点の
+                いずれかがこのセッションに存在しない場合。
+        """
+        if index_from > index_to:
+            raise IndexError(
+                f"閉区間が反転している: index_from={index_from} > index_to={index_to}"
+            )
+        # 端点の実在をここで確かめる（遅延させない）。
+        self.position_of(index_from)
+        self.position_of(index_to)
+
+        positions = [
+            position
+            for position, entry in enumerate(self._entries)
+            if index_from <= entry.i <= index_to
+        ]
+        return (self.read(position) for position in positions)
+
     # -- 内部実装: 構築時の検証 ------------------------------------------------
+
+    @staticmethod
+    def _build_position_map(entries: list[_IndexEntry]) -> dict[int, int]:
+        """記録側の通し番号 → 行位置 の対応表を作る。
+
+        同じ通し番号が2行以上にあると `position_of()` が黙って一方を捨てる
+        （＝同じ識別子が2つのフレームを指す）ため、構築時に拒否する。
+        """
+        mapping: dict[int, int] = {}
+        for position, entry in enumerate(entries):
+            if entry.i in mapping:
+                raise RecordingFormatError(
+                    f"記録側の通し番号が重複している: i={entry.i} が行位置 "
+                    f"{mapping[entry.i]} と {position} の両方に現れる"
+                    "（同じ識別子が2つのフレームを指すため読み出せない）"
+                )
+            mapping[entry.i] = position
+        return mapping
 
     def _build_profile(self, manifest: Mapping[str, object]) -> StreamProfile:
         profile_meta = manifest.get("profile")

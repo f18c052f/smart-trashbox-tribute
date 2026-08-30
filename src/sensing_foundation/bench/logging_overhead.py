@@ -64,7 +64,7 @@ dataclass であり、3条件のうちどの2つを比較して1つの `Overhead
 自明に真になってしまい、判定として無意味になる。
 
 本モジュールはこの問題を避けるため、**自前で外側から** 1フレームぶんの
-所要時間を測る: 各条件の `FrameSource.frames()` イテレータに対して
+所要時間を測る: 3条件で共有する1本の `FrameSource.frames()` イテレータに対して
 `next(iterator)` を呼ぶ直前・直後の `SessionClock.now_ms()` の差を
 `total_ms` として採用し（`recording_on` 条件では、`next()` で得たフレームを
 `SessionRecorder.write()` へ渡す処理も同じ計測区間に含める）、この値を
@@ -101,13 +101,10 @@ A/B/A/B 交互実行（3条件版への一般化）
 「順序効果を打ち消すため A/B/A/B で回す」ことを、3条件へ素直に一般化し、
 `(logging_off, logging_on, recording_on)` という固定順の1巡を「セグメント」
 とし、これを `cycles` 回繰り返す（`logging_off, logging_on, recording_on,
-logging_off, logging_on, recording_on, ...`）。各条件の `FrameSource` は
-**最初に1度だけ** `open_source()` で構築し、以後は同じイテレータから
-`cycles` 回ぶん少しずつ引き出す（毎セグメントで開き直さない——同一の入力元
-から連続して取り出すことで「同一入力元」を文字通り満たす）。1セグメントの
-長さは `segment_s` 秒（各条件で共通、`__init__` 引数）であり、3条件を
-合計した `cycles * segment_s` 秒がそれぞれの条件の総稼働時間になる
-（同一時間で比較する、という要件 10.1 の「同一時間」を満たす）。
+logging_off, logging_on, recording_on, ...`）。1セグメントの長さは
+`segment_s` 秒（各条件で共通、`__init__` 引数）であり、3条件を合計した
+`cycles * segment_s` 秒がそれぞれの条件の総稼働時間になる（同一時間で
+比較する、という要件 10.1 の「同一時間」を満たす）。
 
 実際に交互実行が起きたことをテスト側が確認できるよう、実行したセグメントの
 条件名の列を `LoggingOverheadReport.segment_order`（例:
@@ -115,6 +112,44 @@ logging_off, logging_on, recording_on, ...`）。各条件の `FrameSource` は
 記録する。タイミングに依存する脆いテストを書かずに「単純な逐次実行
 （OFF を全部やってから ON を全部やる）ではなく、本当に交互に実行された」
 ことを構造的に固定できる。
+
+============================================================================
+3条件は1本の入力元を共有する（タスク 7.4。design.md「3条件が入力元を共有する理由」）
+============================================================================
+
+`run()` は `FrameSource`・`SessionClock`・`CaptureMetrics` を**1つずつだけ**
+構築し、3条件で共有する。`open_source()` の呼び出しは1回である。条件の
+切り替えでセグメント境界ごとに変えるのは**ロガーの向き先だけ**であり
+（`logging_off` → `NullLogger`、`logging_on` → `StructuredLogger`、
+`recording_on` → `NullLogger` ＋ `SessionRecorder.write()`）、その差し替えは
+`obslog.Logger` が `Protocol`（構造的部分型）であることを利用した本モジュール
+私有の `_RoutingLogger` が担う。`metrics.py` も `source.py` も変更しない。
+
+**なぜ条件ごとに開かないか**（design.md の根拠1〜3の要約）:
+
+1. RealSense は1デバイスにつき1パイプラインしか開けない。3本を同時に開く
+   構造は live で2本目のオープンが失敗する（タスク9.5 で実測）。
+2. 毎セグメントで開き直す案は、パイプラインのウォームアップ（タスク9.4 の
+   実測: 30fps 要求時にウォームアップ無しで 17〜20fps、2秒後で 30.08fps）に
+   よって**全セグメントがウォームアップ区間**になり、測っているものが
+   ロギング負荷ではなく起動の過渡応答になる。
+3. 交互実行を諦める案は Batch/Job Contract の A/B/A/B を放棄することになり、
+   順序効果と熱ドリフトを打ち消せなくなる。
+
+**帰結（許容する副作用）**: 3条件は1本の列の**互いに素な区間**を処理する。
+`simulated` / `recorded` であっても3条件が同一内容を見ることはもう無い
+（`recording_on` が書き出すセッション記録の `index` には、他条件が引いた
+ぶんの欠番が空く）。これは A/B/A/B の交互実行と複数サイクルが打ち消すべき
+非定常性であり、交互実行が存在する理由そのものである。
+
+**帰結（供給が尽きたときの挙動の変化）**: 入力を共有するため、`StopIteration`
+は3条件同時に効く。旧構造では条件ごとに別々の供給を持っていたので「1条件
+だけ尽きる」ことがあり得たが、共有した1本を分け合う以上それは起こらない。
+
+**条件別の `frames_dropped`**: `CaptureMetrics` が1つしか無いため、
+`counters().frames_dropped` の累計をそのまま読むと3条件とも同じ総数になる。
+**セグメント境界の前後で読んだ差分**を条件ごとに積算する
+（`_run_segment()`）。
 
 ============================================================================
 実機以外での実行と、非実機の断り書き（要件 10.5）
@@ -150,6 +185,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterator, Mapping, Sequence
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -157,7 +193,13 @@ from typing import TYPE_CHECKING, Literal
 from sensing_foundation.config import RuntimeSettings
 from sensing_foundation.errors import SensingConfigError
 from sensing_foundation.metrics import CaptureMetrics
-from sensing_foundation.obslog import Logger, NullLogger, get_logger
+from sensing_foundation.obslog import (
+    Logger,
+    LoggerStats,
+    NullLogger,
+    StageLogger,
+    get_logger,
+)
 from sensing_foundation.recording import layout
 from sensing_foundation.recording.writer import SessionRecorder
 from sensing_foundation.source import open_source
@@ -360,6 +402,64 @@ def _compute_verdict(on: OverheadResult, off: OverheadResult) -> OverheadVerdict
 
 
 # ----------------------------------------------------------------------------
+# 向き先を差し替えられる転送ロガー（タスク 7.4）
+# ----------------------------------------------------------------------------
+
+
+class _RoutingLogger:
+    """`Logger` プロトコルを満たし、委譲先を実行中に差し替えられる転送ロガー。
+
+    3条件が1つの `CaptureMetrics` を共有する構造（design.md「3条件が入力元を
+    共有する理由」）を成立させるための、**本モジュール私有**のクラスである。
+    `CaptureMetrics` は構築時にロガーを束ねてしまうため、条件の切り替えを
+    「別の `CaptureMetrics` を作る」ことで表現すると計測点が3つに割れてしまう。
+    `obslog.Logger` が `Protocol`（構造的部分型）であることを利用し、
+    **転送先だけを差し替えられるロガー**を1つ握らせることで、計測点を1つに
+    保ったまま条件を切り替える。`metrics.py` も `source.py` も変更しない。
+
+    Preconditions: `route_to()` はセグメント境界でのみ呼ぶ（セグメントの
+        途中で向き先が変わると、その条件の測定値に別条件のコストが混ざる）。
+    Postconditions: `enabled` は常に現在の委譲先の `enabled` と一致する。
+    Invariants: 自身は状態（キュー・スレッド・カウンタ）を一切持たない。
+        `stats()` / `close()` も現在の委譲先へそのまま渡す。
+
+    **測定上の注意**: 本クラスを挟むことで、`emit()` 1回につき Python の
+    関数呼び出しと `**data` の再パックが1段ぶん増える。このコストは
+    **3条件すべてに等しく乗る**ため、条件間の差（`median_delta_ms`）には
+    現れない——`logging_off` を「素の `NullLogger`」ではなく「転送を1段
+    挟んだ `NullLogger`」を基準点として測る、という意味である。
+    """
+
+    __slots__ = ("_target", "enabled")
+
+    def __init__(self, target: Logger) -> None:
+        self._target = target
+        self.enabled = target.enabled
+
+    def route_to(self, target: Logger) -> None:
+        """委譲先を差し替える（セグメント境界でのみ呼ぶこと）。"""
+        self._target = target
+        self.enabled = target.enabled
+
+    def emit(self, stage: str, event: str, /, **data: object) -> None:
+        self._target.emit(stage, event, **data)
+
+    def stage(self, stage: str) -> StageLogger:
+        return self._target.stage(stage)
+
+    def timed(
+        self, stage: str, event: str, /, **data: object
+    ) -> AbstractContextManager[None]:
+        return self._target.timed(stage, event, **data)
+
+    def stats(self) -> LoggerStats:
+        return self._target.stats()
+
+    def close(self, timeout_ms: float = 1000.0) -> None:
+        self._target.close(timeout_ms)
+
+
+# ----------------------------------------------------------------------------
 # LoggingOverheadBench
 # ----------------------------------------------------------------------------
 
@@ -371,8 +471,12 @@ class LoggingOverheadBench:
     Postconditions: `run()` が返す `LoggingOverheadReport.results` は常に
         3件（`logging_off`/`logging_on`/`recording_on`）そろっている。
         `segment_order` の長さは `3 * cycles`。
-    Invariants: 判定基準文字列（`_CRITERION_TEXT`）は実測値に一切依存しない
-        固定値である。
+    Invariants:
+        - 判定基準文字列（`_CRITERION_TEXT`）は実測値に一切依存しない固定値
+          である。
+        - `run()` 1回につき `open_source()` の呼び出しは**1回だけ**であり、
+          `FrameSource`・`SessionClock`・`CaptureMetrics` は3条件で共有される
+          （モジュール docstring「3条件は1本の入力元を共有する」）。
     """
 
     def __init__(self, segment_s: float, cycles: int) -> None:
@@ -409,25 +513,24 @@ class LoggingOverheadBench:
     ) -> LoggingOverheadReport:
         """3条件を交互実行し、`LoggingOverheadReport` を返す。
 
-        `settings.capture` は3条件で共通に使う（`open_source()` へ同じ
-        `settings` を渡す——`open_source()` は `settings.logging`/
-        `settings.recording` を参照しないため、これらのフィールドの値に
-        関わらず取得設定は3条件で完全に同一になる）。`settings.logging`/
+        `settings.capture` は3条件で共通に使う——そもそも `open_source()` は
+        1回しか呼ばれず、3条件は同じ `FrameSource` から引くため、取得設定が
+        条件間で食い違う余地が構造的に無い。`settings.logging`/
         `settings.recording` は「ロギング/記録を有効にした条件」で使う
         `queue_capacity`/`compression` 等の**テンプレート**としてのみ使い、
         `enabled` と出力先（`path`/`root`）は本メソッドが `work_dir` を
-        基準に条件ごとに上書きする。
+        基準に上書きする。
 
         Args:
             settings: `capture`（3条件共通）と `logging`/`recording`
                 （`queue_capacity`/`compression` 等のテンプレート）の供給元。
                 `source` は `hardware_disclaimer` の判定にも使う。
             supplier: `settings.source == SourceKind.SIMULATED` のとき必須
-                （`open_source()` と同じ意味論）。3条件とも**同一の**
-                呼び出し可能オブジェクトを渡す——各条件の `SimulatedSource`
-                インスタンスがそれぞれ独立した呼び出し通し番号を持つため、
-                同一の供給関数を共有しても互いに干渉しない
-                （`SimulatedSource` の実装判断1参照）。
+                （`open_source()` と同じ意味論）。`SimulatedSource` は1つ
+                しか作られないため、3条件は**この供給関数が返す1本の列**を
+                前から順に分け合う。したがって供給は3条件ぶんの合計
+                （おおむね `3 * cycles * segment_s` 秒ぶん）を賄える必要が
+                ある——尽きた時点で3条件とも打ち切られる。
             work_dir: `logging_on` 用の NDJSON ログと `recording_on` 用の
                 セッション記録を書き出す作業ディレクトリ
                 （`work_dir/"logs"` と `work_dir/"sessions"` を使う）。
@@ -443,35 +546,32 @@ class LoggingOverheadBench:
         logs_dir = work_dir / "logs"
         sessions_root = work_dir / "sessions"
 
-        clock_off = SessionClock(session_id="bench-logging-off")
-        logger_off: Logger = NullLogger()
-        metrics_off = CaptureMetrics(logger_off, clock_off, sysstat=None)
-        source_off = open_source(
-            settings, metrics_off, clock=clock_off, supplier=supplier, speed=speed
-        )
-
-        clock_on = SessionClock(session_id="bench-logging-on")
+        # 3条件で1つずつ共有する（design.md「3条件が入力元を共有する理由」）。
+        clock = SessionClock(session_id="bench-logging")
+        null_logger: Logger = NullLogger()
         logging_cfg = replace(settings.logging, enabled=True, path=logs_dir)
-        logger_on: Logger = get_logger(logging_cfg, clock_on)
-        metrics_on = CaptureMetrics(logger_on, clock_on, sysstat=None)
-        source_on = open_source(
-            settings, metrics_on, clock=clock_on, supplier=supplier, speed=speed
+        structured_logger: Logger = get_logger(logging_cfg, clock)
+        # 取得ループが握るのは転送ロガー1本だけ。向き先の差し替えが条件の切り替えになる。
+        router = _RoutingLogger(null_logger)
+        metrics = CaptureMetrics(router, clock, sysstat=None)
+        source = open_source(
+            settings, metrics, clock=clock, supplier=supplier, speed=speed
         )
 
-        clock_rec = SessionClock(session_id="bench-logging-recording")
-        # recording_on 条件はロギングを無効にする（「記録」単独の追加負荷を
-        # 測るため。モジュール docstring「3条件と、比較の構造」参照）。
-        logger_rec: Logger = NullLogger()
-        metrics_rec = CaptureMetrics(logger_rec, clock_rec, sysstat=None)
-        source_rec = open_source(
-            settings, metrics_rec, clock=clock_rec, supplier=supplier, speed=speed
-        )
+        # 条件ごとの向き先。`recording_on` は `NullLogger` のまま
+        # `SessionRecorder.write()` を足す（記録単独の追加負荷を測るため。
+        # モジュール docstring「3条件と、比較の構造」参照）。
+        logger_for_condition: Mapping[str, Logger] = {
+            "logging_off": null_logger,
+            "logging_on": structured_logger,
+            "recording_on": null_logger,
+        }
 
         recording_cfg = replace(settings.recording, enabled=True, root=sessions_root)
         recorder = SessionRecorder(
             root=recording_cfg.root,
-            session_id=layout.new_session_id(clock_rec.started_wall_ms),
-            profile=source_rec.profile,
+            session_id=layout.new_session_id(clock.started_wall_ms),
+            profile=source.profile,
             device=None,
             runtime={"origin": "bench_logging_overhead"},
             compression=recording_cfg.compression,
@@ -482,44 +582,50 @@ class LoggingOverheadBench:
 
         raw_samples: dict[str, list[float]] = {name: [] for name in _CONDITIONS}
         active_elapsed_ms: dict[str, float] = dict.fromkeys(_CONDITIONS, 0.0)
-        exhausted: dict[str, bool] = dict.fromkeys(_CONDITIONS, False)
+        frames_dropped: dict[str, int] = dict.fromkeys(_CONDITIONS, 0)
         segment_order: list[str] = []
+        exhausted = False
 
-        clocks = {"logging_off": clock_off, "logging_on": clock_on, "recording_on": clock_rec}
-
-        with source_off, source_on, source_rec:
-            iterators = {
-                "logging_off": iter(source_off.frames()),
-                "logging_on": iter(source_on.frames()),
-                "recording_on": iter(source_rec.frames()),
-            }
+        with source:
+            iterator = iter(source.frames())
 
             for _ in range(self._cycles):
                 for condition in _CONDITIONS:
                     segment_order.append(condition)
-                    self._run_segment(
+                    router.route_to(logger_for_condition[condition])
+                    exhausted = self._run_segment(
                         condition,
-                        clock=clocks[condition],
-                        iterator=iterators[condition],
+                        clock=clock,
+                        iterator=iterator,
+                        metrics=metrics,
                         recorder=recorder if condition == "recording_on" else None,
                         samples=raw_samples[condition],
                         exhausted=exhausted,
                         active_elapsed_ms=active_elapsed_ms,
+                        frames_dropped=frames_dropped,
                     )
 
+            # 停止処理（`source.__exit__`）はどの条件にも属さない。向き先を
+            # 無効側へ戻してから抜ける。
+            router.route_to(null_logger)
+
         # summary.json への書き込み（副作用）のために呼ぶ。戻り値は使わない
-        # ——`OverheadResult.frames_dropped` は `metrics_rec.counters()` から
-        # 直接取るため、`RecordingStats` を経由する必要が無い。
-        recorder.close(metrics_rec.counters())
-        logger_on.close()
+        # ——`OverheadResult.frames_dropped` はセグメント境界の差分から
+        # 条件ごとに積算しており、`RecordingStats` を経由しない。渡す
+        # `CaptureStats` は**共有した計測点の累計**であり、`recording_on`
+        # 条件だけの値ではない（summary.json は記録側の付随成果物であって、
+        # 本ベンチの判定材料ではない）。
+        recorder.close(metrics.counters())
+        structured_logger.close()
 
         results = tuple(
-            self._build_result(condition, raw_samples[condition], active_elapsed_ms[condition], metrics)
-            for condition, metrics in (
-                ("logging_off", metrics_off),
-                ("logging_on", metrics_on),
-                ("recording_on", metrics_rec),
+            self._build_result(
+                condition,
+                raw_samples[condition],
+                active_elapsed_ms[condition],
+                frames_dropped[condition],
             )
+            for condition in _CONDITIONS
         )
         by_condition = {r.condition: r for r in results}
 
@@ -554,25 +660,35 @@ class LoggingOverheadBench:
         *,
         clock: SessionClock,
         iterator: Iterator[CaptureFrame],
+        metrics: CaptureMetrics,
         recorder: SessionRecorder | None,
         samples: list[float],
-        exhausted: dict[str, bool],
+        exhausted: bool,
         active_elapsed_ms: dict[str, float],
-    ) -> None:
-        """1セグメント（`segment_s` 秒ぶん）を実行し、`samples`/`active_elapsed_ms` を更新する。
+        frames_dropped: dict[str, int],
+    ) -> bool:
+        """1セグメント（`segment_s` 秒ぶん）を実行し、新しい `exhausted` を返す。
 
         `total_ms` は `next(iterator)` の直前・直後の `clock.now_ms()` の差
         として測る（モジュール docstring「本モジュール独自の `total_ms` 測定」
         参照）。`recorder` が渡された場合（`recording_on` 条件）は、取得した
         フレームを `recorder.write()` へ渡す処理も同じ計測区間に含める。
 
-        供給が尽きた（`StopIteration`）場合は `exhausted[condition]` を立て、
-        このセグメントを打ち切る。以後のセグメントはこのフラグを見て
-        即座にスキップする（他の条件のセグメントには影響しない）。
-        """
-        if exhausted[condition]:
-            return
+        `frames_dropped[condition]` には、**このセグメントの前後で読んだ
+        `metrics.counters().frames_dropped` の差分**を足し込む（3条件が
+        1つの `CaptureMetrics` を共有するため、累計値をそのまま読むと
+        どの条件も同じ総数になってしまう）。
 
+        供給が尽きた（`StopIteration`）場合は `True` を返してこのセグメントを
+        打ち切る。入力元は3条件で共有しているため、尽きた時点で以後の
+        すべてのセグメントが即座にスキップされる（条件ごとに別々の供給を
+        持っていた旧構造との差分。共有した1本の列を分け合う以上、
+        「1条件だけ尽きる」ことは起こり得ない）。
+        """
+        if exhausted:
+            return True
+
+        dropped_before = metrics.counters().frames_dropped
         segment_start_ms = clock.now_ms()
         deadline_ms = segment_start_ms + self._segment_s * 1000.0
 
@@ -581,7 +697,7 @@ class LoggingOverheadBench:
             try:
                 frame = next(iterator)
             except StopIteration:
-                exhausted[condition] = True
+                exhausted = True
                 break
             if recorder is not None:
                 recorder.write(frame)
@@ -589,13 +705,15 @@ class LoggingOverheadBench:
             samples.append(t1 - t0)
 
         active_elapsed_ms[condition] += clock.now_ms() - segment_start_ms
+        frames_dropped[condition] += metrics.counters().frames_dropped - dropped_before
+        return exhausted
 
     @staticmethod
     def _build_result(
         condition: str,
         samples: list[float],
         active_elapsed_ms: float,
-        metrics: CaptureMetrics,
+        frames_dropped: int,
     ) -> OverheadResult:
         sorted_samples = sorted(samples)
         n = len(sorted_samples)
@@ -613,5 +731,5 @@ class LoggingOverheadBench:
             total_ms_p95=p95,
             total_ms_iqr=p75 - p25,
             measured_fps=measured_fps,
-            frames_dropped=metrics.counters().frames_dropped,
+            frames_dropped=frames_dropped,
         )

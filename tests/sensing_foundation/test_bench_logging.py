@@ -32,6 +32,7 @@ import json
 import pytest
 from synthetic import make_supplier
 
+from sensing_foundation.bench import logging_overhead
 from sensing_foundation.bench.logging_overhead import (
     _CRITERION_TEXT,
     LoggingOverheadBench,
@@ -255,3 +256,136 @@ class TestRunAgainstSimulated:
         }
         assert round_tripped["hardware_disclaimer"] is not None
         assert len(round_tripped["results"]) == 3
+
+
+# ----------------------------------------------------------------------------
+# run(): 3条件が1本の入力元を共有する構造（タスク 7.4）
+# ----------------------------------------------------------------------------
+
+
+class TestSingleSharedInputSource:
+    """3条件が `FrameSource`/`SessionClock`/`CaptureMetrics` を1つずつ共有する。
+
+    design.md「3条件が入力元を共有する理由」を、外から観測できる形で固定する。
+    条件ごとに別インスタンスを開く旧構造では、ここに置いた表明はいずれも
+    偽になる（`open_source()` は3回呼ばれ、記録側の `index` は 0 から連番に
+    なり、`frames_dropped` は3条件で同一の累計値になる）。
+    """
+
+    def _run(self, tmp_path, *, cycles=3, segment_s=0.02) -> LoggingOverheadReport:
+        supplier = make_supplier(WIDTH_PX, HEIGHT_PX, list(range(20000)), delay_s=0.0)
+        bench = LoggingOverheadBench(segment_s=segment_s, cycles=cycles)
+        return bench.run(_settings(), supplier=supplier, work_dir=tmp_path / "work")
+
+    def test_open_source_is_called_exactly_once(self, tmp_path, monkeypatch):
+        """入力元は1本だけ開く（条件ごとに開かない）。"""
+        real_open_source = logging_overhead.open_source
+        calls: list[tuple] = []
+
+        def counting_open_source(*args, **kwargs):
+            calls.append((args, kwargs))
+            return real_open_source(*args, **kwargs)
+
+        monkeypatch.setattr(logging_overhead, "open_source", counting_open_source)
+
+        report = self._run(tmp_path)
+
+        assert len(calls) == 1
+        assert len(report.results) == 3
+
+    def test_only_one_capture_metrics_is_constructed(self, tmp_path, monkeypatch):
+        """計測点も1つだけ共有する（条件ごとに別の `CaptureMetrics` を持たない）。"""
+        real_cls = logging_overhead.CaptureMetrics
+        instances: list[object] = []
+
+        def counting_metrics(*args, **kwargs):
+            instance = real_cls(*args, **kwargs)
+            instances.append(instance)
+            return instance
+
+        monkeypatch.setattr(logging_overhead, "CaptureMetrics", counting_metrics)
+
+        report = self._run(tmp_path)
+
+        assert len(instances) == 1
+        assert len(report.results) == 3
+
+    def test_recorded_indices_are_a_gapped_subset_of_one_shared_stream(self, tmp_path):
+        """記録側の `index` に欠番があること＝3条件が同じ列を分け合った証跡。"""
+        report = self._run(tmp_path)
+        by_condition = {r.condition: r for r in report.results}
+        total_pulled = sum(r.samples for r in report.results)
+
+        session_dir = next((tmp_path / "work" / "sessions").iterdir())
+        lines = (session_dir / "frames.ndjson").read_text(encoding="utf-8").splitlines()
+        indices = [json.loads(line)["i"] for line in lines if line]
+
+        assert indices == sorted(indices)
+        assert len(set(indices)) == len(indices)
+        assert len(indices) == by_condition["recording_on"].samples
+        # 別々の入力元だったなら 0 から連番になる。共有では欠番が空く。
+        assert indices != list(range(len(indices)))
+        # 最後のセグメントは recording_on なので、共有列の最終要素を引くのはこの条件。
+        assert max(indices) == total_pulled - 1
+
+    def test_frames_dropped_is_attributed_per_condition_as_a_delta(
+        self, tmp_path, monkeypatch
+    ):
+        """共有カウンタをセグメント境界の差分として条件ごとに積算する。
+
+        simulated ではドレイン破棄が常に 0 で表明が空振りするため、
+        `frames_dropped` が「フレームを1枚処理するごとに1増える」計測点へ
+        差し替えて非空振りにする。差分として積算していれば条件別の値は
+        その条件のサンプル数と一致し、共有累計をそのまま読んでいれば
+        3条件とも同じ総数になる。
+        """
+        real_cls = logging_overhead.CaptureMetrics
+
+        class _DropCountingMetrics(real_cls):  # type: ignore[valid-type,misc]
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.fake_dropped = 0
+
+            def frame(self, timing, frame):
+                self.fake_dropped += 1
+                super().frame(timing, frame)
+
+            def counters(self):
+                return dataclasses.replace(
+                    super().counters(), frames_dropped=self.fake_dropped
+                )
+
+        monkeypatch.setattr(logging_overhead, "CaptureMetrics", _DropCountingMetrics)
+
+        report = self._run(tmp_path)
+        total_pulled = sum(r.samples for r in report.results)
+
+        assert total_pulled > 0
+        assert sum(r.frames_dropped for r in report.results) == total_pulled
+        for result in report.results:
+            assert result.frames_dropped == result.samples, result.condition
+            # 共有累計をそのまま読んでいたら、どの条件も総数に等しくなる。
+            assert result.frames_dropped != total_pulled, result.condition
+
+    def test_structured_logger_only_receives_the_logging_on_segments(self, tmp_path):
+        """ロガーの向き先の差し替えが、セグメント境界で実際に効いている。"""
+        report = self._run(tmp_path)
+        by_condition = {r.condition: r for r in report.results}
+        total_pulled = sum(r.samples for r in report.results)
+
+        log_file = next((tmp_path / "work" / "logs").glob("*.ndjson"))
+        events = [
+            json.loads(line)
+            for line in log_file.read_text(encoding="utf-8").splitlines()
+            if line
+        ]
+        frame_events = [
+            e for e in events if e["stage"] == "capture" and e["event"] == "frame"
+        ]
+        session_end = [e for e in events if e["event"] == "session_end"]
+        assert len(session_end) == 1
+        dropped = session_end[0]["data"]["dropped"]
+
+        assert len(frame_events) > 0
+        assert len(frame_events) + dropped == by_condition["logging_on"].samples
+        assert by_condition["logging_on"].samples < total_pulled

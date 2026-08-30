@@ -160,7 +160,11 @@ class CaptureFrame:
 
     Attributes:
         index: セッション内の 0 始まり通し番号。欠番なく増加する
-            （Invariant。構築時には検証しない）。
+            （Invariant。構築時には検証しない）。**この不変条件が適用される
+            のは `FrameSource` が下流へ渡すフレームである**——記録から
+            読み出したフレーム（`SessionReader.read()` の戻り値）は記録時の
+            値をそのまま保つため、リングが古いフレームを追い出した記録では
+            0 始まりにならない（下の Invariants 節を参照）。
         seq: 入力元が付けたフレーム番号。欠落検出に使う。
         t_capture_ms: セッション単調時計（`SessionClock`）による取得時刻（ms）。
             **これが正の時間基準**であり、同一セッション内で単調非減少である
@@ -186,6 +190,18 @@ class CaptureFrame:
     Invariants（同一セッション内。構築時には検証しない）:
         `t_capture_ms` は単調非減少である。
         `index` は 0 から欠番なく増加する。
+
+    `index` の不変条件が適用される範囲（タスク 4.7。design.md
+    「SessionReader /『フレーム番号』が指す3つの量」）:
+        上の `index` の不変条件は **`FrameSource`（live / recorded /
+        simulated）が下流へ渡すフレーム**についてのものである。
+        `SessionReader.read()` が返す `CaptureFrame` はこの不変条件の
+        対象外であり、**記録時の `index` をそのまま保つ**（記録に書き込まれた
+        識別子を、読み出し方の都合で振り直さないため）。リングが古い
+        フレームを追い出した記録では 0 始まりにならない（実測例: 181枚
+        取得して直近60枚を保存した記録の先頭は 121）。`RecordedSource` は
+        この値を再生セッションの 0 始まり通し番号へ振り直したうえで下流へ
+        渡すため、`FrameSource` の利用者から見た不変条件は保たれる。
     """
 
     index: int

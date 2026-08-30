@@ -61,12 +61,20 @@ _DEFAULT_RING_BYTES = 640 * 480 * 2 * 30 * 3.0
 
 
 def test_capture_config_defaults_disable_color():
-    """Color は既定で無効（改善順序1番目。tasks.md 1.6 / design.md §13.2）。"""
+    """Color は既定で無効（改善順序1番目。tasks.md 1.6 / design.md §13.2）。
+
+    `fps` の既定はタスク 9.4 の実機実測により 30 → 60 へ変更された
+    （`measurements.md` タスク9.4）。解像度 640×480 は候補モード列が
+    640×480 固定であったため**比較していない**——こちらは実測の裏付けを
+    持たない初期評価候補のままである
+    （`test_default_resolution_fps_documented_as_initial_candidates_not_requirements`
+    がその旨の docstring 表記を固定する）。
+    """
     capture = CaptureConfig()
     assert capture.color_enabled is False
     assert capture.width_px == 640
     assert capture.height_px == 480
-    assert capture.fps == 30
+    assert capture.fps == 60
     assert capture.queue_capacity == 1
     assert capture.drain_enabled is True
     assert capture.on_acquire_error == "continue"
