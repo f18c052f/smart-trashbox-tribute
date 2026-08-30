@@ -66,6 +66,7 @@
 
 - **`sensing_foundation` の公開入口（`sensing_foundation.__init__`）のみ**。内部モジュールへ直接 import しない。**接点は `upstream.py` / `deproject.py` / `cli.py` の3モジュールに限る**（`cli.py` は従来どおり設定解決のみ）
   - `upstream.py` — フレーム収集・型写像・ロギング委譲（従来どおり）。生 Depth → mm の換算と無効画素の判定に `depth_raw_to_mm` / `is_valid_depth` を用いる
+  - `profile.py` — 上流 `StreamProfile` を**型注釈としてのみ**参照する（`TYPE_CHECKING` 下の import）。**実行時に `sensing_foundation` へ依存しない**ため、`__init__.py` から再エクスポートしても「未導入の環境でも import が成功する」性質（要件 8.6）を壊さない（タスク9.1）
   - `deproject.py` — **逆投影の基本演算 `deproject_pixel` と型 `CameraIntrinsics` のみ**を参照する。⚠️ **これは当初の「接点は `upstream.py` だけ」という制約を意図的に緩めたものである。** 基本演算は L2 の逆投影で必要になるため、`upstream.py`（L8）経由では層を逆流させずに届かない。緩めた代わりに、`deproject.py` が参照してよい上流シンボルを上記2つに限定し、`test_boundaries.py` で列挙固定する（要件 3.8 / 8.2）
   - この2モジュールが参照する上流シンボルはいずれも**純関数・値オブジェクトであり、実機・SDK を要求しない**。したがって要件 9.2（ハード不要）は維持される
 - **`numpy` のみ**をサードパーティ依存として宣言する（extras `calibration`）。**`[project].dependencies` は空のまま維持する**
@@ -493,6 +494,7 @@ flowchart TB
 | LinAlg | L0 | 正規直交化・直交性検査・回転差分・ロバスト統計 | 2.4, 3.3, 7.4 | numpy (P0) | Service |
 | GeoTypes | L1 | 値オブジェクトの定義 | 1.2, 1.6, 2.5, 2.8, 4.6 | errors (P1), linalg (P2) | State |
 | CalibrationPlan | L2 | 設置者の入力（範囲・マーカー・検証点・下限・許容値） | 1.4, 4.9, 7.1 | types (P0) | State, Batch |
+| ProfileMapper | L2 | 上流 `StreamProfile` を `StreamSignature` / `Intrinsics` へ写す（公開契約。タスク9.1） | 6.4, 8.2, 8.4 | types (P0), errors (P1) | Service |
 | Deprojector | L2 | 範囲限定の逆投影（基本演算は上流へ委譲）、歪みモデル受理判定、無効点除外 | 1.3, 1.4, 3.4, 3.5, 3.8 | types (P0), sensing_foundation.geometry (P0 外部) | Service |
 | FloorPlaneEstimator | L3 | RANSAC + SVD による床平面推定と品質算出 | 1.1-1.7, 5.1, 5.4, 9.3, 9.4 | deproject (P0) | Service |
 | WorldTransform | L3 | 剛体変換の保持と適用・逆変換・差分 | 3.1-3.3, 3.6, 7.4, 10.4, 11.4 | linalg (P0) | Service, State |
@@ -1203,7 +1205,24 @@ def timed_apply(logger, transform: WorldTransform, points_camera_mm): ...
 
 - Integration: `__all__` に列挙したシンボルのみが公開契約。下流（`flying-object-tracking` / `m1-prediction-validation`）が日常的に使うのは
   `load_calibration` / `CalibrationResult` / `WorldTransform` / `check_compatibility` / `CalibrationFailure` / `FailureReason` の6つに集約される
-- Validation: `__init__` はロジックを持たず再エクスポートのみ。`prediction_core` を import しない（要件 8.6）
+- Integration: ⚠️ **`check_compatibility` を公開するなら、その引数を作る手段も公開しなければならない。**
+  要件 6.4 は「読み込んだ結果の……が**現在の入力元のそれ**と一致しない場合」と定めており、
+  下流は「現在の入力元の `StreamSignature` / `Intrinsics`」を用意できなければこの検査を呼べない。
+  検査は `result.signature != signature` という**オブジェクト同士の比較**なので、
+  構造が同じだけの別クラスを渡すと**常に不一致**になる——下流が自前の型で代用することはできない。
+  したがって公開契約には次の4つを含める（タスク9.1）:
+  - 型: `StreamSignature` / `Intrinsics`（`types.py`）
+  - 写像: `to_signature` / `to_intrinsics`（`profile.py`）
+- Integration: 写像は `profile.py` に置く。**`StreamProfile` を型注釈にしか使っていない**ため
+  （`from __future__ import annotations` により実行時には評価されない）、`TYPE_CHECKING` 下の
+  import だけで済み、`sensing_foundation` への実行時依存を持ち込まない。
+  `upstream.py`（`sensing_foundation` を実行時に使う唯一の接点）はここから再 import して使う
+- Validation: `__init__` はロジックを持たず再エクスポートのみ。`prediction_core` を import しない（要件 8.6）。
+  **`sensing_foundation` が未導入の環境でも `import world_frame_calibration` と
+  `__all__` 全シンボルへのアクセスが成功する**という性質は、公開面を広げた後も維持する
+- Risks: `to_intrinsics` は `profile.intrinsics is None` を `CalibrationConfigError` として弾く
+  （要件 8.4: 独自に保持した固定値で埋めない）。**この安全弁は較正側が所有する。**
+  下流に写像を書かせると、下流ごとに転記され、この弁が落ちる
 
 #### Procedure（ドキュメント成果物）
 
