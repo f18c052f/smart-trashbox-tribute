@@ -352,7 +352,9 @@ src/m1_validation/
 │   ├── budget.py          # 時間予算表の更新値の算出（§3 更新の入力。ゲート付き）
 │   ├── oq27.py            # Pi 4 継続可否の判定規則と適用
 │   └── oq05.py            # NFR-7 の目標値・試行回数 N の判断材料
-├── overhead.py            # 計測 ON/OFF 比較（上流と同じ判定基準の形）
+├── bench.py               # 計測 ON/OFF 比較（上流と同じ判定基準の形。タスク6.4で bench.py として実装。
+                           #   design.md の OverheadBench 節は擬似コード無しで着手したため、公開面は
+                           #   上流2実装の形を踏襲して起こした）
 ├── report.py              # 人間可読の要約 ＋ 機械可読 JSON
 ├── plot.py                # ★ matplotlib を import する唯一の場所。開発PC 専用
 └── cli.py                 # run-throw / ingest-truth / measure / attribute / judge-oq27 /
@@ -381,7 +383,8 @@ tests/m1_validation/
 ├── test_judgement_oq27.py        # GATE 0/1/2 と4値の分岐
 ├── test_judgement_oq05.py
 ├── test_budget.py                # 実測値が揃うまで更新しないゲート
-├── test_overhead.py
+├── test_m1_bench.py       # test_overhead.py ではない。design.md 未記載の衝突回避規約に揃えた
+                           #   （tasks.md「Implementation Notes」参照）
 ├── test_report.py
 ├── test_plot.py                  # 依存が無い環境での縮退を含む
 ├── test_cli.py
