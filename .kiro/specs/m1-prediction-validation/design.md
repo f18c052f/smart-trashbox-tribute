@@ -241,10 +241,15 @@ graph TB
         REP[Reporter]
         PLOT[Plotter]
     end
+    CLI[CLI] --> UG
+    CLI --> SEAM
+    CLI --> RUN
     SF --> UG
     FOT --> SEAM
     WFC --> SEAM
     PC --> SEAM
+    PC --> RUN
+    PC --> ATTR
     UG --> RUN
     SEAM --> RUN
     RUN --> TR
@@ -254,9 +259,11 @@ graph TB
     LOG --> MET
     TRUTH --> MET
     MET --> ATTR
+    TR --> ATTR
     ATTR --> JUDGE
     MET --> JUDGE
     JUDGE --> REP
+    ATTR --> REP
     MET --> PLOT
     ATTR --> PLOT
 ```
@@ -418,13 +425,16 @@ sequenceDiagram
     participant Upstream
     participant Seam
     participant Tracker as ThrowPredictionTracker
-    CLI->>Seam: キャリブレーション結果を読み検証状態を確認
-    alt 検証未通過かつ許可なし
-        Seam-->>CLI: 実行を拒否
-    end
-    CLI->>Upstream: Logger ハンドルを取得
     CLI->>Seam: 上流の追跡設定を解決（素通し）
-    CLI->>Runner: 投擲開始（追跡設定と Logger を同伴）
+    CLI->>Upstream: 入力元のストリーム識別を取り出す
+    CLI->>Seam: 整合性検査の2値へ写す（上流の写像へ素通し）
+    CLI->>Runner: 投擲開始（窓口・追跡設定・ストリーム識別を同伴）
+    Runner->>Seam: キャリブレーション結果を読み整合性と検証状態を確認
+    alt 設定不一致 / 検証未通過かつ許可なし
+        Seam-->>Runner: 実行を拒否
+        Runner-->>CLI: 失敗（投擲を始めない）
+    end
+    Runner->>Upstream: Logger ハンドルを取得
     Runner->>Seam: 追跡パイプラインを生成（設定と Logger を素通し）
     Runner->>Upstream: フレーム供給を開く
     loop フレームごと
@@ -439,11 +449,18 @@ sequenceDiagram
             Runner->>Upstream: 除外理由の計数を送出
         end
     end
-    Runner->>Upstream: Throw Record を保存
+    Runner-->>CLI: ThrowRunResult（記録を同梱）
+    CLI->>Upstream: Throw Record を保存
 ```
 
 **流れ上の決定**:
-- **検証ゲートは投擲を始める前に評価する。** 走らせてから拒否すると実験時間を捨てることになる
+- **検証ゲートは投擲を始める前に評価する。** 走らせてから拒否すると実験時間を捨てることになる。
+  **整合性検査を検証ゲートより先に置く**——両方が成り立たないとき「未検証だから」とだけ言われると、
+  解像度を戻さないまま許可フラグで押し通してしまう
+- **調達と実行を分ける。** 上流由来の値（追跡設定・ストリーム識別）を用意するのは入口の責務、
+  それを解釈せず素通しするのが実行層の責務である。**Logger だけは入口が持ち回らない**——
+  取り出せるのは接点だけであり、入口が空呼びして持ち回るのは死にコードになる
+- **記録の保存は入口が行う**（実行と保存を分けることで、記録先の決定を入口に集約できる）
 - 追跡が1点も出さなかった投擲は**失敗として理由付きで記録**し、成功試行の集計から除く（要件 3.8）
 - 計測の送出は fire-and-forget（上流のロガーに委譲）。**予測経路の中で集計しない**（`tech.md` 開発標準5）
 
@@ -456,22 +473,31 @@ graph TB
     LOG[structured log] --> LAT[段階別レイテンシ]
     ITEMS --> AGG[投擲群への集計]
     LAT --> AGG
-    AGG --> ATTR[誤差の帰属]
+    REC --> ATTR[誤差の帰属]
+    AGG --> ATTR
     AGG --> OQ27[OQ-27 判定]
     LAT --> OQ27
     AGG --> OQ05[OQ-05 材料]
     AGG --> BUDGET[時間予算表の更新値]
-    ATTR --> REPORT[レポート]
+    LAT --> BUDGET
+    BENCH[計測 ON/OFF 比較] --> REPORT[レポート]
+    ATTR --> REPORT
     OQ27 --> REPORT
     OQ05 --> REPORT
     BUDGET --> REPORT
-    REPORT --> DOCS[docs requirements の 3 節を更新]
+    ATTR --> PLOT[可視化]
+    AGG --> PLOT
+    OQ05 --> PLOT
 ```
 
 **流れ上の決定**:
 - **`BUDGET` は実測値の存在をゲートとする**（要件 11.1）。揃わない場合は更新値を出さずに欠測を返す
 - `OQ27` は `BUDGET` に依存しない（時間予算表が未更新でも判定できる）が、
   **GATE 0 / 1 / 2 を通らなければ `deferred` を返す**
+- **`ATTR` は集計だけでは足りない。** カメラ視線方向・フィット残差・落下地点の真値・検証レポート要約は
+  `ThrowAggregate` に無いので、**記録そのものも受け取る**
+- ⚠️ **`REPORT` は文書を書き換えない。** `docs/requirements.md` の更新は、値を見た人が差分を目で確認して
+  行う実機タスクの仕事である（`BudgetUpdater` の「値を算出するだけ」と同じ規律）
 
 ### 誤差帰属の判定（要件 6）
 
@@ -480,23 +506,32 @@ graph TB
     E[投擲群の誤差ベクトル] --> DEC[共通偏りとばらつきに分解]
     DEC --> B{共通偏りは有意か}
     B -->|いいえ| S1[偏り成分なし]
-    B -->|はい| DIR{向きは何に整合するか}
-    DIR -->|World 固定かつ検証レポートの偏りと整合| CAL[キャリブレーション由来]
-    DIR -->|カメラ視線方向かつ検証は偏りなし| DET[検出由来の候補]
-    DIR -->|どちらとも整合しない、または両者が縮退| UNK[判別不能]
-    S1 --> V{ばらつきは観測由来の範囲内か}
+    B -->|はい| DEG{2方向が縮退しているか}
+    DEG -->|はい| UNK[判別不能]
+    DEG -->|いいえ| DIR{向きは何に整合するか}
+    DIR -->|検証レポートの偏りと符号付きで整合| CAL[キャリブレーション由来]
+    DIR -->|カメラ視線方向と軸で整合 かつ レポートで偏りが認められない| DET[検出由来の候補]
+    DIR -->|どちらとも整合しない| UNK
+    S1 --> V{ばらつきは再抽出の見積もり以内か}
     CAL --> V
     DET --> V
     UNK --> V
-    V -->|範囲内| NOISE[観測ノイズ由来]
-    V -->|超過かつ残差大| MODEL[モデル由来]
-    V -->|超過だが残差小| UNK2[判別不能]
+    V -->|以内| NOISE[観測ノイズ由来]
+    V -->|超過 かつ 残差代表値が見積もりの規定倍以上| MODEL[モデル由来]
+    V -->|超過 だが 残差がそれ未満| UNK2[判別不能]
 ```
 
 **流れ上の決定**:
 - **判別不能は正常な結果**である（要件 6.10）。無理に一つの原因へ割り当てると、
   OQ-27 や時間予算の判断まで誤らせる
 - 偏りとばらつきは**独立に判定する**。両方が同時に存在しうる
+- **縮退の判定は向きの判定より先に置く**（順序が load-bearing である）。
+  投擲位置が1箇所だと World 固定方向とカメラ視線方向が一致してしまい、
+  先に向きを見ると「キャリブレーション由来」と断定してしまう
+- **符号の扱いが左右で違う。** 検証レポートとは**符号付き**（較正のずれは World 上で符号を保つ）、
+  カメラ視線とは**軸**（Depth が対象物のカメラ側表面を測る寄りは視線とは逆を向く）
+- **レポートの偏りは3値**（認められる / 認められない / **測っていない**）。
+  「測っていない」を「認められない」と同一視すると、検証していないだけの群が検出由来へ倒れる
 
 ---
 
