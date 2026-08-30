@@ -35,7 +35,8 @@ import する唯一のモジュールである。** 取得基盤（`sensing_foun
 **本 Spec は追跡の設定値も方式も決めない**（既定値も持たない）。
 `resolve_tracking_settings()` が存在するのは、検出・追跡パッケージを import
 するのが本モジュールだけという境界を保ったまま、入口層（`cli.py`）が上流の
-解決結果を手に入れられるようにするためだけである。
+解決結果を手に入れられるようにするためだけである。`stream_identity()` も
+同じ理由の素通しであり、**較正側が持つ安全弁ごと**上流の写像を呼ぶ。
 """
 
 from __future__ import annotations
@@ -62,6 +63,8 @@ from world_frame_calibration import (
     CalibrationResult,
     check_compatibility,
     load_calibration,
+    to_intrinsics,
+    to_signature,
 )
 
 #: 読める受け渡し形式版。上流の `HANDOFF_VERSION` のみを既知とする。
@@ -315,6 +318,52 @@ def camera_ray_unit(
             {"point_world_mm": point_world_mm, "camera_origin_world_mm": origin},
         )
     return (dx / norm, dy / norm, dz / norm)
+
+
+def stream_identity(profile: object) -> tuple[object, object]:
+    """上流のストリーム識別を整合性検査の2値へ写す（**素通し**）。
+
+    `open_calibration()` は `signature` / `intrinsics` を要求するが、それらを
+    作れるのは較正パッケージの `to_signature()` / `to_intrinsics()` だけで
+    ある。`world_frame_calibration` を import してよいのは本モジュールだけ
+    なので、入口層（`cli.py`）がその2値を用意する経路をここに1つだけ開ける。
+
+    **自前で写し直さない。** 上流の `to_intrinsics()` は
+    `profile.intrinsics is None`（入力元が内部パラメータを提供できない）を
+    弾く安全弁を持っており（上流の要件 8.4）、**その弁は較正側が所有した
+    ままでなければならない**。下流ごとに写像を書き直すと弁が落ち、内部
+    パラメータを既定値で埋めた変換が静かに成立してしまう——座標系の数 cm の
+    ずれは「予測が悪い」という症状としてしか現れない。
+
+    Args:
+        profile: 現在の入力元のストリーム識別（上流の `StreamProfile`）。
+            **調達手段は `UpstreamGateway.stream_profile()` に限る**。
+            本 Spec は中身を解釈しないので注釈は `object` である。
+
+    Returns:
+        `(signature, intrinsics)`。どちらも上流の値であり、**本 Spec のどの層
+        も解釈しない不透明値**として `open_calibration()` / `run_throw()` へ
+        素通しする。
+
+    Raises:
+        M1ConfigError: 入力元がカメラ内部パラメータを提供できない場合
+            （上流の `CalibrationConfigError` を本 Spec の語彙へ翻訳する）。
+            **上流の例外型をそのまま外へ出さない**——呼び出し側が
+            `world_frame_calibration` の例外を捕まえるために import する
+            羽目になると、境界が例外の経路から崩れる
+            （`_translate_failure()` / `upstream.py` と同じ方針）。
+    """
+    try:
+        signature = to_signature(profile)  # type: ignore[arg-type]
+        intrinsics = to_intrinsics(profile)  # type: ignore[arg-type]
+    except CalibrationConfigError as exc:
+        raise M1ConfigError(
+            "現在の入力元からカメラ内部パラメータを得られない: "
+            f"{exc}。較正側は独自の固定値で埋めない（上流の要件 8.4）ため、"
+            "整合性検査（要件 1.6）そのものを実行できない",
+            {"reason": "intrinsics_unavailable"},
+        ) from exc
+    return signature, intrinsics
 
 
 def resolve_tracking_settings(

@@ -209,6 +209,51 @@ class UpstreamGateway:
             )
         self._logger.emit(stage, event, **dict(data))  # type: ignore[attr-defined]
 
+    def stream_profile(
+        self,
+        *,
+        supplier: object = None,
+        speed: str = "fast",
+    ) -> object:
+        """いま開こうとしている入力元のストリーム識別を返す（**不透明値**）。
+
+        キャリブレーション結果の整合性検査（要件 1.6）は、保存された結果と
+        **現在の入力元**のストリーム設定・カメラ内部パラメータを突き合わせる。
+        その「現在の入力元のそれ」を作れるのは、**不透明な入力元指定を解釈
+        してよい唯一のモジュールである本モジュール**だけである（`source_kind`
+        と同じ理由）。入口層（`cli.py`）はここから値を得て、継ぎ目の
+        `seam.stream_identity()` へ素通しする。
+
+        **戻り値の中身を本 Spec のどの層も解釈しない。** 属性アクセスも型検査
+        も行わず、注釈も `object` に留める——具体型を書くと、その注釈を読む層
+        が上流の型を知ることになる。
+
+        Args:
+            supplier: 合成入力のときの供給関数（`open_frames()` と同じもの）。
+            speed: 記録再生のときの速度（同上）。
+
+        Returns:
+            上流の `StreamProfile`。
+
+        Notes:
+            **入力元を実際に開いて閉じる。** 実機ではカメラ内部パラメータが
+            取得開始後にしか確定しない（上流の実機アダプタは `start()` で
+            暫定プロファイルを実測値へ差し替える）ため、開かずに属性だけを
+            覗くと**内部パラメータが `None` のままの値**を掴むことになる。
+            1投擲あたり1度の開閉で済む費用であり、**内部パラメータを既定値で
+            埋める**という代替に比べれば桁違いに安い——較正のずれは「予測が
+            悪い」という症状としてしか現れず、事後に分離できない。
+        """
+        source = open_source(
+            self._source_spec,  # type: ignore[arg-type]
+            self._metrics,  # type: ignore[arg-type]
+            clock=self._clock,  # type: ignore[arg-type]
+            supplier=supplier,  # type: ignore[arg-type]
+            speed=speed,  # type: ignore[arg-type]
+        )
+        with source:
+            return source.profile
+
     def get_logger_handle(self) -> object:
         """上流の `Logger` の実体を返す（**不透明値**）。
 
