@@ -85,7 +85,7 @@
 
 ## 2. 中核: 制約・選定・導出・指標
 
-- [ ] 2. 中核: 制約・選定・導出・指標
+- [x] 2. 中核: 制約・選定・導出・指標
 
 - [x] 2.1 (P) 造形制約の検査と分割数の導出を実装する
   - 造形可能寸法に対する外接箱の検査を実装し、超過している軸と超過量を返す
@@ -125,7 +125,7 @@
   - _Depends: 1.4_
   - _Boundary: Tolerance_
 
-- [ ] 2.4 (P) 形状指標の型・記録・照合を実装する
+- [x] 2.4 (P) 形状指標の型・記録・照合を実装する
   - 部品名・体積・境界箱・立体数からなる指標の型を、形状オブジェクトを保持しない素の数値として定義する
   - 記録ファイルの読み書きを実装し、記録時のパラメータ識別子・許容差（体積の相対・境界箱の絶対）・
     生成ライブラリ版を含める
@@ -456,6 +456,28 @@
   (e) `RimParams` の**全5フィールド**が導出に参加しないことを実測で固定した（`derive_position_tolerance` は
   `params.rim` を一度も読まない）。「入った」と「キャッチできた」は別問題であり、許容誤差は保持まで成立する
   内径で決める。⚠️ フランジ幅を導出に算入してはならない。
+- **タスク2.4 / 後続への申し送り**: (a) **`configs/catch_mechanism/geometry-baseline.json` は出荷していない。**
+  作成はタスク **4.2** の担当である（build123d と実形状が要る）。⚠️ タスク 2.3 で2度差し戻された
+  「出荷ファイルをその場の導出値へピン留めする」形を避けるため、`load_baseline` の既定パスの検査は
+  `monkeypatch` で `tmp_path` へ差し替えて行っており、**出荷ファイルの有無も中身も主張していない**。
+  レビューで実際に2部品の記録を出荷して全件緑を実証済み（4.2 / 4.3 はブロックされない）。
+  `DEFAULT_BASELINE_PATH` は「宣言された場所」としてのみ公開している。
+  (b) **不在／余剰の部品は `MetricsMismatch(field_name="presence", recorded/regenerated = PRESENT 1.0 / ABSENT 0.0)`
+  で表す。** design.md が `recorded: float` / `regenerated: float` を定めているため、双方の数値が存在しない状態を
+  表せる符号化はこれだけである（NaN は `==` で比較できず「不明」としか読めない。片側に実値を入れるのは
+  測っていない 0 を測定値として読ませる）。⚠️ 不在の部品について体積・境界箱の行を**併せて出さない**。
+  `PRESENCE_FIELD` / `PRESENT` / `ABSENT` は公開定数なので、**タスク 4.1 の `cli check` はこの項目名で
+  「部品が消えた／増えた」を他の乖離と区別して出力できる。**
+  (c) `parameters_digest` は**書式のみ**検査する（`sha256:` + 64桁の16進小文字）。⚠️ **現在の `dimensions.json` の
+  識別子との突き合わせはタスク 4.3 の担当**であり、`ConsistencyError` を伴う。metrics.py が先取りしない。
+  (d) `generator_version` は記録するが**照合には使わない**（design.md の表が「情報用」と述べる。版が上がっただけで
+  落ちるべきではなく、実差は指標に出る）。
+  (e) design.md 側の不整合1件: `#### PublicApi` の `__all__` に `write_baseline` が無いが、`#### Metrics` の
+  Service Interface は宣言している。**タスク 6.1 / `/kiro-validate-impl` で整合させること。**
+- **タスク1.6 のテストへの申し送り（低優先・境界外）**: `test_catch_boundaries.py` は
+  `from catch_mechanism import <sibling>` の import 形を検出しない（`import catch_mechanism.X` と
+  `from catch_mechanism.X import ...` は検出する）。現行の全モジュールはこの形を使っていないが、
+  整理タスクで塞ぐ余地がある。
 - **環境（全タスク共通）**: Python 環境は **WSL2 側にのみ存在する**。Windows 側に `python` / `uv` は無い。
   検証は必ず `wsl -e bash -lc 'cd /mnt/c/Users/user/repos/stb-hardware && uv run pytest -q'` の形で実行する。
   ⚠️ Windows から `uv sync` して `.venv/` を上書きしないこと（Linux venv が壊れる）。
