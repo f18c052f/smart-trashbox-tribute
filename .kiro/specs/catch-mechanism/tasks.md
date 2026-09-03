@@ -27,7 +27,7 @@
     両方**の全テストが引き続き通る
   - _Requirements: 5.1, 5.4, 5.6, 5.7_
 
-- [ ] 1.2 例外階層を定義する
+- [x] 1.2 例外階層を定義する
   - 基底例外を `ValueError` の派生として定義し、パラメータ不正・選定不正・形状不正・整合不一致・
     形状環境不在の5系統を用意する
   - 「評価結果（不適合・不一致）は値で返し、呼び出し方の誤りだけを例外にする」区分をこの階層で表現する
@@ -324,6 +324,13 @@
 - **タスク1.1**: `cad` extra の宣言で `uv.lock` が自動更新される（追加864 / 削除1）。削除は `provides-extras` の置換のみで
   **既存ピンは動かない**。design.md `### Modified Files` に `uv.lock` の記載は無いが、`### Technology Stack` が
   uv.lock を `cad` extra の解決場所として挙げているため境界内。
+- **タスク1.2 / 後続への申し送り**: (a) `SelectionError` を終了コード 2 へ割り当てる記述は design.md
+  「Error Categories and Responses」に対応行が無く、`errors.py` の docstring での外挿である。
+  **確定はタスク 4.1（`_Boundary: Cli_`）の所有**であり、そこで終了コード表を確定させること。
+  (b) design.md の「`GeometryError`（`BuildViolation` を伴う）」を満たす機構の所有タスクが本計画に無い。
+  Errors の Key Dependencies は「なし」のため `errors.py` は `constraints.py` の値型を import できず、
+  1.2 では属性を持たせていない。⚠️ **後から `errors.py` へ属性を足すと `_Boundary: Errors_` の外側からの
+  変更になる**ため、タスク 2.1 / 3.4 は**違反の軸と超過量を例外メッセージへ載せる**形で満たすこと。
 - **環境（全タスク共通）**: Python 環境は **WSL2 側にのみ存在する**。Windows 側に `python` / `uv` は無い。
   検証は必ず `wsl -e bash -lc 'cd /mnt/c/Users/user/repos/stb-hardware && uv run pytest -q'` の形で実行する。
   ⚠️ Windows から `uv sync` して `.venv/` を上書きしないこと（Linux venv が壊れる）。
