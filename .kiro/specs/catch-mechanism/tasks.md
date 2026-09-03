@@ -62,7 +62,7 @@
   - _Depends: 1.3_
   - _Boundary: Config_
 
-- [ ] 1.5 (P) リポジトリ設定を整備し、外部 CAD の作業ファイルを成果物から外す
+- [x] 1.5 (P) リポジトリ設定を整備し、外部 CAD の作業ファイルを成果物から外す
   - 外部 CAD の作業ファイルをバージョン管理の対象外にする
   - 生成物の出力先が既にバージョン管理外であることを確認し、必要なら出力先の規約を明示する
   - 生成物形式が誤ってコミットされた場合にも内容が壊れないよう、改行変換の対象から外す
@@ -364,6 +364,15 @@
   ⚠️ **それらが独立に版を刻む必要が出たらこの単一定数を分割すること**。公開（6.1）の再エクスポート元はここ。
   (c) `dimensions.json` は `retention.added_depth_mm` / `bottom_modification` も**必須**にしている。型には
   既定値があるが、ファイルから消えると「深さを足さない・底に加工しない」という決定が単一の正から読めなくなる。
+- **タスク1.5 / 1.4 申し送りの決着**: `.gitattributes` に `configs/catch_mechanism/*.json text eol=lf` を
+  一般則 `*.json text eol=crlf` の**後ろ**に追加して解消した（git は最後にマッチした行を採用する）。
+  `dump_params` が書く LF と git のチェックアウト内容が一致するため、`git status --porcelain` は
+  もう空の変更を報告しない（`parameters_digest` は 1.4 の記録 `sha256:b97c7410…` のまま不変）。
+  ⚠️ **この行を `*.json` より前へ動かすと無効になる。** `tests/catch_mechanism/test_catch_repo_settings.py`
+  が `git check-attr` の**実効値**で固定しており、順序を入れ替えると落ちる。
+  ⚠️ design.md `### Modified Files` の `.gitattributes` 行はこの追加を記載していない。
+  `/kiro-validate-impl` で design.md へ正誤訂正として反映する候補（`*.step` / `*.stl` / `*.3mf` の
+  `-text` は記載どおり）。
 - **環境（全タスク共通）**: Python 環境は **WSL2 側にのみ存在する**。Windows 側に `python` / `uv` は無い。
   検証は必ず `wsl -e bash -lc 'cd /mnt/c/Users/user/repos/stb-hardware && uv run pytest -q'` の形で実行する。
   ⚠️ Windows から `uv sync` して `.venv/` を上書きしないこと（Linux venv が壊れる）。

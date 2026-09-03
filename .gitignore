@@ -17,8 +17,15 @@ venv/
 # エディタ / OS
 .DS_Store
 
-# 記録データ・ログ・ベンチ結果の出力先（要件 12.6）
+# 記録データ・ログ・ベンチ結果の出力先（要件 12.6）。
+# catch-mechanism の CAD 生成物（STEP / STL / 3MF）の出力先 var/cad/ もここに含まれる。
+# 生成物はコミットせず、同じ寸法パラメータから常に再生成する（要件 3.5）
 var/
 
 # 作業メモ
 note.md
+
+# 外部 CAD（FreeCAD）の作業ファイル。成果物ではなく、単一の正は
+# configs/catch_mechanism/dimensions.json 側にある（要件 4.6, 4.7）
+*.FCStd
+*.FCStd1

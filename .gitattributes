@@ -16,3 +16,17 @@ uv.lock text eol=lf
 # ドキュメントは既存の CRLF 運用を維持する（structure.md の規約）
 *.md    text eol=crlf
 *.json  text eol=crlf
+
+# CAD 生成物は改行変換の対象から外す（design.md「Modified Files」）。
+# 出力先 var/cad/ は .gitignore 済みだが、誤ってコミットされた場合でも
+# STL・3MF のバイト列が改行変換で壊れないようにしておく。
+*.step  -text
+*.stl   -text
+*.3mf   -text
+
+# 採寸の書き戻し先だけは LF に固定する（要件 4.7）。
+# catch_mechanism.config.dump_params はプラットフォーム非依存に LF を書くため、
+# 上の一般則 *.json（eol=crlf）のままだと書き戻すたびに作業ツリーと
+# チェックアウト内容がずれ、git status が空の差分を報告し続ける。
+# ⚠️ git は最後にマッチした行を採用する。この行は *.json より後ろに置くこと。
+configs/catch_mechanism/*.json  text eol=lf

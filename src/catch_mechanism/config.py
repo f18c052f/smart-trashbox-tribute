@@ -328,10 +328,17 @@ def dump_params(params: MechanismParams, path: Path) -> None:
     Responsibilities）。並びを入力の順に委ねると、同じ値を書き戻しただけで
     行が入れ替わり、変更が行単位の差分として読めなくなる。
 
-    ⚠️ **改行は LF に固定する。** `.gitattributes` は `*.json` を作業ツリーで
-    CRLF に固定するが、git はコミット時に LF へ正規化するため差分は生じない。
-    一方、`os.linesep` に委ねると Windows と WSL で同じコマンドが別のバイト列を
-    生み、差分が実行環境で揺れる（本リポジトリの Python は WSL 側にある）。
+    ⚠️ **改行は LF に固定する。** `os.linesep` に委ねると Windows と WSL で同じ
+    コマンドが別のバイト列を生み、差分が実行環境で揺れる（本リポジトリの Python
+    は WSL 側にある）。これと対になる取り決めとして、`.gitattributes` は
+    `*.json` の一般則（`eol=crlf`）より後ろで
+    `configs/catch_mechanism/*.json text eol=lf` を指定している。つまり
+    **本関数が書くバイト列は git がチェックアウトする内容と同一**であり、
+    値が変わっていなければ `git status` は変更を報告しない。
+    （一般則のままだと blob は一致するので `git diff` はゼロ差分になる一方、
+    作業ツリーの内容がチェックアウト内容とずれるため
+    `git status --porcelain` が空の変更を報告し続ける。）
+    この取り決めは `tests/catch_mechanism/test_catch_repo_settings.py` が固定する。
 
     書き出しの失敗（`OSError`）は包まずにそのまま送出する。読み込み側と違い、
     出力先の不備は設定の内容の不正ではない。
