@@ -11,7 +11,7 @@
 
 - [ ] 1. 基盤: パッケージ骨組みと依存境界
 
-- [ ] 1.1 パッケージを追加し、形状ライブラリを任意依存として隔離する
+- [x] 1.1 パッケージを追加し、形状ライブラリを任意依存として隔離する
   - 既存の `pyproject.toml` の wheel 対象へ新パッケージを追加する。**`[project] dependencies` は空のまま変更しない**
   - 形状ライブラリを `[project.optional-dependencies]` の `cad` として宣言し、既定でインストールされない状態にする
   - 上流の許可リスト（`ALLOWED_OPTIONAL_EXTRAS`）へ extras 名を**1行だけ**登録する。
@@ -312,3 +312,18 @@
   - _Requirements: 2.7, 3.2, 5.7, 9.1, 9.2, 9.3, 9.5_
   - _Depends: 6.1_
   - _Boundary: 統合_
+
+## Implementation Notes
+
+- **タスク1.1 / 後続への申し送り**: design.md `### Directory Structure` が挙げる `tests/catch_mechanism/` 配下の
+  `test_boundaries.py`（1.6）・`test_config.py`（1.4）・`test_metrics.py`（2.4）・`test_errors.py`（1.2）は、既存の
+  `tests/prediction_core/test_boundaries.py` / `test_config.py` / `tests/sensing_foundation/test_metrics.py` / `test_errors.py`
+  と**ベース名が衝突する**。`tests/` 配下に `__init__.py` が無く `--import-mode` 指定も無い（既定の prepend）ため、
+  ⚠️ **design の名前をそのまま使うと pytest の収集時に落ちる。`test_catch_*.py` のような接頭辞付き命名を使うこと**
+  （1.1 は `test_catch_packaging.py` を採用）。
+- **タスク1.1**: `cad` extra の宣言で `uv.lock` が自動更新される（追加864 / 削除1）。削除は `provides-extras` の置換のみで
+  **既存ピンは動かない**。design.md `### Modified Files` に `uv.lock` の記載は無いが、`### Technology Stack` が
+  uv.lock を `cad` extra の解決場所として挙げているため境界内。
+- **環境（全タスク共通）**: Python 環境は **WSL2 側にのみ存在する**。Windows 側に `python` / `uv` は無い。
+  検証は必ず `wsl -e bash -lc 'cd /mnt/c/Users/user/repos/stb-hardware && uv run pytest -q'` の形で実行する。
+  ⚠️ Windows から `uv sync` して `.venv/` を上書きしないこと（Linux venv が壊れる）。

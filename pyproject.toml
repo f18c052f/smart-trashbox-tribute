@@ -17,12 +17,15 @@ sensing = ["numpy>=1.24"]
 calibration = ["numpy>=1.24"]
 tracking = ["numpy>=1.24", "opencv-python-headless>=4.8"]
 m1-viz = ["matplotlib>=3.8"]
+# 形状ライブラリ（OCCT バインディングを伴う重い依存）は既定でインストールされない
+# 任意依存として隔離する。参照するのは catch_mechanism の shapes / export のみ。
+cad = ["build123d>=0.9,<1.0"]
 
 [dependency-groups]
 dev = ["pytest>=8.0"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/prediction_core", "src/sensing_foundation", "src/trajectory_sim", "src/world_frame_calibration", "src/flying_object_tracking", "src/m1_validation"]
+packages = ["src/prediction_core", "src/sensing_foundation", "src/trajectory_sim", "src/world_frame_calibration", "src/flying_object_tracking", "src/m1_validation", "src/catch_mechanism"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

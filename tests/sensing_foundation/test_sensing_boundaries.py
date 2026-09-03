@@ -516,7 +516,7 @@ def test_prediction_core_does_not_import_sensing_foundation() -> None:
 #: `tests/` 配下にテストサブパッケージ用の `__init__.py` を置けない
 #: （タスク 1.5 の申し送り）ため、テストモジュール間で定数を import
 #: できないからである。
-ALLOWED_OPTIONAL_EXTRAS = {"sensing", "tracking", "calibration", "m1-viz"}
+ALLOWED_OPTIONAL_EXTRAS = {"sensing", "tracking", "calibration", "m1-viz", "cad"}
 
 
 def _load_pyproject() -> dict:

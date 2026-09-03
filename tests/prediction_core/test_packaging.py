@@ -46,7 +46,7 @@ def test_requires_python_lower_bound_is_3_11() -> None:
 # すると、後続4 Spec が同じ赤いテストへ個別に衝突する構図がそのまま再現してしまう
 # ため、最初に着地する Spec（sensing-foundation）が不変条件の表現だけを一度に是正
 # する（sensing-foundation design.md「test_packaging.py の改訂」）。
-ALLOWED_OPTIONAL_EXTRAS = {"sensing", "tracking", "calibration", "m1-viz"}
+ALLOWED_OPTIONAL_EXTRAS = {"sensing", "tracking", "calibration", "m1-viz", "cad"}
 
 
 def test_no_third_party_runtime_dependencies() -> None:
