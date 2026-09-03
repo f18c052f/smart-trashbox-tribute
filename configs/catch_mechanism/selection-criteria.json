@@ -1,0 +1,14 @@
+{
+  "height_max_mm": 300.0,
+  "height_min_mm": 200.0,
+  "mass_max_g": 300.0,
+  "opening_inner_diameter_min_mm": 200.0,
+  "opening_inner_diameter_reject_below_mm": 180.0,
+  "opening_inner_diameter_typical_max_mm": 225.0,
+  "prefers_outward_rim": true,
+  "price_max_jpy": 110,
+  "requires_lidless": true,
+  "schema_version": "1.0",
+  "shape": "round",
+  "taper_max_deg": 8.5
+}

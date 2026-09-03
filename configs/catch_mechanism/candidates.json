@@ -1,0 +1,70 @@
+{
+  "candidates": [
+    {
+      "has_lid": false,
+      "has_outward_rim": null,
+      "height_mm": 244.0,
+      "identifier": "yamada-kagaku-no335",
+      "mass_g": 228.0,
+      "opening_inner_diameter_mm": 220.0,
+      "price_jpy": 110,
+      "provenance": "assumed",
+      "role": "primary",
+      "shape": "round",
+      "taper_deg": 7.0
+    },
+    {
+      "has_lid": false,
+      "has_outward_rim": null,
+      "height_mm": 220.0,
+      "identifier": "seria-brooklyn-dustbox",
+      "mass_g": null,
+      "opening_inner_diameter_mm": 215.0,
+      "price_jpy": 110,
+      "provenance": "assumed",
+      "role": "runner_up",
+      "shape": "round",
+      "taper_deg": 12.1
+    },
+    {
+      "has_lid": false,
+      "has_outward_rim": null,
+      "height_mm": 227.0,
+      "identifier": "watts-re-b",
+      "mass_g": null,
+      "opening_inner_diameter_mm": 225.0,
+      "price_jpy": 110,
+      "provenance": "assumed",
+      "role": "not_recommended",
+      "shape": "round",
+      "taper_deg": 10.0
+    },
+    {
+      "has_lid": false,
+      "has_outward_rim": false,
+      "height_mm": 210.0,
+      "identifier": "illustrative-3l-class-below-minimum",
+      "mass_g": 150.0,
+      "opening_inner_diameter_mm": 175.0,
+      "price_jpy": 110,
+      "provenance": "assumed",
+      "role": "illustrative_non_example",
+      "shape": "round",
+      "taper_deg": 7.0
+    },
+    {
+      "has_lid": true,
+      "has_outward_rim": true,
+      "height_mm": 250.0,
+      "identifier": "illustrative-lidded-upper-price-tier",
+      "mass_g": 320.0,
+      "opening_inner_diameter_mm": 215.0,
+      "price_jpy": 220,
+      "provenance": "assumed",
+      "role": "illustrative_non_example",
+      "shape": "round",
+      "taper_deg": 7.0
+    }
+  ],
+  "schema_version": "1.0"
+}
