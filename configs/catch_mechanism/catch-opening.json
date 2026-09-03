@@ -1,0 +1,23 @@
+{
+  "assumptions": [
+    "対象物は M1 の実験条件である空き缶（350ml 缶相当）であり、その代表寸法として target_object.diameter_mm を用いる（要件 7.9。対象物の一般化は OQ-02 として未決である）。",
+    "外向きに張り出す部分（受け口のフランジ幅・傾斜角・取り付け部の隙間と肉厚）の寸法を算入しない。許容誤差は保持まで成立する開口内径だけで決まる（要件 7.2）。",
+    "導出値は目標中心からの水平方向のずれの上限（半径方向）であり、シミュレータ設定の catch.position_tolerance_mm と同じ意味を持つ。"
+  ],
+  "formula": "trash_can.opening_inner_diameter_mm / 2 - target_object.diameter_mm / 2",
+  "inputs": [
+    {
+      "name": "trash_can.opening_inner_diameter_mm",
+      "provenance": "assumed",
+      "value_mm": 220.0
+    },
+    {
+      "name": "target_object.diameter_mm",
+      "provenance": "assumed",
+      "value_mm": 65.0
+    }
+  ],
+  "position_tolerance_mm": 77.5,
+  "provenance": "assumed",
+  "schema_version": "1.0"
+}

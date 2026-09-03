@@ -112,7 +112,7 @@
   - _Depends: 1.4_
   - _Boundary: Selection_
 
-- [ ] 2.3 (P) 位置許容誤差の導出と導出記録の直列化を実装する
+- [x] 2.3 (P) 位置許容誤差の導出と導出記録の直列化を実装する
   - 「開口内半径 − 対象物の代表寸法の半分」を**唯一の導出箇所**として実装する
   - ⚠️ **外向きに張り出す部分の寸法を算入しない。** フランジ幅を変えても導出値が動かないこと
   - 導出結果に、入力の値と出所、導出式の文字列、前提（対象物は M1 の実験条件である空き缶、
@@ -435,6 +435,27 @@
   (f) `Candidate.provenance` は候補1件につき1つである（design.md の型）。第一候補の重量 228g は実測だが
   開口内径ほかは公称のため、`Provenance.weakest` の半順序に従い候補全体を `assumed` とした。
   ⚠️ 「実測 228g」は値としては残るが**出所としては現れない**。項目別出所が要るなら design の型変更を伴う。
+- **タスク2.3 / 後続への申し送り（重要）**: (a) **導出値は出荷 `dimensions.json`（φ220・空き缶φ65、いずれも
+  仮値）に対し `220/2 - 65/2 = 77.5mm`・出所 `assumed`。** ⚠️ `trajectory_sim` の現行暫定値 **67.5mm より
+  約15% 広い**。⚠️ 還元はタスク 5.4 の担当であり、2.3 は `src/trajectory_sim/` にも `configs/trajectory_sim/` にも
+  一切触れていない。
+  (b) ⚠️ **タスク 5.3 のトリップワイヤは未設置である。** 5.3 の完了状態「再導出した値と記録が一致することを
+  テストで固定する」に従い、`assert load_derivation(DEFAULT_DERIVATION_PATH) == derive_position_tolerance(load_params())`
+  相当を**5.3 で新規に追加する**こと。記録の再生成は
+  `dump_derivation(derive_position_tolerance(load_params()), DEFAULT_DERIVATION_PATH)` で足りる。
+  ⚠️ **このピンを 2.3 に置くと、`_Boundary: Config_` しか持たないタスク 5.2 が自力で緑に戻せなくなる**
+  （レビューで2度差し戻された。`test_catch_tolerance.py` は `dimensions.json` の値に依存しない設計に
+  なっており、採寸値が公称を上回っても下回っても全件通ることを 218.4 / 221.5 の両側で実証済み）。
+  (c) `ToleranceDerivation.__post_init__` は design.md の Postconditions/Invariants より強く、値の再導出
+  可能性・`formula == FORMULA`・必須前提の**包含**（厳密一致ではない）も検査する。記録の側が別の値や別の式を
+  主張できると、要件 7.1 の「唯一の導出箇所」が記録経由で破れるためである。⚠️ 5.3 は前提の**追記**なら
+  `tolerance.py` に触れず JSON だけで行える。既存3件の**文言変更**時のみ `ASSUMPTIONS` 定数の編集が要るが、
+  5.3 の境界は `_Boundary: Tolerance_` なので境界違反にならない。
+  (d) 要件 7.5（シミュレータが解釈できる形式での出力）は本タスクの `_Requirements:` に無く、
+  design.md の Traceability が実現手段を `tolerance` サブコマンド（Cli）としている。**タスク 4.1 と 5.4 の担当。**
+  (e) `RimParams` の**全5フィールド**が導出に参加しないことを実測で固定した（`derive_position_tolerance` は
+  `params.rim` を一度も読まない）。「入った」と「キャッチできた」は別問題であり、許容誤差は保持まで成立する
+  内径で決める。⚠️ フランジ幅を導出に算入してはならない。
 - **環境（全タスク共通）**: Python 環境は **WSL2 側にのみ存在する**。Windows 側に `python` / `uv` は無い。
   検証は必ず `wsl -e bash -lc 'cd /mnt/c/Users/user/repos/stb-hardware && uv run pytest -q'` の形で実行する。
   ⚠️ Windows から `uv sync` して `.venv/` を上書きしないこと（Linux venv が壊れる）。
