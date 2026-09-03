@@ -9,7 +9,7 @@
 
 ## 1. 基盤: パッケージ骨組みと依存境界
 
-- [ ] 1. 基盤: パッケージ骨組みと依存境界
+- [x] 1. 基盤: パッケージ骨組みと依存境界
 
 - [x] 1.1 パッケージを追加し、形状ライブラリを任意依存として隔離する
   - 既存の `pyproject.toml` の wheel 対象へ新パッケージを追加する。**`[project] dependencies` は空のまま変更しない**
@@ -71,7 +71,7 @@
   - _Requirements: 3.5, 4.6, 4.7_
   - _Boundary: Repository Settings_
 
-- [ ] 1.6 依存境界の静的検査を実装する
+- [x] 1.6 依存境界の静的検査を実装する
   - 自パッケージのソースを静的に走査し、形状ライブラリの import が形状構築と書き出しの2モジュールに
     限られることを検査する
   - パッケージ入口から形状ライブラリへ到達しないことを検査する
@@ -373,6 +373,24 @@
   ⚠️ design.md `### Modified Files` の `.gitattributes` 行はこの追加を記載していない。
   `/kiro-validate-impl` で design.md へ正誤訂正として反映する候補（`*.step` / `*.stl` / `*.3mf` の
   `-text` は記載どおり）。
+- **タスク1.6 / 後続への申し送り（重要）**: (a) `tests/catch_mechanism/test_catch_boundaries.py` の層表
+  `LAYER_ORDER` / `DOCUMENTED_MODULES` は design.md 宣言の**12モジュールを最初から名前で持つ**。走査対象は
+  `src/catch_mechanism/*.py` の実在ファイルから取るため、⚠️ **後続タスクが `selection.py` / `shapes.py` などを
+  書いた瞬間から、層表を編集せずに全検査が適用される**（12モジュール完成形での全緑を実証済み）。
+  本ファイルの編集が要るのは **design.md に無い名前の `.py` を足す場合のみ**で、そのとき
+  `test_every_source_file_is_known_to_the_layer_table` が更新指示つきで落ちる。
+  (b) ⚠️ **同層 import は禁止**である（`selection` / `tolerance` / `constraints` / `metrics` は互いに import 不可）。
+  design.md「各層は左側の層からのみ import する」の厳密な読みで、`## Components and Interfaces` の
+  Key Dependencies にも各コンポーネントの Dependencies 節にも兄弟辺は無いことを確認済み。
+  後続タスクが例えば `tolerance -> constraints` を必要とした場合はここで落ちる。**その場合は先に
+  design.md の依存方向を改めること**（テストを緩めるのではなく）。
+  (c) `cli` は `shapes` / `export` を**関数内で遅延 import** する。モジュール直下に書くと
+  `find_module_level_cad_imports` が落ちる（タスク 4.1 を拘束する）。
+- **タスク1.6 / 整理タスク向けの申し送り（低優先）**: `test_catch_params.py::test_params_module_does_not_reverse_the_dependency_direction`
+  と `test_catch_config.py::test_config_does_not_import_upstream_packages` は本ファイルのツリー全体検査に
+  **完全に包含された**。境界外のため削除していない。将来まとめて整理してよい。
+  また design.md はこのファイルを `test_boundaries.py` と呼ぶが、`tests/prediction_core/test_boundaries.py` と
+  衝突するため実名は `test_catch_boundaries.py` である（`/kiro-validate-impl` で文書側を訂正する候補）。
 - **環境（全タスク共通）**: Python 環境は **WSL2 側にのみ存在する**。Windows 側に `python` / `uv` は無い。
   検証は必ず `wsl -e bash -lc 'cd /mnt/c/Users/user/repos/stb-hardware && uv run pytest -q'` の形で実行する。
   ⚠️ Windows から `uv sync` して `.venv/` を上書きしないこと（Linux venv が壊れる）。
