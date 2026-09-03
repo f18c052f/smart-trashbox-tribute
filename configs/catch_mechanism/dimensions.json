@@ -1,0 +1,52 @@
+{
+  "joint": {
+    "bolt_designation": "M3",
+    "dowel_diameter_mm": 3.0,
+    "insert_length_mm": 5.7,
+    "insert_outer_diameter_mm": 4.6,
+    "min_bearing_area_mm2": 60.0,
+    "through_hole_diameter_mm": 3.4
+  },
+  "printing": {
+    "build_x_mm": 180.0,
+    "build_y_mm": 180.0,
+    "build_z_mm": 180.0,
+    "material": "PETG",
+    "material_density_g_cm3": 1.27,
+    "segment_margin_mm": 5.0
+  },
+  "provenance": {
+    "target_object.diameter_mm": "assumed",
+    "trash_can.bottom_outer_diameter_mm": "assumed",
+    "trash_can.opening_inner_diameter_mm": "assumed"
+  },
+  "retention": {
+    "added_depth_mm": 0.0,
+    "bottom_modification": "none",
+    "liner_flat_min_diameter_mm": 140.0,
+    "retrofit_fastener_count": 6
+  },
+  "rim": {
+    "fit_clearance_mm": 1.0,
+    "flange_slope_deg": 15.0,
+    "flange_width_mm": 30.0,
+    "height_mm": 18.0,
+    "wall_thickness_mm": 4.0
+  },
+  "schema_version": "1.0",
+  "target_object": {
+    "diameter_mm": 65.0,
+    "height_mm": 122.0
+  },
+  "trash_can": {
+    "bottom_flat_diameter_mm": 140.0,
+    "bottom_outer_diameter_mm": 158.0,
+    "bottom_thickness_mm": 1.5,
+    "height_mm": 244.0,
+    "mass_g": 228.0,
+    "model_id": "yamada-kagaku-no335",
+    "opening_inner_diameter_mm": 220.0,
+    "taper_deg": 7.0,
+    "top_outer_diameter_mm": 225.0
+  }
+}

@@ -50,7 +50,7 @@
   - _Depends: 1.2_
   - _Boundary: Params_
 
-- [ ] 1.4 寸法設定ファイルの読み書きとパラメータ識別子を実装する
+- [x] 1.4 寸法設定ファイルの読み書きとパラメータ識別子を実装する
   - 寸法パラメータの単一の正となる設定ファイルを追加し、第一候補の公称値を**すべて仮値として**記録する
   - あらゆる階層で未知キーを拒否し、欠損・範囲外を項目名つきで拒否する読み込みを実装する
   - 出所表のキーがパラメータパス表と一致することを検証し、一致しないキーを拒否する
@@ -347,6 +347,23 @@
   (c) `printing.segment_margin_mm` のみ 0 を許容している（他は正値必須）。design.md「Params」
   Preconditions の「すべての長さ・直径は有限かつ正」からの**意図的な逸脱**で、タスク 2.2 の分割数導出で
   「余裕を取らない」が意味を持つ設定であるため。
+- **タスク1.4 → タスク1.5 への申し送り（重要）**: `.gitattributes` は `*.json` を `text eol=crlf` に固定して
+  いるが、`config.py` の `dump_params` はプラットフォーム非依存に **LF** を書く（Windows と WSL で同じ
+  コマンドが別バイト列を生むのを避けるため）。clean フィルタ後の blob は同一で `git diff` はゼロ差分だが、
+  ⚠️ **`git status --porcelain` はファイルを「変更済み」として報告し続け、`LF will be replaced by CRLF` の
+  警告が出る**。kiro-impl 自身が `git status --porcelain` を読むため、タスク 5.2（採寸の書き戻し）以降に
+  幽霊の変更が見える。**タスク 1.5 で `.gitattributes` へ `configs/catch_mechanism/*.json text eol=lf` を
+  追加し、併せて `config.py:331-334` の docstring「差分は生じない」を実態に合わせて訂正すること。**
+- **タスク1.4 / 後続への申し送り**: (a) `parameters_digest` は**出所表を含む**。値が同じまま仮値→実測へ
+  昇格しただけでも識別子が変わり、`geometry-baseline.json`（タスク 4.2）の再記録が要る。これは意図的で、
+  「まだ仮値だったときの記録」を CAD 非導入環境で可視化する唯一の手段である（要件 4.5）。意味の変わらない
+  書き足し（表に無い仮値を明示的に `"assumed"` と書く）では変化しないよう、算出時に出所表を全32パスへ
+  補完している。⚠️ `schema_version` は識別子の対象外。
+  (b) `SCHEMA_VERSION` は `config.py` が所有する（design.md の公開 `__all__` にあるが所有者の明記が無い）。
+  `geometry-baseline.json`（4.2）と `catch-opening.json`（2.3）も `schema_version` を持つため、
+  ⚠️ **それらが独立に版を刻む必要が出たらこの単一定数を分割すること**。公開（6.1）の再エクスポート元はここ。
+  (c) `dimensions.json` は `retention.added_depth_mm` / `bottom_modification` も**必須**にしている。型には
+  既定値があるが、ファイルから消えると「深さを足さない・底に加工しない」という決定が単一の正から読めなくなる。
 - **環境（全タスク共通）**: Python 環境は **WSL2 側にのみ存在する**。Windows 側に `python` / `uv` は無い。
   検証は必ず `wsl -e bash -lc 'cd /mnt/c/Users/user/repos/stb-hardware && uv run pytest -q'` の形で実行する。
   ⚠️ Windows から `uv sync` して `.venv/` を上書きしないこと（Linux venv が壊れる）。
