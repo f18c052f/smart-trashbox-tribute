@@ -35,7 +35,7 @@
   - _Requirements: 1.3, 1.4, 5.3_
   - _Boundary: Errors_
 
-- [ ] 1.3 寸法パラメータの型と構築時検証を実装する
+- [x] 1.3 寸法パラメータの型と構築時検証を実装する
   - ゴミ箱の採寸値・対象物・造形制約・継手方針・受け口・保持方針を、不変（frozen かつ slots）な
     データクラスとして定義し、集約する型を1つ置く
   - **実物の寸法に既定値を与えない。** 省略した構築は失敗させる（設計上の選択値のみ既定値を持つ）
@@ -331,6 +331,22 @@
   Errors の Key Dependencies は「なし」のため `errors.py` は `constraints.py` の値型を import できず、
   1.2 では属性を持たせていない。⚠️ **後から `errors.py` へ属性を足すと `_Boundary: Errors_` の外側からの
   変更になる**ため、タスク 2.1 / 3.4 は**違反の軸と超過量を例外メッセージへ載せる**形で満たすこと。
+- **タスク1.3 / 後続への申し送り**: (a) ⚠️ **`MechanismParams.provenance` を `MappingProxyType` で包み直してはならない。**
+  `dataclasses.asdict()` が非 dict のマッピングを `copy.deepcopy()` へ回すため
+  `TypeError: cannot pickle 'mappingproxy' object` になる（`src/flying_object_tracking/bench/compare.py`
+  に同じ罠の記録がある）。上流 `trajectory_sim.ScenarioParams` も素の dict を保持している。
+  エイリアス切断は `dict(...)` の複製だけで足りる。退行は `test_params_survive_asdict_deepcopy_and_pickle`
+  が捕捉する。なお `PARAMETER_PATHS` 自体の `MappingProxyType` は上流と同形で、データクラスの
+  フィールドではないため `asdict` 経路に乗らない。据え置きが正しい。
+  (b) design.md `#### Params` の Service Interface には `model_id` が無いが、同じ design.md の
+  `## Data Models` の `dimensions.json` 例・要件 6.8・タスク 5.1（「選定結果が寸法設定ファイルの
+  機種識別情報と一致する」）には必要である。**承認済み設計の内部矛盾**であり、タスク 1.4 の
+  `_Boundary: Config_` は `params.py` を直せないため、所有者である 1.3 で `TrashCanMeasurements` へ
+  `model_id: str` を追加して決着させた（`PARAMETER_PATHS` は 32 パス、design の例と双方向差分ゼロ）。
+  ⚠️ **design.md の Service Interface 側への追記は `/kiro-validate-impl` で正誤訂正として扱うこと**。
+  (c) `printing.segment_margin_mm` のみ 0 を許容している（他は正値必須）。design.md「Params」
+  Preconditions の「すべての長さ・直径は有限かつ正」からの**意図的な逸脱**で、タスク 2.2 の分割数導出で
+  「余裕を取らない」が意味を持つ設定であるため。
 - **環境（全タスク共通）**: Python 環境は **WSL2 側にのみ存在する**。Windows 側に `python` / `uv` は無い。
   検証は必ず `wsl -e bash -lc 'cd /mnt/c/Users/user/repos/stb-hardware && uv run pytest -q'` の形で実行する。
   ⚠️ Windows から `uv sync` して `.venv/` を上書きしないこと（Linux venv が壊れる）。
