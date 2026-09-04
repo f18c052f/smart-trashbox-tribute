@@ -153,7 +153,7 @@
   - _Depends: 2.1_
   - _Boundary: Shapes_
 
-- [ ] 3.2 ワイドリムのセグメント形状を構築する
+- [x] 3.2 ワイドリムのセグメント形状を構築する
   - 導出された分割数で扇形セグメントを構築し、外周が高く内周が低い緩やかな傾斜を与える。
     ⚠️ **内向きの漏斗を作らない**（design.md「受け口形状の決定」の決定1）
   - セグメント端面に貫通ボルト穴と金属インサート座を設け、位置決め用のダボは荷重を受けない形で置く
@@ -540,6 +540,41 @@
   (f) design.md「Error Categories and Responses」に「受け口の形状が成立しない」の行が無く、
   `GeometryError` の適用は `errors.py` docstring からの外挿である（Note 1.2(a) / 2.2(a) と同構図）。
   `/kiro-validate-impl` での正誤訂正候補。
+- **タスク3.2 / 後続への申し送り（重要）**: (a) ⚠️ **`BuiltPart` / `build_parts` / `measure_part` は
+  タスク 3.3 の所有である。** 3.2 は `RimSegment(name, index, solid, retrofit_seat_count,
+  joint_bearing_area_mm2)` を返す `build_segments` までを実装した。`BuiltPart.metrics: PartMetrics` は
+  体積・境界箱・立体数の抽出を要し、それは 3.3 の文言が明示的に所有する。3.3 は `measure_part` を
+  実装して `RimSegment` を包めば足りる（`solid` は `object` 型で公開済み）。
+  ⚠️ design.md `Traceability`（design.md:315, 319, 320, 340）は要件 1.6 / 2.4 / 2.7 / 3.1 / 3.2 /
+  8.1 / 8.5 / 8.6 の実現手段を `build_parts` と記していることに注意。
+  (b) ⚠️ **締結座はリング全体で `retrofit_fastener_count` 箇所である**（決定4「6箇所」の読み）。
+  出荷値 6箇所 / 5分割では座の配分が `[1,1,2,1,1]` となり、**セグメントは同一形状にならない**
+  （実測体積 36524.6 / 36524.6 / **36708.4** / 36524.6 / 36524.6）。⚠️ **タスク 3.4 / 4.2 は
+  5部品ぶんの記録行を前提にすること**（1個を5回刷るのではない）。`PART_NAMES` は部品の**種類**
+  `("rim_segment",)` を保ち、個々の部品名は `segment_part_names` が `rim_segment_1…` を導く。
+  座数が分割数で割り切れる場合（10箇所 / 5分割）は全セグメントが同一形状になる。
+  (c) ⚠️ **支圧面積は締結座に局在した有界量である**: `継手座の端面 + boss_radial × wall_thickness`。
+  **フランジ・壁の断面のうち座の範囲を外れる部分を算入してはならない。** `check_joint` が名指しする
+  破壊モードはボルト座面のめり込みであり支配量は座面圧で、ボルト軸（r=122.1）から 12〜21mm 離れた
+  フランジ断面（r=126.7〜143.5）を足しても座面圧は下がらない。⚠️ **レビューで一度この誤りを踏み、
+  合否が拒否→受理へ反転する寸法（height=16/wall=1/flange=30/insert_od=1.0）が生じた。**
+  退行は `test_joint_bearing_area_is_insensitive_to_the_flange_width`（フランジ幅 30→60 で
+  分割数が 5→6 に変わっても 289.0822313139195 のまま不変）が捕捉する。
+  (d) `_MIN_FEATURE_EDGE_MM=2.0` / `_RETROFIT_PAD_DROP_MARGIN_MM=2.0` / `_DOWEL_FIT_CLEARANCE_MM=0.2`
+  は mm の寸法値でありながら実装コード内にある。要件 1.1 と緊張するが `_Boundary: Shapes_` では
+  `dimensions.json` へ移せない。`/kiro-validate-impl` での design 側追記候補。
+  (e) ⚠️ **後付け座のパッドと継手座の干渉を検査するガードは無い。** 出荷値では rim_segment_3 で
+  両者が融合し `Face.radius` が `None` になるが、穴同士の干渉は無い（ボルト軸 r=122.1/z=11.7、
+  座の穴 r=128.5/z=14.3〜20.0）ことを実測で確認済み。
+  (f) テストヘルパ `_joint_boss_region` は `shapes_module._JOINT_BOSS_INSERT_DIAMETER_MULTIPLE` を
+  読むため、クリップ半径と解析式が座の規則を共変する。⚠️ **これは妥当**（座＝当たり面そのものであり、
+  座が正当に広がれば支圧面積が増えるのが正しい。テスト側にリテラルを書くと正当な設計変更で偽陽性）。
+  規則は野放しではなく、既存の境界ペア（flange=10.0 拒否 / flange=12.0 構築、wall=1.0・iod=4.6）が
+  倍数を **k ∈ (1.957, 2.391]** に挟んでいる。
+  (g) `build123d` は `build_segments` 内の**遅延 import** である。⚠️ module 直下へ移すと CAD 非導入
+  環境で**収集時 ERROR**（テストモジュール全滅）になり要件 5.7 が壊れる。境界テストは `shapes` に
+  module 直下 import を許すが、許可と要求は別である。全ガードは遅延 import より**前**で発火するため、
+  拒否系の検査は CAD 非導入環境でも走る。
 - **環境（全タスク共通）**: Python 環境は **WSL2 側にのみ存在する**。Windows 側に `python` / `uv` は無い。
   検証は必ず `wsl -e bash -lc 'cd /mnt/c/Users/user/repos/stb-hardware && uv run pytest -q'` の形で実行する。
   ⚠️ Windows から `uv sync` して `.venv/` を上書きしないこと（Linux venv が壊れる）。

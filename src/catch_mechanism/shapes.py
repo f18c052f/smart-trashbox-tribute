@@ -9,14 +9,31 @@ Implementation Notes の Validation「`rim_geometry` は形状構築の前に評
 決まる**。形状を作らなければ答えられない検査にしてしまうと、CAD の入っていない
 環境では受け口が成立するかどうかすら分からなくなる（要件 5.2, 5.3）。
 
-そのため**本モジュールは現時点で形状ライブラリ（build123d）を import しない**。
-design.md「Allowed Dependencies」は `shapes` / `export` に限って import を許すが、
-許されていることと必要であることは別である。`rim_geometry` は純粋な算術であり、
-`cad` extra 非導入の環境でも全不変条件を検査できる。
-⚠️ **申し送り**: ソリッド構築（`build_parts` / `measure_part`、および部品名の表
-`PART_NAMES`）は**タスク 3.2 / 3.3 の担当**である。build123d の import はそこで
-入る。本モジュールの現在の公開面が design.md の Service Interface より狭いのは、
+そのため**本モジュールは形状ライブラリ（build123d）をモジュール直下で import
+しない**。design.md「Allowed Dependencies」は `shapes` / `export` に限って import
+を許すが、⚠️ **許されていることと「モジュール読み込み時に必要にしてよい」ことは
+別である**。`rim_geometry` / `segment_envelope` は純粋な算術であり、`cad` extra
+非導入の環境でも全不変条件を検査できる。モジュール直下へ import を置くと
+`rim_geometry` を呼ぶだけで CAD が要ることになり、上記の分離も要件 5.7 も壊れる。
+build123d の import は**ソリッドを実際に構築する `build_segments` の内側**にある。
+`test_shapes_does_not_import_the_shape_library_at_module_level` がこれを固定する。
+
+⚠️ **申し送り**: 形状指標の抽出（`measure_part`）と、それを伴う `BuiltPart` /
+`build_parts` は**タスク 3.3 の担当**である（tasks.md タスク 3.3「構築した部品から
+体積・境界箱・立体数を抽出し」）。本モジュールがタスク 3.2 で公開するのは
+`RimSegment` と `build_segments` であり、`BuiltPart` はこれを包む形で 3.3 が
+定義する。3.2 の側で指標を作ると 3.3 の実装が本モジュールの内側へ重複する。
+本モジュールの公開面が design.md の Service Interface と一対一でないのは、
 未実装ではなく**タスク境界**による。
+
+## 造形向き（⚠️ 全形状に共通する前提）
+
+**リム面を造形面へ寝かせる向き**（本モジュールの Z 軸＝造形機の Z 軸）を前提と
+する。このとき層法線は +Z であり、**接合面（セグメント端面）の法線は XY 平面内に
+あって層法線と一致しない**——ボルトの締結力を層間の接着ではなく層内のせん断と
+支圧で受ける配置である。⚠️ 端面を造形面へ伏せる置き方をすると、接合部の強度が
+層間剥離に律速される。この前提は `build_segments` の docstring と
+`test_joint_faces_are_not_normal_to_the_layer_direction` が併せて固定している。
 
 ## 通過できる最小径（`clear_opening_diameter_mm`）の意味
 
@@ -68,27 +85,49 @@ tasks.md「Implementation Notes」タスク 2.1(a) が実部品として記録�
 `GeometryError` も**握り潰さず伝播させる**——分割で解決しない外径を、無検査のまま
 形状構築（タスク 3.2）へ渡さないためである。
 
-⚠️ **`check_envelope` は本モジュールから呼ばない。** design.md「Shapes」の
+⚠️ **`rim_geometry` は `check_envelope` を呼ばない。** design.md「Shapes」の
 Preconditions「`check_material` / `check_envelope` を通過している」は
-**呼び出し側の責務**である。`check_envelope` は違反を例外ではなく**値**として
-返す設計であり（design.md「Error Strategy」/ `constraints.py`）、それを失敗として
-扱うのは生成物を書き出す側（タスク 3.4）である。本モジュールが返す外径と分割数は
-そこで `sector_envelope` に渡され検査される。なお `required_segment_count` が
-返した分割数の扇形は必ず `check_envelope` を通る（余裕 `segment_margin_mm` の
-分だけ厳しい上限で導出しているため。tasks.md タスク 2.1(c)）。
+**呼び出し側の責務**であり、`check_envelope` は違反を例外ではなく**値**として
+返す設計である（design.md「Error Strategy」/ `constraints.py`）。なお
+`required_segment_count` が返した分割数の扇形は必ず `check_envelope` を通る
+（余裕 `segment_margin_mm` の分だけ厳しい上限で導出しているため。
+tasks.md タスク 2.1(c)）。
+
+⚠️ **ただし Z 軸だけは事情が異なり、`build_segments` が自分で検査する。**
+`required_segment_count` は分割数の導出にあたり高さへ `build_z_mm` を置くため、
+**実高さの違反を構造的に検出できない**（tasks.md「Implementation Notes」
+タスク 3.1(a)）。実高さ（取り付け部の高さ ＋ 肉厚 ＋ フランジの立ち上がり）を
+知るのは形状の側であり、それを `segment_envelope` として組み立てて
+`check_envelope` へ渡せるのは本モジュールが初めてである。ここで通さないまま
+ソリッドを返すと、造形できない部品が書き出し（タスク 3.4）まで無検査で流れる
+——要件 2.7「検査を形状生成の一部として実行し、検査を通らない形状の生成物を
+出力しない」の形状生成側の半分にあたる。書き出し直前の再検査は 3.4 の担当である。
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
-from catch_mechanism.constraints import required_segment_count
+from catch_mechanism.constraints import (
+    Envelope,
+    check_envelope,
+    check_joint,
+    required_segment_count,
+    sector_envelope,
+)
 from catch_mechanism.errors import GeometryError
-from catch_mechanism.params import MechanismParams
+from catch_mechanism.params import MechanismParams, RimParams
 
 __all__ = [
+    "PART_NAMES",
     "RimGeometry",
+    "RimSegment",
+    "build_segments",
     "rim_geometry",
+    "segment_envelope",
+    "segment_height_mm",
+    "segment_part_names",
 ]
 
 
@@ -186,3 +225,752 @@ def rim_geometry(params: MechanismParams) -> RimGeometry:
         clear_opening_diameter_mm=clear_opening_diameter_mm,
         outer_diameter_mm=outer_diameter_mm,
     )
+
+
+# ---------------------------------------------------------------------------
+# ワイドリムのセグメント形状（タスク 3.2 / 要件 2.6, 3.1, 8.3, 8.4, 9.7）
+# ---------------------------------------------------------------------------
+
+PART_NAMES: tuple[str, ...] = ("rim_segment",)
+"""受け口を構成する部品の**種類**（design.md「Shapes」Service Interface）。
+
+⚠️ **1件の要素は「部品の種類」であって、造形する部品の点数ではない。** 受け口は
+扇形セグメントという1種類の部品だけからなるが、実際に造形するのは
+`rim_geometry(params).segment_count` 点である。個々の部品名は
+`segment_part_names` が本定数から導く（`rim_segment_1` …）。
+
+⚠️ **セグメントは互いに同一形状とは限らない。** 後付け部品用の締結座は
+**リング全体で** `RetentionParams.retrofit_fastener_count` 箇所であり
+（design.md「受け口形状の決定」決定4「後付け部品用の締結座を6箇所」）、その数が
+分割数で割り切れないとき（出荷値の 6 箇所 / 5 分割など）、座の数はセグメント間で
+1 箇所ずれる。割り切れるときは全セグメントが同一形状になる。
+指標の記録（タスク 4.2）が部品ごとの行を必要とするのはこのためである。
+"""
+
+
+_MIN_FEATURE_EDGE_MM: float = 2.0
+"""穴の縁から部品の縁・他の穴までに残す最小の肉（mm）。
+
+FDM で成立する最小の壁として置く。⚠️ この値を下回る配置は「作れるが割れる」形で
+あり、`GeometryError` で拒否する——黙って縁の薄い穴を開けると、造形してから
+割れて初めて気付く。
+"""
+
+_JOINT_BOSS_INSERT_DIAMETER_MULTIPLE: float = 2.0
+"""継手座の半径方向の張り出しを決める係数（金属インサート外径の倍数）。
+
+継手座の半径方向の幅は `wall_thickness + 2 × insert_outer_diameter` である。
+⚠️ **壁の肉厚（4mm 程度）にボルト穴（φ3.4）は入らない。** 座を設けずに壁へ直接
+穴を開けると残り肉が 0.3mm になる。継手は**フランジの下の空間へ外向きに**張り
+出した座が受ける（内向きへ張り出すと決定1 に反して開口を狭める）。
+"""
+
+_JOINT_BOSS_ARC_LENGTH_MULTIPLE: float = 3.0
+"""継手座の周方向の厚み（金属インサート長さの倍数）。
+
+インサート（長さ 5.7mm）とボルト先端の逃げを収め、なお貫通ボルト穴が座を抜けて
+フランジ下の空間へ出られる厚みとして置く。
+"""
+
+_BOLT_AXIS_HEIGHT_FRACTION: float = 0.65
+"""ボルト軸の高さ（取り付け部の高さに対する比）。"""
+
+_DOWEL_AXIS_HEIGHT_FRACTION: float = 0.28
+"""位置決めダボの軸の高さ（取り付け部の高さに対する比）。
+
+⚠️ **ボルト軸と別の高さに置く。** 同軸・同高さに並べるとダボが荷重経路へ入り、
+「荷重を受けるのは貫通ボルトと金属インサートだけ」という `JointPolicy` の区別
+（要件 2.6, 8.4）が形状の側で破れる。
+"""
+
+_DOWEL_FIT_CLEARANCE_MM: float = 0.2
+"""ダボ穴の直径に与えるすきま（mm）。
+
+⚠️ **すきま嵌めであることがダボに荷重を負わせない条件そのものである。** 締まり
+嵌めにすると、せん断がダボへ回る。
+"""
+
+_DOWEL_DEPTH_DIAMETER_MULTIPLE: float = 1.5
+"""ダボ穴の深さ（ダボ呼び径の倍数）。"""
+
+_BOLT_TIP_CLEARANCE_LENGTH_MULTIPLE: float = 3.0
+"""インサート座の奥に続くボルト先端の逃げの深さ（インサート長さの倍数）。"""
+
+_RETROFIT_PAD_DIAMETER_INSERT_MULTIPLE: float = 2.0
+"""後付け用締結座のパッド外径（金属インサート外径の倍数）。"""
+
+_RETROFIT_PAD_DROP_MARGIN_MM: float = 2.0
+"""後付け用締結座のパッドが、インサート長さより余分に垂れ下がる量（mm）。"""
+
+
+def _flange_rise_mm(rim: RimParams) -> float:
+    """フランジが外周までに立ち上がる高さ（mm）。
+
+    ⚠️ **外周が高く内周が低い**（design.md「受け口形状の決定」決定1）。立ち上が
+    りは常に非負であり、内周側が高くなることはない。
+    """
+    return rim.flange_width_mm * math.tan(math.radians(rim.flange_slope_deg))
+
+
+def segment_height_mm(params: MechanismParams) -> float:
+    """セグメント1点の**実高さ**（mm）。
+
+    ⚠️ `RimParams.height_mm` は**取り付け部の高さ**であって部品の高さではない
+    （`params.RimParams` の docstring）。部品の高さはそこへ、フランジの肉厚と
+    外向きの立ち上がりを足したものである。
+
+    ⚠️ **この値が tasks.md「Implementation Notes」タスク 3.1(a) の申し送りの
+    決着である。** `constraints.required_segment_count` は分割数の導出にあたり
+    高さへ `build_z_mm` を置くため、Z 軸の違反を構造的に検出できない。実高さを
+    `check_envelope` へ渡せるのは本関数が初めてである。
+
+    Args:
+        params: 寸法パラメータの集約。
+
+    Returns:
+        取り付け部の高さ ＋ 壁の肉厚 ＋ フランジの立ち上がり（mm）。
+    """
+    rim = params.rim
+    return rim.height_mm + rim.wall_thickness_mm + _flange_rise_mm(rim)
+
+
+def segment_envelope(params: MechanismParams) -> Envelope:
+    """セグメント1点の軸並行外接箱を**実高さで**返す（要件 2.3, 8.3）。
+
+    ⚠️ **扇形の外接箱を再実装しない。** `constraints.sector_envelope` へ委譲する
+    （tasks.md「Implementation Notes」タスク 2.1(b)「形状層（タスク 3.2）は同じ
+    幾何を再実装せず、この関数を使うこと」）。半径方向は「中心を含む扇形」の
+    最悪値 `D/2` になるため、実形状（円環断片）の外接箱より大きい——上界として
+    使えるが、造形可能寸法ぎりぎりの判定に使うと保守側へ倒れすぎる点に注意する。
+
+    形状ライブラリを必要としないため、`cad` extra 非導入の環境でも評価できる
+    （要件 5.7）。
+
+    Args:
+        params: 寸法パラメータの集約。
+
+    Returns:
+        セグメント1点の軸並行外接箱。
+
+    Raises:
+        GeometryError: `rim_geometry` からの伝播（開口を狭める寸法、または収まる
+            分割数が存在しない場合）。
+    """
+    geometry = rim_geometry(params)
+    return sector_envelope(
+        geometry.outer_diameter_mm,
+        geometry.segment_count,
+        segment_height_mm(params),
+    )
+
+
+def segment_part_names(params: MechanismParams) -> tuple[str, ...]:
+    """造形するセグメントの部品名を、導出された分割数だけ返す。
+
+    ⚠️ 名前は `PART_NAMES[0]` から導く。部品名の正は1箇所であり、ここで別の
+    文字列を作らない。
+
+    Args:
+        params: 寸法パラメータの集約。
+
+    Returns:
+        `("rim_segment_1", …)`。長さは `rim_geometry(params).segment_count`。
+
+    Raises:
+        GeometryError: `rim_geometry` からの伝播。
+    """
+    count = rim_geometry(params).segment_count
+    return tuple(f"{PART_NAMES[0]}_{index + 1}" for index in range(count))
+
+
+@dataclass(frozen=True, slots=True)
+class RimSegment:
+    """構築済みのセグメント1点（design.md「Shapes」Service Interface の一部）。
+
+    ⚠️ **`BuiltPart` ではない。** design.md の `BuiltPart` は `PartMetrics` を
+    伴うが、体積・境界箱・立体数の抽出は**タスク 3.3 の担当**である
+    （tasks.md タスク 3.3「構築した部品から体積・境界箱・立体数を抽出し」）。
+    ここで指標を作ると 3.3 の実装が本モジュールの内側へ重複する。本型は
+    「構築したソリッドと、構築時にしか分からない数」だけを運び、
+    `BuiltPart` / `build_parts` はこれを包む形でタスク 3.3 が定義する。
+
+    ⚠️ **`solid` を中核層へ渡さない。** 型を `object` にしてあるのは、形状
+    ライブラリの型が中核層の署名へ漏れないようにするためである
+    （design.md「Shapes」Service Interface の `solid: object`）。
+
+    Attributes:
+        name: 部品名。`segment_part_names` の同じ位置の要素と一致する。
+        index: 0 起点のセグメント番号。リング上での位置（`index × 分割角`）を
+            指し、生成順ではない。
+        solid: build123d の `Part`。
+        retrofit_seat_count: このセグメントが持つ後付け用締結座の数。
+            ⚠️ 全セグメントの合計が `RetentionParams.retrofit_fastener_count` に
+            一致する（リング全体で指定数。design.md 決定4）。
+        joint_bearing_area_mm2: 端面1面あたりの支圧面積（mm^2）。
+            `constraints.check_joint` を通過している（要件 2.6, 8.4）。
+            ⚠️ **継手座の範囲に局在した量である。** フランジ・壁の断面のうち座の
+            範囲を外れる部分は算入しない——`check_joint` が名指しする破壊モードは
+            ボルト座面のめり込みであり、ボルトから離れた材料は座面圧を下げない。
+            離れた断面を足すと `flange_width_mm` を広げるだけで支圧面積が増える
+            式になる。したがって本値は**フランジ幅に非感応**である。
+            ⚠️ 構築されたソリッドを半径 `inner_diameter/2 + 継手座の張り出し` で
+            切り出した領域の端面の実面積と一致する（穴の大きい方の端面、すなわち
+            接触面積の狭い方を採る）。
+            分割数が 1 で合わせ目が存在しない場合は `None`——0.0 ではない。
+            「継手が無い」と「面積が 0 である」は別の事実であり、後者は継手の
+            失敗を意味する。
+    """
+
+    name: str
+    index: int
+    solid: object
+    retrofit_seat_count: int
+    joint_bearing_area_mm2: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class _JointLayout:
+    """端面の継手座の配置（本モジュール内部）。"""
+
+    boss_radial_mm: float
+    boss_arc_mm: float
+    boss_arc_deg: float
+    feature_radius_mm: float
+    bolt_axis_height_mm: float
+    dowel_axis_height_mm: float
+    dowel_hole_diameter_mm: float
+    bearing_area_mm2: float
+
+
+@dataclass(frozen=True, slots=True)
+class _RetrofitLayout:
+    """後付け用締結座の配置（本モジュール内部）。"""
+
+    center_radius_mm: float
+    pad_diameter_mm: float
+    pad_bottom_z_mm: float
+    pad_height_mm: float
+    bore_diameter_mm: float
+    bore_depth_mm: float
+    local_angles_deg: tuple[tuple[float, ...], ...]
+
+
+def _joint_layout(params: MechanismParams, geometry: RimGeometry) -> _JointLayout:
+    """端面の継手座を配置し、支圧面積を求める（要件 2.6, 8.4 / design.md）。
+
+    継手座は**フランジの下の空き空間へ外向きに**張り出す。⚠️ 内向きへ張り出すと
+    決定1「開口内径を一切狭めない」に反する。壁の肉厚（出荷値 4mm）にボルト穴
+    （φ3.4）を通すと残り肉が 0.3mm になるため、座を設けずに壁へ直接穴を開ける
+    構成は採らない。
+
+    Raises:
+        GeometryError: 座・穴・縁の肉が成立しない寸法の組み合わせの場合。
+    """
+    rim = params.rim
+    joint = params.joint
+    inner_radius_mm = geometry.inner_diameter_mm / 2.0
+    tan_slope = math.tan(math.radians(rim.flange_slope_deg))
+
+    boss_radial_mm = (
+        rim.wall_thickness_mm
+        + _JOINT_BOSS_INSERT_DIAMETER_MULTIPLE * joint.insert_outer_diameter_mm
+    )
+    if boss_radial_mm > rim.flange_width_mm:
+        raise GeometryError(
+            f"継手座の張り出し {boss_radial_mm}mm"
+            f"（wall_thickness_mm={rim.wall_thickness_mm!r} + "
+            f"{_JOINT_BOSS_INSERT_DIAMETER_MULTIPLE} × "
+            f"insert_outer_diameter_mm={joint.insert_outer_diameter_mm!r}）が "
+            f"flange_width_mm={rim.flange_width_mm!r} を超える。"
+            "⚠️ 継手座はフランジの下へ外向きに張り出す（内向きへ張り出すと開口を"
+            "狭める）ため、フランジ幅を広げるか金属インサートを細いものにすること。"
+        )
+
+    # 穴の軸はフランジの下、壁の外側に置く。⚠️ 壁の内側（半径 `inner_radius` 未満）
+    # へ寄せると開口を狭め、壁の中へ入れると穴が周方向へ抜けずに壁を延々と貫く。
+    feature_radius_mm = (
+        inner_radius_mm + rim.wall_thickness_mm + joint.insert_outer_diameter_mm
+    )
+    bolt_axis_height_mm = rim.height_mm * _BOLT_AXIS_HEIGHT_FRACTION
+    dowel_axis_height_mm = rim.height_mm * _DOWEL_AXIS_HEIGHT_FRACTION
+    dowel_hole_diameter_mm = joint.dowel_diameter_mm + _DOWEL_FIT_CLEARANCE_MM
+
+    # 荷重を受ける軸上の穴は、始端面が貫通ボルト穴（φ3.4）、終端面が金属インサート
+    # 座（φ4.6）である。⚠️ **太い方**で縁の肉を見る（細い方で見ると終端面の縁が
+    # 足りない配置を通してしまう）。
+    axis_half_mm = joint.insert_outer_diameter_mm / 2.0
+    dowel_half_mm = dowel_hole_diameter_mm / 2.0
+    checks = (
+        (
+            "ダボ穴の下端",
+            dowel_axis_height_mm - dowel_half_mm,
+            _MIN_FEATURE_EDGE_MM,
+        ),
+        (
+            "ボルト軸とダボ軸の間の肉",
+            (bolt_axis_height_mm - axis_half_mm)
+            - (dowel_axis_height_mm + dowel_half_mm),
+            _MIN_FEATURE_EDGE_MM,
+        ),
+        (
+            "ボルト穴の上端から取り付け部の上端までの肉",
+            rim.height_mm - (bolt_axis_height_mm + axis_half_mm),
+            _MIN_FEATURE_EDGE_MM,
+        ),
+    )
+    for label, available_mm, required_mm in checks:
+        if available_mm < required_mm:
+            raise GeometryError(
+                f"{label}が {available_mm}mm しかなく、下限 {required_mm}mm を"
+                f"下回る（height_mm={rim.height_mm!r}、"
+                f"insert_outer_diameter_mm={joint.insert_outer_diameter_mm!r}、"
+                f"dowel_diameter_mm={joint.dowel_diameter_mm!r}）。"
+                "⚠️ 取り付け部の高さが継手を収めるには足りない。高さを増すか、"
+                "締結要素を細くすること（穴を重ねて逃げてはならない）。"
+            )
+
+    boss_arc_mm = _JOINT_BOSS_ARC_LENGTH_MULTIPLE * joint.insert_length_mm
+    boss_arc_deg = math.degrees(boss_arc_mm / feature_radius_mm)
+    sector_deg = 360.0 / geometry.segment_count
+    if 2.0 * boss_arc_deg > sector_deg:
+        raise GeometryError(
+            f"両端の継手座（各 {boss_arc_deg}°）が分割角 {sector_deg}° を"
+            "占め尽くす。⚠️ 分割数を減らすか、金属インサートを短いものにすること。"
+        )
+
+    # 支圧面積は**継手座の範囲に局在した端面の接触面積**である。
+    #
+    # ⚠️ **フランジ・壁の断面のうち、継手座の範囲を外れる部分は算入しない。**
+    # `check_joint`（`constraints.py`）が名指しする破壊モードは「ボルトの締め付け力
+    # が樹脂へ集中して座面がめり込み、締結が緩む」——支配量はボルト**座面圧**で
+    # ある。ボルト軸（半径 `feature_radius_mm`、高さ `bolt_axis_height_mm`）から
+    # 十数 mm 離れたフランジ外周へ材料を足しても座面圧は下がらない。離れた断面を
+    # 足すと `flange_width_mm` を広げるだけで支圧面積が増える式になり、
+    # 「当たり面が足りない」という判定を寸法で買えることになる。
+    # `test_joint_bearing_area_is_insensitive_to_the_flange_width` がこの性質を
+    # 値ではなく**非感応性**として固定する。
+    #
+    # ⚠️ **解析値ではあるが実形状の代用ではない。** 下の式は、構築されるソリッドを
+    # 半径 `inner_radius + boss_radial` で切り出した領域の端面と厳密に一致し、
+    # `test_joint_bearing_area_matches_the_measured_boss_face_of_the_built_solid`
+    # が両者を突き合わせる——式を定数倍すれば落ちる。実測ではなく解析で持つのは、
+    # `check_joint`（要件 2.6, 8.4）を**ソリッドを作る前**に通す必要があるため
+    # である（要件 2.7「検査を形状生成の一部として実行し、検査を通らない形状の
+    # 生成物を出力しない」）。
+    #
+    # 座の範囲の端面は「継手座の台形（フランジ下面まで）」と「その直上のフランジの
+    # 帯（`boss_radial × wall_thickness`）」の和である。⚠️ 取り付け部の壁の断面は
+    # 台形に**含まれている**（両者は半径 `inner_radius`〜`+wall_thickness` で
+    # 重なる）ため、別途足さない。
+    boss_face_area_mm2 = (
+        boss_radial_mm * rim.height_mm + boss_radial_mm**2 * tan_slope / 2.0
+    )
+    contact_area_mm2 = (
+        boss_face_area_mm2 + boss_radial_mm * rim.wall_thickness_mm
+    )
+    # 座に開く穴は、始端面が貫通ボルト穴、終端面が金属インサート座であり、
+    # ダボ穴は両面に開く。⚠️ **穴の大きい方**（＝接触面積の狭い方の端面）を採る。
+    # ⚠️ ダボ穴の断面は引く（`check_joint` の「ダボの面積を足してはならない」より
+    # 一段強い扱い。穴には実際に材料が無い）。
+    load_bore_diameter_mm = max(
+        joint.through_hole_diameter_mm, joint.insert_outer_diameter_mm
+    )
+    bearing_area_mm2 = (
+        contact_area_mm2
+        - math.pi * (load_bore_diameter_mm / 2.0) ** 2
+        - math.pi * dowel_half_mm**2
+    )
+    if bearing_area_mm2 <= 0.0:
+        raise GeometryError(
+            f"継手座の端面の接触面積 {contact_area_mm2}mm^2 が穴で埋まり、"
+            f"支圧面積が {bearing_area_mm2}mm^2 になる。"
+            f"⚠️ 締結要素（insert_outer_diameter_mm="
+            f"{joint.insert_outer_diameter_mm!r}、"
+            f"dowel_diameter_mm={joint.dowel_diameter_mm!r}）が端面より大きい。"
+            "座を広げるか、締結要素を細くすること。"
+        )
+
+    return _JointLayout(
+        boss_radial_mm=boss_radial_mm,
+        boss_arc_mm=boss_arc_mm,
+        boss_arc_deg=boss_arc_deg,
+        feature_radius_mm=feature_radius_mm,
+        bolt_axis_height_mm=bolt_axis_height_mm,
+        dowel_axis_height_mm=dowel_axis_height_mm,
+        dowel_hole_diameter_mm=dowel_hole_diameter_mm,
+        bearing_area_mm2=bearing_area_mm2,
+    )
+
+
+def _retrofit_layout(
+    params: MechanismParams, geometry: RimGeometry
+) -> _RetrofitLayout:
+    """後付け部品用の締結座を配置する（要件 9.7 / design.md 決定4）。
+
+    座は**フランジの下面**へ垂らしたパッドに、下から止まり穴として設ける。
+    ⚠️ 上面（物が落ちてくる面）へ抜かない。⚠️ 内向きへ張り出さない（決定1）。
+    ⚠️ フランジの肉厚（出荷値 4mm）に金属インサート（長さ 5.7mm）は収まらない
+    ため、パッドを設けずに座を作ることはできない。
+
+    座はリング全体で `retrofit_fastener_count` 箇所であり、分割の境目に当たらない
+    よう半ピッチずらした角度に置く。⚠️ **セグメントごとに指定数を設けない**
+    （リング全体では指定数 × 分割数になり、決定4 の記録から外れる）。
+
+    Raises:
+        GeometryError: 座がフランジの内側／外側へはみ出す、下面まで届かない、
+            またはセグメントの端面をまたぐ場合。
+    """
+    rim = params.rim
+    joint = params.joint
+    retention = params.retention
+    inner_radius_mm = geometry.inner_diameter_mm / 2.0
+    outer_radius_mm = geometry.outer_diameter_mm / 2.0
+    tan_slope = math.tan(math.radians(rim.flange_slope_deg))
+
+    center_radius_mm = inner_radius_mm + rim.flange_width_mm / 2.0
+    pad_diameter_mm = (
+        _RETROFIT_PAD_DIAMETER_INSERT_MULTIPLE * joint.insert_outer_diameter_mm
+    )
+    pad_half_mm = pad_diameter_mm / 2.0
+    # ⚠️ **内側と外側を1つの検査にまとめてある。** パッドの中心はフランジ帯の
+    # 中央（`inner_radius + flange_width / 2`）に置くため、内側へはみ出す条件
+    # `flange_width < 2 × insert_outer_diameter` と外側へはみ出す条件は**同値**で
+    # ある。2つの `if` に分けると後ろ側が構造的に到達不能になり、検査したつもりの
+    # 死んだ枝が残る。中心半径の取り方を将来変えても両側が守られるよう、条件は
+    # 帯への包含として書く。
+    if (
+        center_radius_mm - pad_half_mm < inner_radius_mm
+        or center_radius_mm + pad_half_mm > outer_radius_mm
+    ):
+        raise GeometryError(
+            f"後付け用締結座のパッド（外径 {pad_diameter_mm}mm、中心半径 "
+            f"{center_radius_mm}mm）が、フランジの帯 "
+            f"[{inner_radius_mm}, {outer_radius_mm}]mm に収まらない"
+            f"（flange_width_mm={rim.flange_width_mm!r}、"
+            f"insert_outer_diameter_mm={joint.insert_outer_diameter_mm!r}）。"
+            "⚠️ 内側へはみ出せば受け口が開口内径を狭め（決定1 に反する）、"
+            "外側へはみ出せば外径が `rim_geometry` の導出値と食い違う。"
+            "フランジ幅を広げるか、金属インサートを細いものにすること。"
+        )
+
+    # フランジ下面の高さ。外周へ向かって上がるため、座の位置での下面はこの値。
+    underside_z_mm = rim.height_mm + (center_radius_mm - inner_radius_mm) * tan_slope
+    pad_drop_mm = joint.insert_length_mm + _RETROFIT_PAD_DROP_MARGIN_MM
+    pad_bottom_z_mm = underside_z_mm - pad_drop_mm
+    if pad_bottom_z_mm < _MIN_FEATURE_EDGE_MM:
+        raise GeometryError(
+            f"後付け用締結座のパッドの下端が z={pad_bottom_z_mm}mm となり、"
+            f"部品の底面（z=0）から {_MIN_FEATURE_EDGE_MM}mm の余裕を取れない"
+            f"（height_mm={rim.height_mm!r}、"
+            f"insert_length_mm={joint.insert_length_mm!r}）。"
+            "⚠️ パッドが底面より下へ出ると、ゴミ箱の縁に受け口が座らない。"
+        )
+    # パッドの上端はフランジの肉の中で止める。⚠️ 上面（捕捉面）へ抜かない。
+    pad_height_mm = pad_drop_mm + rim.wall_thickness_mm / 2.0
+
+    sector_deg = 360.0 / geometry.segment_count
+    half_deg = sector_deg / 2.0
+    pad_half_deg = math.degrees(math.atan(pad_half_mm / center_radius_mm))
+    per_segment: list[list[float]] = [[] for _ in range(geometry.segment_count)]
+    for seat in range(retention.retrofit_fastener_count):
+        # ⚠️ 半ピッチずらす。ずらさないと座の1つが必ず分割の境目に載る
+        # （例: 6 箇所 / 5 分割では 0° が境目と一致する）。
+        global_deg = 360.0 * (seat + 0.5) / retention.retrofit_fastener_count
+        index = min(int(global_deg // sector_deg), geometry.segment_count - 1)
+        local_deg = global_deg - (index * sector_deg + half_deg)
+        if geometry.segment_count > 1 and abs(local_deg) + pad_half_deg > half_deg:
+            raise GeometryError(
+                f"後付け用締結座（全体で {retention.retrofit_fastener_count} 箇所）"
+                f"の1つが、セグメント {index + 1} の端面をまたぐ"
+                f"（局所角 {local_deg}°、パッド半角 {pad_half_deg}°、"
+                f"分割半角 {half_deg}°）。"
+                "⚠️ 端面をまたぐ座は隣のセグメントと干渉する。座の数か分割数を"
+                "見直すこと。"
+            )
+        per_segment[index].append(local_deg)
+
+    return _RetrofitLayout(
+        center_radius_mm=center_radius_mm,
+        pad_diameter_mm=pad_diameter_mm,
+        pad_bottom_z_mm=pad_bottom_z_mm,
+        pad_height_mm=pad_height_mm,
+        bore_diameter_mm=joint.insert_outer_diameter_mm,
+        bore_depth_mm=joint.insert_length_mm,
+        local_angles_deg=tuple(tuple(angles) for angles in per_segment),
+    )
+
+
+def build_segments(params: MechanismParams) -> tuple[RimSegment, ...]:
+    """受け口のセグメントを全点構築する（要件 2.6, 3.1, 8.3, 8.4, 9.7）。
+
+    形状は**寸法パラメータから決定される手続き**であり、対話操作も外部 CAD の
+    起動も要さない（要件 3.1, 3.2）。断面（半径-高さ平面の閉じた輪郭）を Z 軸
+    まわりに分割角だけ回転させて本体を作り、そこへ継手座と締結座を足し引きする。
+
+    ## 形状の決定（design.md「受け口形状の決定」）
+
+    - 決定1: フランジは**外周が高く内周が低い**外向きの傾斜であり、取り付け部の
+      内径（`inner_diameter_mm`）より内側へは一切張り出さない。⚠️ **内向きの
+      漏斗を作らない。** 立ち上がりは常に外向きであり、符号を反転させた実装は
+      `test_flange_rises_outward_and_never_forms_an_inward_funnel` が落とす
+    - 決定2: 深さを足さない。取り付け部は縁へ被せる筒であり、本体の内側へ
+      伸びる筒を持たない
+    - 決定4: 内向きリップの代わりに、後付け部品用の締結座を**リング全体で**
+      `retrofit_fastener_count` 箇所設ける
+
+    ## 造形向き（⚠️ 注記）
+
+    **リム面を造形面へ寝かせる向き**（本モジュールの Z 軸＝造形機の Z 軸）を
+    前提とする。このとき層法線は +Z であり、**接合面（端面）の法線は XY 平面内に
+    あって層法線と一致しない**。ボルトの締結力は層間剥離ではなく層内のせん断と
+    支圧で受けられる。⚠️ この前提が崩れる置き方（端面を造形面へ伏せる）では、
+    接合部の強度が層間の接着に律速される。
+    `test_joint_faces_are_not_normal_to_the_layer_direction` が端面の法線を固定
+    している。
+
+    ## 参照解決
+
+    参照は**幾何セレクタ**（角度・半径・高さ）で明示的に組み立てる。⚠️ 生成名
+    （`Face6` 等）を一切使わない——寸法を変えたときに名前が振り直されても、
+    位置と向きで書かれた参照は同じ場所を指し続ける（design.md「Shapes」
+    Implementation Notes）。
+
+    Args:
+        params: 寸法パラメータの集約。
+
+    Returns:
+        セグメント1点につき1つの `RimSegment`。長さは
+        `rim_geometry(params).segment_count` に一致し、`index` はリング上の位置。
+
+    Raises:
+        GeometryError: 開口を狭める寸法、収まる分割数が存在しない場合
+            （`rim_geometry` からの伝播）、実高さを含む外接箱が造形可能寸法を
+            超える場合、または継手・締結座が寸法的に成立しない場合。
+        ParameterError: 支圧面積が `min_bearing_area_mm2` を下回る場合
+            （`constraints.check_joint` からの伝播。要件 2.6, 8.4）。
+        ImportError: 形状ライブラリ（`cad` extra）が導入されていない場合。
+            ⚠️ 上記の検査は**すべて import より前**に済むため、寸法が成立しない
+            ことは CAD 非導入の環境でも観測できる（要件 5.7）。
+    """
+    geometry = rim_geometry(params)
+    rim = params.rim
+    joint_policy = params.joint
+
+    # ⚠️ **実高さを伴う造形制約の検査**（tasks.md タスク 3.1(a) の申し送りの決着）。
+    # `required_segment_count` は高さに `build_z_mm` を置くため Z を検査しない。
+    violations = check_envelope(PART_NAMES[0], segment_envelope(params), params.printing)
+    if violations:
+        detail = "、".join(
+            f"軸 {violation.axis} が {violation.envelope_mm}mm で"
+            f"上限 {violation.limit_mm}mm を {violation.excess_mm}mm 超過"
+            for violation in violations
+        )
+        raise GeometryError(
+            f"セグメントの外接箱が造形可能寸法に収まらない（{detail}）。"
+            "⚠️ 分割は円周方向にのみ効くため、Z 軸の超過は分割数では解決しない"
+            f"（実高さ {segment_height_mm(params)}mm は取り付け部の高さ "
+            f"height_mm={rim.height_mm!r} に肉厚とフランジの立ち上がりを足した値）。"
+        )
+
+    if rim.wall_thickness_mm >= rim.flange_width_mm:
+        raise GeometryError(
+            f"wall_thickness_mm={rim.wall_thickness_mm!r} が "
+            f"flange_width_mm={rim.flange_width_mm!r} 以上であり、フランジの断面が"
+            "成立しない。⚠️ フランジは取り付け部の壁より外側へ張り出す部分である。"
+        )
+
+    joint = None if geometry.segment_count == 1 else _joint_layout(params, geometry)
+    if joint is not None:
+        # 要件 2.6, 8.4: 支圧面積の下限を満たさない継手は構築しない。
+        check_joint(joint_policy, joint.bearing_area_mm2)
+    retrofit = _retrofit_layout(params, geometry)
+
+    # ⚠️ **形状ライブラリの import は関数内で行う。** design.md は `shapes` に
+    # build123d の import を許すが、モジュール直下へ置くと `rim_geometry` すら
+    # CAD 非導入の環境で評価できなくなり、design.md「Shapes」Implementation Notes
+    # の Validation（形状構築の前に不変条件を検査できる）と要件 5.7 が壊れる。
+    from build123d import (
+        Align,
+        Axis,
+        Cylinder,
+        Location,
+        Polyline,
+        Rotation,
+        make_face,
+        revolve,
+    )
+
+    inner_radius_mm = geometry.inner_diameter_mm / 2.0
+    outer_radius_mm = geometry.outer_diameter_mm / 2.0
+    wall_mm = rim.wall_thickness_mm
+    skirt_mm = rim.height_mm
+    tan_slope = math.tan(math.radians(rim.flange_slope_deg))
+    rise_mm = _flange_rise_mm(rim)
+    sector_deg = 360.0 / geometry.segment_count
+    half_deg = sector_deg / 2.0
+
+    def profile(points: tuple[tuple[float, float], ...]) -> object:
+        """半径-高さの点列（`(r, z)`）から、Z 軸を含む平面上の面を作る。"""
+        return make_face(
+            Polyline(*[(radius, 0.0, height) for radius, height in points], close=True)
+        )
+
+    # 断面。⚠️ 上面は内周 `skirt + wall` から外周 `skirt + wall + rise` へ**上がる**
+    # （決定1: 外周が高く内周が低い）。取り付け部の内周面は z=0 から上端まで
+    # 径 `inner_diameter` の円筒であり、ここが「通過できる最小径」を決める。
+    body = revolve(
+        Rotation(0, 0, -half_deg)
+        * profile(
+            (
+                (inner_radius_mm, 0.0),
+                (inner_radius_mm, skirt_mm + wall_mm),
+                (outer_radius_mm, skirt_mm + wall_mm + rise_mm),
+                (outer_radius_mm, skirt_mm + rise_mm),
+                (inner_radius_mm + wall_mm, skirt_mm + wall_mm * tan_slope),
+                (inner_radius_mm + wall_mm, 0.0),
+            )
+        ),
+        Axis.Z,
+        revolution_arc=sector_deg,
+    )
+
+    def face_bore(
+        angle_deg: float,
+        into_material: bool,
+        radius_mm: float,
+        height_mm: float,
+        bore_diameter_mm: float,
+        depth_mm: float,
+    ) -> object:
+        """端面へ、その面の法線方向に穴を掘る円筒を作る（幾何セレクタ）。
+
+        位置は「角度・半径・高さ」、向きは「その角度における接線」で決まる。
+        `into_material` が真なら反時計回りの接線（＝始端面から材料側）、偽なら
+        その逆（＝終端面から材料側）を向く。
+        """
+        theta = math.radians(angle_deg)
+        axis_deg = angle_deg if into_material else angle_deg + 180.0
+        return (
+            Location(
+                (
+                    radius_mm * math.cos(theta),
+                    radius_mm * math.sin(theta),
+                    height_mm,
+                )
+            )
+            * Rotation(0, 0, axis_deg)
+            * Rotation(-90, 0, 0)
+            * Cylinder(
+                bore_diameter_mm / 2.0,
+                depth_mm,
+                align=(Align.CENTER, Align.CENTER, Align.MIN),
+            )
+        )
+
+    if joint is not None:
+        boss = profile(
+            (
+                (inner_radius_mm, 0.0),
+                (inner_radius_mm + joint.boss_radial_mm, 0.0),
+                (
+                    inner_radius_mm + joint.boss_radial_mm,
+                    skirt_mm + joint.boss_radial_mm * tan_slope,
+                ),
+                (inner_radius_mm, skirt_mm),
+            )
+        )
+        # 両端面にフランジ下面までを満たす座を足す。
+        body += revolve(
+            Rotation(0, 0, -half_deg) * boss, Axis.Z, revolution_arc=joint.boss_arc_deg
+        )
+        body += revolve(
+            Rotation(0, 0, half_deg - joint.boss_arc_deg) * boss,
+            Axis.Z,
+            revolution_arc=joint.boss_arc_deg,
+        )
+        # 始端面: 貫通ボルト穴（バカ穴）。⚠️ 座を**抜けて**フランジ下の空間へ出る
+        # 深さを取る。止まり穴にするとボルトを通せない。
+        body -= face_bore(
+            -half_deg,
+            True,
+            joint.feature_radius_mm,
+            joint.bolt_axis_height_mm,
+            joint_policy.through_hole_diameter_mm,
+            2.0 * joint.boss_arc_mm,
+        )
+        # 終端面: 金属インサート座と、その奥へ続くボルト先端の逃げ。
+        body -= face_bore(
+            half_deg,
+            False,
+            joint.feature_radius_mm,
+            joint.bolt_axis_height_mm,
+            joint_policy.insert_outer_diameter_mm,
+            joint_policy.insert_length_mm,
+        )
+        body -= face_bore(
+            half_deg,
+            False,
+            joint.feature_radius_mm,
+            joint.bolt_axis_height_mm,
+            joint_policy.through_hole_diameter_mm,
+            _BOLT_TIP_CLEARANCE_LENGTH_MULTIPLE * joint_policy.insert_length_mm,
+        )
+        # 両端面: 位置決めダボ。⚠️ **荷重を受けない**——ボルト軸とは別の高さに、
+        # すきま嵌めの穴として置く（要件 2.6, 8.4）。
+        dowel_depth_mm = (
+            _DOWEL_DEPTH_DIAMETER_MULTIPLE * joint_policy.dowel_diameter_mm
+        )
+        body -= face_bore(
+            -half_deg,
+            True,
+            joint.feature_radius_mm,
+            joint.dowel_axis_height_mm,
+            joint.dowel_hole_diameter_mm,
+            dowel_depth_mm,
+        )
+        body -= face_bore(
+            half_deg,
+            False,
+            joint.feature_radius_mm,
+            joint.dowel_axis_height_mm,
+            joint.dowel_hole_diameter_mm,
+            dowel_depth_mm,
+        )
+
+    def retrofit_cylinder(angle_deg: float, diameter_mm: float, height_mm: float) -> object:
+        """締結座のパッド／止まり穴を、局所角 `angle_deg` の位置に作る。"""
+        return Rotation(0, 0, angle_deg) * (
+            Location((retrofit.center_radius_mm, 0.0, retrofit.pad_bottom_z_mm))
+            * Cylinder(
+                diameter_mm / 2.0,
+                height_mm,
+                align=(Align.CENTER, Align.CENTER, Align.MIN),
+            )
+        )
+
+    names = segment_part_names(params)
+    segments: list[RimSegment] = []
+    for index, name in enumerate(names):
+        solid = body
+        angles = retrofit.local_angles_deg[index]
+        for angle_deg in angles:
+            solid += retrofit_cylinder(
+                angle_deg, retrofit.pad_diameter_mm, retrofit.pad_height_mm
+            )
+        for angle_deg in angles:
+            # ⚠️ 座は**下から**掘る止まり穴である。上面（捕捉面）へ抜かない。
+            solid -= retrofit_cylinder(
+                angle_deg, retrofit.bore_diameter_mm, retrofit.bore_depth_mm
+            )
+        segments.append(
+            RimSegment(
+                name=name,
+                index=index,
+                solid=solid,
+                retrofit_seat_count=len(angles),
+                joint_bearing_area_mm2=(
+                    None if joint is None else joint.bearing_area_mm2
+                ),
+            )
+        )
+    return tuple(segments)
