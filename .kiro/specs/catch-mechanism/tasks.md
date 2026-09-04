@@ -190,7 +190,7 @@
 
 - [ ] 4. 入口と検査
 
-- [ ] 4.1 コマンド入口を実装する
+- [x] 4.1 コマンド入口を実装する
   - 生成・照合・選定・許容誤差導出の4サブコマンドを実装する
   - 形状を要するサブコマンドでは形状ライブラリを関数内で遅延 import し、
     未導入時は専用の失敗として扱う。⚠️ **成功として黙って読み飛ばさない**
@@ -648,6 +648,41 @@
   「検査を通らない形状の生成物を出力しない」の実現箇所である。
   (h) 出荷 `dimensions.json` での成果物は **15ファイル・約1,989,387バイト**。`rim_segment_3`（座2つ）は
   3形式すべてで他より明確に大きい（STEP 158,502B 対 約111,900B）。
+- **タスク4.1 / 後続への申し送り**: (a) **例外→終了コードの対応表**（`cli.EXIT_CODE_BY_ERROR`）を確定した:
+  `ConsistencyError`→**1**（検査の不一致）/ `ParameterError`→**2** / `SelectionError`→**2** / `GeometryError`→**2** /
+  `CadUnavailableError`→**3** / 裸の `ImportError`・`ModuleNotFoundError`→**3**。
+  `MetricsMismatch` が空でない場合は**例外にせず値のまま** exit 1 とする。
+  ⚠️ Note 2.2(a) が保留していた `SelectionError` の割り当ては **2 で確定**した。`errors.py` の docstring が
+  本例外を選定の**入力**の誤り（基準ファイルの未知の項目名・候補諸元の欠損・存在しない候補の名指し）に
+  限定しており、候補の不適合は `CandidateVerdict.accepted = False` という**値**でこの経路を通らないため、
+  「検査の不一致」(1) と混ざらない。`test_exit_code_table_covers_every_error_family` が
+  `errors.__all__` との集合一致を固定するので、⚠️ **新しい例外系統を足したら対応表も更新しないと落ちる。**
+  ⚠️ `main()` が捕捉するのは `(CatchMechanismError, ImportError, OSError)` **だけ**である。
+  `AttributeError` 等の本物の不具合は traceback ごと伝播する（exit 2 に潰さない）。これは意図した設計。
+  (b) ⚠️ **`_verify_digest` は `cli.py` にインライン実装されている**が、Note 2.4(c) は
+  「記録の識別子と現在の `dimensions.json` の識別子の照合」を**タスク 4.3 の担当**としている。
+  4.1 の境界は `Cli` のみで他に置き場所が無かった。**タスク 4.2 は `_Boundary: Metrics, Cli_` の
+  両方を持つので、そこで `metrics.py` へ移すこと。** そうすれば 4.3 は
+  `test_check_digest_only_detects_a_stale_record` を重複させずに済む。
+  ⚠️ なお要件 4.5 は `--digest-only` 無しでも成立する（`_verify_digest` は CAD の import より**前**に
+  走るため、CAD 非導入環境でも古い記録は exit 1 で検出される）。
+  (c) ⚠️ **`configs/catch_mechanism/geometry-baseline.json` は出荷していない**（タスク 4.2 の担当）。
+  既定パスの `check` は `load_baseline` の `ParameterError` を受けて exit 2 で失敗し、欠けているファイルを
+  名指しする。本タスクのテストは既定パスの記録の有無・中身を一切主張せず、記録が要る検査はすべて
+  `--baseline <tmp_path>` を使う。レビューで実際に記録を出荷して 772 passed / 0 failed を実証済み。
+  新規記録の既定 `volume_rel_tolerance = 1e-6` は Note 3.3 の下限 1e-7 を満たす。
+  (d) `tolerance --check configs/trajectory_sim/sweep-layout.json` は**現時点で exit 1** になる
+  （`parameters.catch.position_tolerance_mm` が記録されていないため）。これは今日の正しい状態であり、
+  ⚠️ **タスク 5.4 が値と出所を書けば 0 になる**（`cli.py` の変更は不要。`CatchCriteria.position_tolerance_mm`
+  は `src/trajectory_sim/params.py` に既定 67.5 で既に存在する）。どのテストもこのファイルを参照していない。
+  (e) `cli` は `shapes` / `export` を**関数内で遅延 import** する。⚠️ module 直下へ移すと
+  `find_module_level_cad_imports` が落ち、CAD 非導入環境も壊れる。`importlib.metadata.version("build123d")`
+  は import 文ではないため境界検査に掛からず、`PackageNotFoundError` で守られている。
+  (f) ロケール（Note 3.4(a)）は `export.py` の `_write_3mf` が退避・復元しており、`cli build` は
+  `export_parts` 経由でしか `Mesher.write` へ到達しないため **CLI 独自のガードは不要**である。
+  ⚠️ ただし CLI のサブプロセス検査は `text=True` ではなく **`encoding="utf-8"` を明示**すること。
+  (g) ⚠️ `tolerance` を `--output` 無しで実行すると出荷の `configs/catch_mechanism/catch-opening.json` を
+  上書きする（design.md が定める動作）。テストは必ず `--output <tmp_path>` を渡すこと。
 - **環境（全タスク共通）**: Python 環境は **WSL2 側にのみ存在する**。Windows 側に `python` / `uv` は無い。
   検証は必ず `wsl -e bash -lc 'cd /mnt/c/Users/user/repos/stb-hardware && uv run pytest -q'` の形で実行する。
   ⚠️ Windows から `uv sync` して `.venv/` を上書きしないこと（Linux venv が壊れる）。
