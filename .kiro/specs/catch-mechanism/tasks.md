@@ -510,6 +510,13 @@
   6. **品名・型番・JAN・購入店・価格** — `model_id` と要件 6.8「再調達性（同一品が別ルートで
      入手できること）」の記録に要る。⚠️ **`candidates.json` にこの品の行が無い**ため、
      タスク 5.1 は候補表への追加を伴う（`_Boundary: Selection_` 内）
+- **形状ライブラリの導入（2026-09-04 実施済み）**: WSL2 側に `build123d 0.11.1` を導入した。
+  ⚠️ **`uv sync --extra cad` を単独で実行してはならない。** `uv sync` は宣言された集合へ**刈り込む**ため、
+  他の extras（`tracking` の `opencv-python-headless`、`m1-viz` の `matplotlib`）が**アンインストールされる**。
+  実際に一度これを踏み、`cv2` と `matplotlib` が消えた（`numpy` は build123d の依存として残ったため
+  気付きにくい）。**必ず `uv sync --all-extras` を使うこと。**
+  ⚠️ **Windows 側から `uv sync` を実行しないこと**（Linux の `.venv/` が壊れる）。
+  導入前後で全スイートは 4517 passed / 14 skipped の同一結果であり、`uv.lock` にも差分は出ない。
 - **環境（全タスク共通）**: Python 環境は **WSL2 側にのみ存在する**。Windows 側に `python` / `uv` は無い。
   検証は必ず `wsl -e bash -lc 'cd /mnt/c/Users/user/repos/stb-hardware && uv run pytest -q'` の形で実行する。
   ⚠️ Windows から `uv sync` して `.venv/` を上書きしないこと（Linux venv が壊れる）。
