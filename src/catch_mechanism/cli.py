@@ -102,6 +102,7 @@ from catch_mechanism.metrics import (
     PartMetrics,
     compare_metrics,
     load_baseline,
+    verify_baseline_digest,
     write_baseline,
 )
 from catch_mechanism.params import MechanismParams
@@ -472,31 +473,6 @@ def _cmd_tolerance(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 
-def _verify_digest(baseline: GeometryBaseline, params: MechanismParams, path: Path) -> str:
-    """記録の識別子が現在の寸法設定と一致することを検査する（要件 4.5）。
-
-    ⚠️ **形状を再生成せずに実行できる**——これが `--digest-only` の存在理由であり、
-    形状ライブラリ非導入の環境でも「寸法を変えたまま記録を更新していない」状態を
-    検出できる唯一の手段である。
-
-    Returns:
-        現在の寸法設定ファイルの識別子。
-
-    Raises:
-        ConsistencyError: 記録と現在の識別子が食い違う場合。⚠️ 双方の値と
-            参照元（記録のパスと寸法設定ファイルのパス）を載せる。
-    """
-    current = parameters_digest(params)
-    if baseline.parameters_digest != current:
-        raise ConsistencyError(
-            f"記録 {path} の parameters_digest={baseline.parameters_digest!r} は、"
-            f"現在の {DEFAULT_DIMENSIONS_PATH} の識別子 {current!r} と一致しない。"
-            "寸法パラメータを変更したまま形状指標の記録を更新していない（要件 4.5）。"
-            f"`python -m {PROGRAM} build --update-baseline` で記録を更新すること。"
-        )
-    return current
-
-
 def _regenerate_metrics(params: MechanismParams) -> Mapping[str, PartMetrics]:
     """形状を再生成し、部品名から指標への対応表を返す（要件 4.3）。
 
@@ -547,9 +523,14 @@ def _cmd_check(args: argparse.Namespace) -> int:
 
     ⚠️ **記録が無ければ失敗する**（`metrics.load_baseline` の規律）。空の記録を
     黙って作れば照合は「部品0件」で必ず成功し、記録を作り忘れた状態が緑のまま
-    流れる。既定の記録 `configs/catch_mechanism/geometry-baseline.json` を作るのは
-    タスク 4.2 であり、それまで既定パスでの `check` はファイル名を示して
-    終了コード 2 で失敗する。
+    流れる。既定の記録 `configs/catch_mechanism/geometry-baseline.json` は
+    タスク 4.2 が出荷済みであり、`--baseline` を省いた `check` はそれを読む。
+
+    ⚠️ **識別子の突き合わせは `metrics.verify_baseline_digest` が持つ。** 本関数は
+    それを呼ぶだけで、比較をここへ書き写さない（tasks.md「Implementation Notes」
+    タスク 4.1(b) / 2.4(c)）。⚠️ 現在の識別子を作るのは `config.parameters_digest`
+    であり、`metrics` は文字列を受け取るだけである——`metrics` が識別子を計算
+    し始めると、記録の層が寸法設定の読み込みへ依存してしまう。
     """
     baseline = load_baseline(args.baseline)
     params = load_params()
@@ -557,7 +538,14 @@ def _cmd_check(args: argparse.Namespace) -> int:
     # ⚠️ 識別子の検査を先に行う。記録が古いと分かっているものへ再生成結果を
     # 突き合わせても、出てくる不一致は「寸法を変えたのだから当然」でしかない
     # （`errors.ConsistencyError`:「照合を待たずに成立していない整合を拒否する」）。
-    current = _verify_digest(baseline, params, args.baseline)
+    # ⚠️ この検査は形状層の import より**前**にある。CAD 非導入の環境でも古い記録は
+    # 終了コード 1 で検出される（`--digest-only` 無しでも要件 4.5 が成立する）。
+    current = verify_baseline_digest(
+        baseline,
+        parameters_digest(params),
+        baseline_path=args.baseline,
+        dimensions_path=DEFAULT_DIMENSIONS_PATH,
+    )
     print(f"{PROGRAM} check: パラメータ識別子は記録と一致する（{current}）")
 
     if args.digest_only:
@@ -629,8 +617,11 @@ def _update_baseline(
 ) -> None:
     """形状指標の記録を書き出す（要件 4.2 の書き出し経路）。
 
-    ⚠️ **出荷する記録の中身を決めるのはタスク 4.2 である。** 本関数はその経路を
-    与えるだけで、既定の記録ファイルをここで作りはしない。
+    ⚠️ **出荷されている記録はこの経路で作られた。** タスク 4.2 が
+    `build --update-baseline` を既定パスへ1回実行した結果が
+    `configs/catch_mechanism/geometry-baseline.json` である。記録の中身は
+    「その場の導出値」ではなく実際に構築した形状の指標であり、
+    `test_catch_geometry_regression.py` が再生成との一致を固定している。
     """
     volume_tolerance, bbox_tolerance = _existing_tolerances(path)
     baseline = GeometryBaseline(

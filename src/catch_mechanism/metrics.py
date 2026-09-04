@@ -31,15 +31,23 @@ Responsibilities / 要件 5.7）。形状を持つ側は `shapes.BuiltPart`（`s
 無い——1個の部品が2個へ割れたことは、量の差ではなく形の破綻である。
 
 **記録には `parameters_digest` を含める。** digest の不一致は、形状を再生成せず
-とも検出できる（要件 4.5）。⚠️ ただし**本モジュールは記録の識別子と現在の設定
-ファイルの識別子を突き合わせない**。それはタスク 4.3（`ConsistencyError` を
-送出する）の担当であり、ここで行うのは「識別子が `config.parameters_digest` と
-同じ書式であること」の検査までである。書式さえ見なければ、識別子らしくない
-文字列が記録に残ったまま 4.3 の比較へ流れ込む。
+とも検出できる（要件 4.5）。⚠️ 記録の構築時に見るのは「識別子が
+`config.parameters_digest` と同じ**書式**であること」までであり、現在の設定
+ファイルの識別子との突き合わせは `verify_baseline_digest` が別途行う
+（`ConsistencyError`）。書式検査を欠くと、識別子らしくない文字列が記録に残った
+まま突き合わせへ流れ込む。
 
-**既定パスは宣言であって、ファイルの存在の主張ではない。** 記録
-`configs/catch_mechanism/geometry-baseline.json` の初期化はタスク 4.2 の担当で
-あり（形状ライブラリ導入環境を要する）、本タスクの時点では出荷されていない。
+**識別子の突き合わせはここに在り、CAD を要さない。** `verify_baseline_digest` は
+形状も数値の指標も見ず2つの文字列を比べるだけなので、形状ライブラリ非導入の
+環境でも「寸法を変えたまま記録を更新していない」状態を検出できる（要件 4.5,
+5.7）。⚠️ **識別子そのものは本モジュールが計算しない**——現在の識別子を作るのは
+`config.parameters_digest` であり、ここは受け取った文字列を比較するだけである
+（タスク 4.1 は `_Boundary: Cli_` しか持たなかったため `cli.py` に置いたが、
+タスク 4.2 が本来の層である `metrics` へ移した。tasks.md「Implementation Notes」
+タスク 4.1(b)）。
+
+**記録は出荷されている。** `configs/catch_mechanism/geometry-baseline.json` は
+タスク 4.2 が実形状から生成して出荷した（`DEFAULT_BASELINE_PATH`）。
 ⚠️ `load_baseline()` は記録が無いとき**空の記録を黙って返さない**——空の記録は
 どんな再生成結果とも一致してしまい、「記録を作り忘れた」状態が緑のまま流れる。
 パスを示す `ParameterError` で失敗する。
@@ -69,7 +77,7 @@ from pathlib import Path
 from typing import Final
 
 from catch_mechanism.config import SCHEMA_VERSION
-from catch_mechanism.errors import ParameterError
+from catch_mechanism.errors import ConsistencyError, ParameterError
 
 __all__ = [
     "DEFAULT_BASELINE_PATH",
@@ -83,6 +91,7 @@ __all__ = [
     "load_baseline",
     "write_baseline",
     "compare_metrics",
+    "verify_baseline_digest",
     "estimate_mass_g",
 ]
 
@@ -97,9 +106,10 @@ DEFAULT_BASELINE_PATH: Final[Path] = (
 `configs/catch_mechanism/geometry-baseline.json`）。
 
 `config.DEFAULT_DIMENSIONS_PATH` と同じく `parents[2]` がリポジトリルートである
-（`src` レイアウト）。⚠️ **この定数はファイルが在ることを主張しない。** 記録の
-初期化はタスク 4.2 の担当であり、無い状態で `load_baseline()` を呼べばパスを
-示して失敗する（本モジュール docstring）。
+（`src` レイアウト）。記録はタスク 4.2 が実形状から生成して出荷しており、
+`tests/catch_mechanism/test_catch_geometry_regression.py` が中身を現在の実装と
+突き合わせている。⚠️ それでも `load_baseline()` は不在を黙認しない——記録が
+無ければパスを示して失敗する（本モジュール docstring）。
 """
 
 MM3_PER_CM3: Final[float] = 1000.0
@@ -252,8 +262,8 @@ class GeometryBaseline:
     Attributes:
         schema_version: 記録形式の版。`config.SCHEMA_VERSION` と一致する。
         parameters_digest: 記録時の寸法パラメータの識別子（`sha256:<hex>`）。
-            ⚠️ 現在の設定ファイルの識別子との**突き合わせはタスク 4.3 の担当**で
-            あり、ここでは書式のみを検査する。
+            ⚠️ ここで検査するのは**書式のみ**である。現在の設定ファイルの識別子と
+            の突き合わせは `verify_baseline_digest` が行う（`ConsistencyError`）。
         volume_rel_tolerance: 体積の**相対**許容差（無次元）。非負である。
         bbox_abs_tolerance_mm: 境界箱の**絶対**許容差（mm）。非負である。
         generator_version: 記録時の形状ライブラリ版（情報用）。照合には用いない
@@ -479,6 +489,66 @@ def compare_metrics(
         mismatches.extend(_compare_part(part_name, recorded, regenerated, baseline))
 
     return tuple(mismatches)
+
+
+def verify_baseline_digest(
+    baseline: GeometryBaseline,
+    current_digest: str,
+    *,
+    baseline_path: Path,
+    dimensions_path: Path,
+) -> str:
+    """記録の識別子が現在の寸法設定の識別子と一致することを検査する（要件 4.5）。
+
+    ⚠️ **形状を再生成せずに実行できる。** 本関数は数値の指標も形状も見ず、
+    2つの文字列だけを突き合わせる——だからこそ形状ライブラリ非導入の環境でも
+    「寸法パラメータを変更したまま記録を更新していない」状態を検出できる
+    （要件 5.7 / design.md「Metrics」Responsibilities「digest の不一致は、形状を
+    再生成せずとも検出できる」）。
+
+    ⚠️ **識別子は本モジュールが計算しない。** 現在の識別子を作るのは
+    `config.parameters_digest` であり、本関数は受け取った文字列を比較するだけで
+    ある。計算を持ち込めば `params` への依存が生まれ、「記録は形状層より下で
+    読めなければならない」という本モジュールの立ち位置が濁る。
+
+    Args:
+        baseline: 検査する記録。
+        current_digest: 現在の寸法設定ファイルの識別子（`config.parameters_digest`
+            の戻り値）。⚠️ 書式（`sha256:` + 64桁の16進小文字）を満たすこと。
+        baseline_path: 記録の在り処。失敗時の参照元として示す。
+        dimensions_path: 現在の寸法設定ファイルの在り処。同上。
+
+    Returns:
+        `current_digest`（一致したときのみ）。呼び出し側が「一致した識別子」を
+        そのまま出力に使えるようにするための戻り値である。
+
+    Raises:
+        ConsistencyError: 記録と現在の識別子が食い違う場合。⚠️ **双方の値と
+            双方の参照元を載せる**——片方しか出さない失敗は、どちらが古いのかを
+            読み手に決めさせてしまう（`errors.ConsistencyError`:
+            「照合を待たずに成立していない整合を拒否する」）。
+        ParameterError: `current_digest` が識別子の書式を満たさない場合。
+            ⚠️ これは**呼び出し方の誤り**であって不整合ではない。書式の壊れた
+            文字列を「一致しない」として扱うと、記録が古いのか呼び出しが壊れて
+            いるのかが区別できなくなる（`compare_metrics` が壊れた `measured` を
+            `ParameterError` で拒むのと同じ規律）。
+    """
+    _require_nonempty_str(current_digest, "current_digest")
+    if _DIGEST_PATTERN.match(current_digest) is None:
+        raise ParameterError(
+            f"current_digest={current_digest!r} は "
+            "'sha256:' に続く64桁の16進小文字でなければならない"
+            "（config.parameters_digest の書式）。"
+        )
+
+    if baseline.parameters_digest != current_digest:
+        raise ConsistencyError(
+            f"記録 {baseline_path} の {_DIGEST_KEY}={baseline.parameters_digest!r} は、"
+            f"現在の {dimensions_path} の識別子 {current_digest!r} と一致しない。"
+            "寸法パラメータを変更したまま形状指標の記録を更新していない（要件 4.5）。"
+            "`build --update-baseline` で記録を更新すること。"
+        )
+    return current_digest
 
 
 def estimate_mass_g(volume_mm3: float, density_g_cm3: float) -> float:

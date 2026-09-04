@@ -33,7 +33,7 @@ import pytest
 
 from catch_mechanism import metrics as metrics_module
 from catch_mechanism.config import SCHEMA_VERSION
-from catch_mechanism.errors import CatchMechanismError, ParameterError
+from catch_mechanism.errors import CatchMechanismError, ConsistencyError, ParameterError
 from catch_mechanism.metrics import (
     ABSENT,
     DEFAULT_BASELINE_PATH,
@@ -46,6 +46,7 @@ from catch_mechanism.metrics import (
     compare_metrics,
     estimate_mass_g,
     load_baseline,
+    verify_baseline_digest,
     write_baseline,
 )
 from catch_mechanism.params import PrintingConstraints
@@ -56,8 +57,11 @@ VALID_DIGEST = "sha256:" + "0" * 64
 """識別子の**書式**だけを満たす値。⚠️ 実在のパラメータの識別子ではない。
 
 `config.parameters_digest` の戻り値と同じ形（`sha256:` + 64桁の16進）であり、
-記録の書式検査を通すためだけに用いる。記録の識別子と現在の設定ファイルの
-識別子を突き合わせる検査はタスク 4.3 の担当であり、本タスクの範囲外である。
+記録の書式検査を通すためだけに用いる。⚠️ **実在の `dimensions.json` の識別子を
+読みに行かない。** 「識別子の突き合わせ」節は `verify_baseline_digest` の契約
+（何を返し、何を拒み、失敗時に何を示すか）だけを固定し、出荷ファイルの中身には
+一切触れない——「寸法設定ファイルを変更したまま記録を更新していない」という
+**状況**の再現はタスク 4.3 の担当である。
 """
 
 
@@ -571,6 +575,102 @@ def test_load_rejects_broken_json(tmp_path: Path) -> None:
     with pytest.raises(ParameterError) as excinfo:
         load_baseline(path)
     assert str(path) in str(excinfo.value)
+
+
+# --------------------------------------------------------------------------
+# 識別子の突き合わせ（要件 4.5、タスク 4.2 が `cli` から移設）
+#
+# ⚠️ **形状を再生成しない検査である。** 本ファイルは形状ライブラリを一切
+# 必要としないため、この節が通ること自体が「CAD 非導入環境でも識別子の不整合を
+# 検出できる」ことの実証になっている（tasks.md「Implementation Notes」
+# タスク 4.1(b)）。⚠️ 「寸法設定ファイルを変更したまま記録を更新していない」
+# という**状況**の再現はタスク 4.3 の担当であり、ここで固定するのは関数の
+# 契約（何を返し、何を拒み、失敗時に何を示すか）だけである。
+# --------------------------------------------------------------------------
+
+
+def test_verify_baseline_digest_returns_the_current_digest_when_they_agree() -> None:
+    """識別子が一致すれば、現在の識別子をそのまま返す（呼び出し側の出力用）。"""
+    baseline = make_baseline()
+
+    assert (
+        verify_baseline_digest(
+            baseline,
+            VALID_DIGEST,
+            baseline_path=Path("baseline.json"),
+            dimensions_path=Path("dimensions.json"),
+        )
+        == VALID_DIGEST
+    )
+
+
+def test_verify_baseline_digest_names_both_values_and_both_sources() -> None:
+    """食い違うときは双方の値と双方の参照元を示して `ConsistencyError` になる。
+
+    ⚠️ 片方の値しか出さない失敗は直しようがない——どちらが古いのかが読めない。
+    """
+    current = "sha256:" + "1" * 64
+    baseline = make_baseline(parameters_digest=VALID_DIGEST)
+    baseline_path = Path("configs") / "geometry-baseline.json"
+    dimensions_path = Path("configs") / "dimensions.json"
+
+    with pytest.raises(ConsistencyError) as excinfo:
+        verify_baseline_digest(
+            baseline,
+            current,
+            baseline_path=baseline_path,
+            dimensions_path=dimensions_path,
+        )
+
+    message = str(excinfo.value)
+    assert VALID_DIGEST in message
+    assert current in message
+    assert str(baseline_path) in message
+    assert str(dimensions_path) in message
+
+
+def test_verify_baseline_digest_is_a_consistency_failure_not_a_parameter_error() -> None:
+    """不整合は「入力の誤り」ではない（終了コードが 2 と 1 で分かれる）。
+
+    ⚠️ `errors.py` の5系統は互いに素であり、`ConsistencyError` を
+    `ParameterError` として捕まえられてはならない。
+    """
+    baseline = make_baseline(parameters_digest=VALID_DIGEST)
+
+    with pytest.raises(CatchMechanismError) as excinfo:
+        verify_baseline_digest(
+            baseline,
+            "sha256:" + "1" * 64,
+            baseline_path=Path("baseline.json"),
+            dimensions_path=Path("dimensions.json"),
+        )
+
+    assert isinstance(excinfo.value, ConsistencyError)
+    assert not isinstance(excinfo.value, ParameterError)
+
+
+@pytest.mark.parametrize(
+    "current",
+    ["", "sha256:zz", "0" * 64, "sha512:" + "0" * 64, "SHA256:" + "0" * 64],
+)
+def test_verify_baseline_digest_rejects_a_malformed_current_digest(current: str) -> None:
+    """現在の識別子が書式を満たさないのは**呼び出し方の誤り**である。
+
+    ⚠️ 書式の壊れた文字列を「一致しない」として `ConsistencyError` にすると、
+    記録が古いのか呼び出しが壊れているのかが区別できなくなる（`compare_metrics`
+    が対応表の壊れた `measured` を `ParameterError` で拒むのと同じ規律）。
+    """
+    baseline = make_baseline()
+
+    with pytest.raises(ParameterError) as excinfo:
+        verify_baseline_digest(
+            baseline,
+            current,
+            baseline_path=Path("baseline.json"),
+            dimensions_path=Path("dimensions.json"),
+        )
+
+    assert "current_digest" in str(excinfo.value)
 
 
 # --------------------------------------------------------------------------

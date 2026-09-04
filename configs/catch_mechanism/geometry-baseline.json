@@ -1,0 +1,54 @@
+{
+  "bbox_abs_tolerance_mm": 0.001,
+  "generator_version": "build123d 0.11.1",
+  "parameters_digest": "sha256:b97c7410cfe2f136fa94b490e71155e2c81ac3c428bb59208349f2e440a89775",
+  "parts": {
+    "rim_segment_1": {
+      "bbox_mm": [
+        51.67657123844347,
+        168.69436760793977,
+        30.03847577293368
+      ],
+      "solid_count": 1,
+      "volume_mm3": 36524.6065133904
+    },
+    "rim_segment_2": {
+      "bbox_mm": [
+        51.67657123844347,
+        168.69436760793977,
+        30.03847577293368
+      ],
+      "solid_count": 1,
+      "volume_mm3": 36524.606679998156
+    },
+    "rim_segment_3": {
+      "bbox_mm": [
+        51.67657123844347,
+        168.69436760793977,
+        30.03847577293368
+      ],
+      "solid_count": 1,
+      "volume_mm3": 36708.41179572757
+    },
+    "rim_segment_4": {
+      "bbox_mm": [
+        51.67657123844347,
+        168.69436760793977,
+        30.03847577293368
+      ],
+      "solid_count": 1,
+      "volume_mm3": 36524.60576950924
+    },
+    "rim_segment_5": {
+      "bbox_mm": [
+        51.67657123844347,
+        168.69436760793977,
+        30.03847577293368
+      ],
+      "solid_count": 1,
+      "volume_mm3": 36524.60604935563
+    }
+  },
+  "schema_version": "1.0",
+  "volume_rel_tolerance": 1e-06
+}

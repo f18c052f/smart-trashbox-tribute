@@ -202,7 +202,7 @@
   - _Depends: 2.2, 2.3, 2.4, 3.4_
   - _Boundary: Cli_
 
-- [ ] 4.2 形状指標の記録を初期化し、照合の回帰テストを追加する
+- [x] 4.2 形状指標の記録を初期化し、照合の回帰テストを追加する
   - 現在のパラメータと実装から生成した指標を記録ファイルへ書き出し、パラメータ識別子とライブラリ版を含める
   - 記録を明示的に更新する切り替えを用意し、既定では不一致を失敗として扱う
   - 記録済み指標をずらした状態で照合が失敗し、部品名と双方の値が示されることを検証する
@@ -683,6 +683,43 @@
   ⚠️ ただし CLI のサブプロセス検査は `text=True` ではなく **`encoding="utf-8"` を明示**すること。
   (g) ⚠️ `tolerance` を `--output` 無しで実行すると出荷の `configs/catch_mechanism/catch-opening.json` を
   上書きする（design.md が定める動作）。テストは必ず `--output <tmp_path>` を渡すこと。
+- **タスク4.2 / 後続への申し送り**: (a) **`configs/catch_mechanism/geometry-baseline.json` を出荷した。**
+  `parameters_digest="sha256:b97c7410…89775"` / `generator_version="build123d 0.11.1"` /
+  `volume_rel_tolerance=1e-06` / `bbox_abs_tolerance_mm=0.001` / 5部品（体積 36524.6065133904 /
+  36524.606679998156 / **36708.41179572757** / 36524.60576950924 / 36524.60604935563、境界箱は5部品とも
+  (51.67657123844347, 168.69436760793977, 30.03847577293368)、立体数 1）。
+  ⚠️ **記録は `python -m catch_mechanism build --update-baseline` で再生成でき、バイト単位で一致する。**
+  許容差は**両側**がテストで固定されている（体積 `1e-7 <= x <= 1e-4`、境界箱 `0 < x <= 1e-2`）ので、
+  ⚠️ **「1 を記録して常に緑」にはできない。** 体積 1e-6 は Note 3.3 の下限 1e-7 の10倍上、実測求積誤差
+  1.3e-8 の約77倍であり、座1つ／2つの実形状差 184mm^3（相対 5e-3）より3桁小さいので実差は必ず捕まる。
+  ⚠️ `bbox_abs_tolerance_mm=1e-3` は 1µm でやや厳しい（境界箱は解析値と厳密一致するため）。
+  OCCT の版差で超える余地があり、`/kiro-validate-impl` での見直し候補。**今は緩めないこと**（緩めると検出力だけが落ちる）。
+  (b) ⚠️ **Note 4.1(b) の申し送りを消化した。** `cli._verify_digest` を
+  **`metrics.verify_baseline_digest(baseline, current_digest, *, baseline_path, dimensions_path) -> str`**
+  へ移設した。⚠️ **`MechanismParams` ではなく識別子の文字列を取る**設計である。理由は
+  `metrics.py` が `params` へ依存せず要件 5.7 の「中核層は CAD も上位層も要さない」を保てること、
+  およびパスを引数に取るため出荷ファイルにも `tmp_path` の記録にも同じ関数を当てられること。
+  書式違反の `current_digest` は `ConsistencyError` ではなく `ParameterError`（呼び出し方の誤りと
+  不整合を混ぜない）。⚠️ **この検査は CAD の import より前に走るため、`--digest-only` を付けなくても
+  CAD 非導入環境で古い記録を exit 1 で検出できる**（要件 4.5）。
+  (c) ⚠️⚠️ **タスク 4.3 に実作業が残っている（重複ではない）。** レビューの変異検証で、
+  `test_the_shipped_record_matches_the_current_dimensions_digest` に `@requires_cad` を付けても
+  **どのテストも落ちない**ことが判明した。「この検査が形状ライブラリ非導入の環境でも実行される」ことを
+  保証するピンが無い。⚠️ **4.3 はこれを固定するメタテストを含めること。** 併せて design.md の
+  Testing Strategy が別ファイル `test_baseline_digest.py` に割り当てる「`dimensions.json` を変更して
+  記録を更新しない**状況**の再現」も 4.3 の担当であり、4.2 の8件は関数の**契約**を合成 digest で
+  固定しているだけである。⚠️ 4.3 の境界は `Metrics` のみだが、`tests/catch_mechanism/test_catch_baseline_digest.py`
+  を足すだけで完結でき、`cli.py` の編集は不要であることをレビューが確認済み。
+  (d) ⚠️ **既定パスの `check` の挙動が変わった**（Note 4.1(c) の解消）。記録が無くて exit 2 だったものが
+  exit 0 になる。4.1 のテストは `--baseline <tmp_path>` を使っていたため影響なし。
+  (e) design.md `#### Metrics` の Service Interface に `verify_baseline_digest` の宣言が無い。
+  Note 2.4(e) の `write_baseline` / PublicApi の不整合と併せて**タスク 6.1 / `/kiro-validate-impl` で
+  design 側を整合させること**。ファイル名も design の `test_geometry_regression.py` に対し実名は
+  `test_catch_geometry_regression.py`（Note 1.1 の衝突回避規約）。
+  (f) ⚠️ **CAD 遮断の検証をするときはスタブを `/tmp` に置かないこと。** 実装者が検証中に WSL の `/tmp` が
+  消えてスタブが無効化され、遮断したつもりの実行が CAD 導入時と同じ数字を返す事象を踏んでいる。
+  **遮断実行のたびに `PYTHONPATH=... python -c "import build123d"` が `ImportError` になることを
+  前後で確認すること。**
 - **環境（全タスク共通）**: Python 環境は **WSL2 側にのみ存在する**。Windows 側に `python` / `uv` は無い。
   検証は必ず `wsl -e bash -lc 'cd /mnt/c/Users/user/repos/stb-hardware && uv run pytest -q'` の形で実行する。
   ⚠️ Windows から `uv sync` して `.venv/` を上書きしないこと（Linux venv が壊れる）。
