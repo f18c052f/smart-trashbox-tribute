@@ -18,13 +18,24 @@ Implementation Notes の Validation「`rim_geometry` は形状構築の前に評
 build123d の import は**ソリッドを実際に構築する `build_segments` の内側**にある。
 `test_shapes_does_not_import_the_shape_library_at_module_level` がこれを固定する。
 
-⚠️ **申し送り**: 形状指標の抽出（`measure_part`）と、それを伴う `BuiltPart` /
-`build_parts` は**タスク 3.3 の担当**である（tasks.md タスク 3.3「構築した部品から
-体積・境界箱・立体数を抽出し」）。本モジュールがタスク 3.2 で公開するのは
-`RimSegment` と `build_segments` であり、`BuiltPart` はこれを包む形で 3.3 が
-定義する。3.2 の側で指標を作ると 3.3 の実装が本モジュールの内側へ重複する。
-本モジュールの公開面が design.md の Service Interface と一対一でないのは、
-未実装ではなく**タスク境界**による。
+⚠️ **指標の抽出（`measure_part`）もこの規律の内側にある。** `measure_part` は
+`solid` を `object` として受け取り、`volume` / `bounding_box()` / `solids()` という
+**属性の形**だけに依存する。build123d の名前は署名にも実装にも現れないため、指標の
+抽出は形状ライブラリ非導入の環境でも（同じ属性を持つ任意のオブジェクトに対して）
+評価できる。⚠️ 型で受けるために `from build123d import Part` を足すと、この規律が
+`measure_part` の側から崩れる。
+
+## 形状と指標の分離（タスク 3.3 / 要件 3.7, 4.1）
+
+`BuiltPart` は「構築物 `solid`」と「素の数値だけの指標 `metrics`」を並べて持つ。
+⚠️ **中核層へ渡るのは `metrics` だけである**（`metrics.PartMetrics` は形状という
+概念を型として知らない）。指標は**構築したソリッドから抽出した実測値**であり、
+解析式ではない——寸法から体積を再計算する実装は、形状の側に入った誤りをそのまま
+「一致」と報告してしまい、要件 4「形状指標による二重管理の検出」が成立しない。
+
+⚠️ **抽出で丸めない。** OCCT の版差は**記録側の許容差**
+（`metrics.GeometryBaseline`）で吸収する設計であり（design.md「Shapes」Risks）、
+抽出側にも丸めを置くと許容差の機構が二重になる。詳細は `measure_part` の docstring。
 
 ## 造形向き（⚠️ 全形状に共通する前提）
 
@@ -117,13 +128,17 @@ from catch_mechanism.constraints import (
     sector_envelope,
 )
 from catch_mechanism.errors import GeometryError
+from catch_mechanism.metrics import PartMetrics
 from catch_mechanism.params import MechanismParams, RimParams
 
 __all__ = [
     "PART_NAMES",
+    "BuiltPart",
     "RimGeometry",
     "RimSegment",
+    "build_parts",
     "build_segments",
+    "measure_part",
     "rim_geometry",
     "segment_envelope",
     "segment_height_mm",
@@ -387,12 +402,13 @@ def segment_part_names(params: MechanismParams) -> tuple[str, ...]:
 class RimSegment:
     """構築済みのセグメント1点（design.md「Shapes」Service Interface の一部）。
 
-    ⚠️ **`BuiltPart` ではない。** design.md の `BuiltPart` は `PartMetrics` を
-    伴うが、体積・境界箱・立体数の抽出は**タスク 3.3 の担当**である
-    （tasks.md タスク 3.3「構築した部品から体積・境界箱・立体数を抽出し」）。
-    ここで指標を作ると 3.3 の実装が本モジュールの内側へ重複する。本型は
-    「構築したソリッドと、構築時にしか分からない数」だけを運び、
-    `BuiltPart` / `build_parts` はこれを包む形でタスク 3.3 が定義する。
+    ⚠️ **`BuiltPart` ではない。** 本型は「構築したソリッドと、**構築時にしか
+    分からない数**」——後付け座の数と支圧面積——を運ぶ。design.md の `BuiltPart`
+    が伴う `PartMetrics`（体積・境界箱・立体数）は、逆に**構築したソリッドを
+    測れば得られる**量であり、`measure_part` が本型の外側で抽出する。
+    2つの型が別なのは工程が別だからであり、`build_parts` が本型を包んで
+    `BuiltPart` を返す。継手の検査に属する数が要る呼び出し側は本型を、
+    書き出し（タスク 3.4）と記録（タスク 4.2）は `BuiltPart` を使う。
 
     ⚠️ **`solid` を中核層へ渡さない。** 型を `object` にしてあるのは、形状
     ライブラリの型が中核層の署名へ漏れないようにするためである
@@ -974,3 +990,154 @@ def build_segments(params: MechanismParams) -> tuple[RimSegment, ...]:
             )
         )
     return tuple(segments)
+
+
+# ---------------------------------------------------------------------------
+# 形状指標の抽出（タスク 3.3 / 要件 3.7, 4.1）
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class BuiltPart:
+    """構築済みの部品1点と、その形状指標（design.md「Shapes」Service Interface）。
+
+    ⚠️ **`solid` を中核層へ渡さない。** 中核層（`metrics` 以左）へ渡るのは
+    `metrics` だけであり、その中身は素の数値である（`metrics.PartMetrics`）。
+    `solid` の型を `object` にしてあるのは、形状ライブラリの型が中核層の署名へ
+    漏れないようにするためである（`RimSegment.solid` と同じ扱い）。
+
+    ⚠️ **`RimSegment` を置き換えるものではない。** `RimSegment` は「構築時にしか
+    分からない数」（後付け座の数・支圧面積）を運び、本型は「構築物とその指標」を
+    運ぶ。書き出し（タスク 3.4）と記録（タスク 4.2）が必要とするのは後者であり、
+    前者は継手の検査に属する。両方が要る呼び出し側は `build_segments` を使う。
+
+    Attributes:
+        name: 部品名。`segment_part_names` の同じ位置の要素と一致し、
+            `metrics.part_name` とも一致する。
+        solid: build123d の `Part`。⚠️ 中核層へは渡らない。
+        metrics: 体積・境界箱・立体数（`metrics.PartMetrics`）。⚠️ **`solid` から
+            抽出した値であり、解析式ではない。**
+    """
+
+    name: str
+    solid: object
+    metrics: PartMetrics
+
+
+def measure_part(name: str, solid: object) -> PartMetrics:
+    """構築済みの形状から体積・境界箱・立体数を抽出する（要件 4.1）。
+
+    ⚠️ **形状ライブラリを import しない。** `solid` は `object` として受け取り、
+    `volume` / `bounding_box()` / `solids()` という**属性の形**だけに依存する。
+    型注釈にも実装にも build123d の名前が現れないため、本モジュールの遅延 import
+    の規律（モジュール docstring / 要件 5.7）を本関数が破ることはない。
+    形状ライブラリ非導入の環境でも、同じ属性を持つ任意のオブジェクトを測れる
+    ——`test_measure_part_extracts_the_three_metrics_by_duck_typing` がこれを
+    偽のソリッドで固定する。
+
+    ⚠️ **丸めない・量子化しない。** OCCT が返した値をそのまま `PartMetrics` へ
+    渡す。design.md「Shapes」Risks が言う「OCCT のバージョン差で体積の下位桁が
+    動く」への備えは**記録側の許容差**（`metrics.GeometryBaseline` の
+    `volume_rel_tolerance` / `bbox_abs_tolerance_mm`）であり、抽出側にも丸めを
+    置くと許容差の機構が二重になる。二重にすると、記録側の許容差を 0 に置いても
+    抽出側の丸め幅より小さいずれは観測できず、「どれだけ動いたか」を記録から
+    読めなくなる。`test_measure_part_does_not_round_or_quantize_the_extracted_numbers`
+    がビット列で固定する。
+
+    ⚠️ **境界箱は `solid` が置かれている座標系のままの軸並行外接箱である。**
+    部品固有の座標系へ移し替えた最小外接箱ではない。`build_segments` の返す
+    セグメントはリングの中心を原点として +X 軸まわりに置かれているため、
+    ここで得る箱は `constraints.check_envelope` へ渡している量
+    （`test_built_part_bbox_is_the_envelope_used_for_the_build_volume_check`）と
+    同一である。⚠️ 将来セグメントを造形板へ寝かせて再配置する場合、指標の
+    境界箱も一緒に変わる——記録（タスク 4.2）は配置込みの値である。
+
+    Args:
+        name: 部品名。`PartMetrics.part_name` になる。
+        solid: 構築済みの形状。`volume` / `bounding_box()` / `solids()` を持つ。
+
+    Returns:
+        抽出した形状指標。
+
+    Raises:
+        ParameterError: 名が空、体積が正の有限値でない、境界箱が3つの正の有限値で
+            ない、または立体数が 1 未満の場合（`metrics.PartMetrics` の構築時検証
+            からの伝播）。⚠️ **立体を持たない形状を「指標」として記録しない。**
+            0 個の立体は部品ではなく、形状生成が空を返した事故である。
+        AttributeError: `solid` が上記3つの属性を持たない場合。
+    """
+    size = solid.bounding_box().size  # type: ignore[attr-defined]
+    return PartMetrics(
+        part_name=name,
+        volume_mm3=float(solid.volume),  # type: ignore[attr-defined]
+        bbox_mm=(float(size.X), float(size.Y), float(size.Z)),
+        solid_count=len(solid.solids()),  # type: ignore[attr-defined]
+    )
+
+
+def build_parts(params: MechanismParams) -> tuple[BuiltPart, ...]:
+    """受け口の全部品を構築し、それぞれの形状指標を添えて返す（要件 3.7, 4.1）。
+
+    design.md「Shapes」Service Interface の入口である。⚠️ **形状の構築を持たない。**
+    `build_segments` へ委譲し、その結果を測って包むだけである——決定1（内向きに
+    張り出さない）・締結座の配分・継手の検査といった規則を2箇所へ分岐させない
+    （`test_build_parts_delegates_the_construction_to_build_segments` が呼び出し
+    そのものを観測する）。
+
+    ⚠️ **返る部品は1点ではなく `rim_geometry(params).segment_count` 点である。**
+    後付け部品用の締結座はリング全体で `retrofit_fastener_count` 箇所であり
+    （design.md「受け口形状の決定」決定4）、その数が分割数で割り切れないとき
+    ——出荷値の 6 箇所 / 5 分割——座の配分が `[1, 1, 2, 1, 1]` となって
+    **セグメントは同一形状にならない**。「1点を分割数だけ刷る」のではないため、
+    書き出し（タスク 3.4）も記録（タスク 4.2）も部品ごとの行を必要とする。
+
+    ## 決定性（design.md「Shapes」Invariants / 要件 3.7）
+
+    同一パラメータからの再構築は**完全に同一の** `PartMetrics` を返す。⚠️ これは
+    許容差つきの一致ではない——build123d 0.11.1 / OCCT では、同一プロセス内でも
+    別プロセス間でも体積・境界箱がビット単位で一致することを実測で確認している。
+    記録側の許容差（`metrics.GeometryBaseline`）は**ライブラリの版差**を吸収する
+    ためのものであり、同一環境での再構築がそれに頼ってよい理由にはならない。
+    `test_metrics_are_exactly_identical_across_two_independent_builds` が
+    `pytest.approx` を使わずに固定する。
+
+    ⚠️ **一致は「全部品が同じ値になること」ではない。** 座を2つ持つ部品は他の4点より
+    約 184mm^3 大きく、これは実形状の差である。
+    `test_the_segment_with_two_retrofit_seats_is_measurably_distinct` が
+    「違いが実在する」側を観測している。
+
+    ⚠️ **座を1つ持つ4点が下位桁で分かれるのは求積誤差であり、実形状の差ではない。**
+    実測で 36524.60576950924〜36524.606679998156（幅 約 9.1e-4 mm^3、相対 2.5e-8）に
+    ばらつくが、`BRepGProp` の `Eps` を 1e-9 まで締めると4点は
+    36524.60616466… に**相対 2e-13 で収束する**。座の角度ごとに融合面の
+    パラメータ化が変わるために既定精度の `Shape.volume` が返す値が動くだけであり、
+    真の体積は同一である。剛体回転・鏡映による体積変化は相対 4e-16（1〜2 ULP）に
+    すぎず、配置そのものは体積を動かさない。実際、`retrofit_fastener_count` を
+    10 や 5（全セグメントが同一相対角）にすると5点はビット単位で一致する。
+    ⚠️ この誤差は決定的（プロセス間でビット一致）だが、design.md「Shapes」Risks が
+    言う「OCCT の版差で体積の下位桁が動く」の実例である。**記録側の許容差
+    （`metrics.GeometryBaseline.volume_rel_tolerance`）は 1e-7 以上を下限とすること**
+    ——実測の相対誤差 1.3e-8 を下回る値を記録すると版差で確実に破綻する。
+
+    Args:
+        params: 寸法パラメータの集約。
+
+    Returns:
+        セグメント1点につき1つの `BuiltPart`。並びと名前は
+        `segment_part_names(params)` に一致する。
+
+    Raises:
+        GeometryError: `build_segments` からの伝播（開口を狭める寸法、収まる分割数
+            が無い、実高さが造形可能寸法を超える、継手・締結座が成立しない）。
+        ParameterError: `constraints.check_joint` からの伝播（支圧面積の不足）、
+            または抽出した指標が `PartMetrics` の不変条件に反する場合。
+        ImportError: 形状ライブラリ（`cad` extra）が導入されていない場合。
+    """
+    return tuple(
+        BuiltPart(
+            name=segment.name,
+            solid=segment.solid,
+            metrics=measure_part(segment.name, segment.solid),
+        )
+        for segment in build_segments(params)
+    )

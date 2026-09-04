@@ -58,7 +58,9 @@ from catch_mechanism.constraints import (
     required_segment_count,
     sector_envelope,
 )
+from catch_mechanism.config import SCHEMA_VERSION
 from catch_mechanism.errors import CatchMechanismError, GeometryError, ParameterError
+from catch_mechanism.metrics import GeometryBaseline, PartMetrics, compare_metrics
 from catch_mechanism.params import (
     JointPolicy,
     MechanismParams,
@@ -71,9 +73,12 @@ from catch_mechanism.params import (
 )
 from catch_mechanism.shapes import (
     PART_NAMES,
+    BuiltPart,
     RimGeometry,
     RimSegment,
+    build_parts,
     build_segments,
+    measure_part,
     rim_geometry,
     segment_envelope,
     segment_height_mm,
@@ -1519,3 +1524,317 @@ def test_segment_envelope_delegates_to_the_constraints_sector_envelope(
         )
     ]
     assert result == sector_envelope(*calls[0])
+
+
+# ---------------------------------------------------------------------------
+# タスク 3.3: 形状指標の抽出と決定性（要件 3.7, 4.1）
+#
+# 本節が固定するのは tasks.md タスク 3.3 の「観測可能な完了状態」
+# 「同一パラメータから2回構築した部品の指標が**完全に一致**する」と、
+# design.md「Shapes」Service Interface の `BuiltPart` / `build_parts` /
+# `measure_part`、および Invariants「同一パラメータからの再構築は同一の
+# `PartMetrics` を返す」である。
+#
+# 1. **抽出は形状オブジェクトを中核層へ渡さない**こと（要件 4.1 /
+#    design.md「Metrics」Responsibilities）。`PartMetrics` は素の数値だけを持ち、
+#    `measure_part` は build123d の型を一切参照しない**ダックタイピング**で測る
+# 2. **完全に一致**すること。⚠️ 許容差ではなく `==` である。
+#    `metrics.GeometryBaseline` の許容差（`volume_rel_tolerance` /
+#    `bbox_abs_tolerance_mm`）は **OCCT の版差**を吸収するために記録側が持つ量で
+#    あり（design.md「Shapes」Risks）、同一環境・同一パラメータの再構築がそれに
+#    頼ってよい理由にはならない
+# 3. **丸めない**こと。⚠️ 抽出時に量子化すると許容差の機構が二重になり、実在する
+#    ずれを記録の側から観測できなくなる
+#
+# ⚠️ **本節は共有フィクスチャを使わない。** 決定性の主張は「同じ入力から
+# **独立に**構築しても同じ指標になる」であり、1回だけ構築した結果を2つの名前で
+# 見る形は何も観測していない。実測で `build_segments` 1回は約 0.34 秒であり、
+# 個別に構築しても収集全体を目立って遅くしない。
+# ---------------------------------------------------------------------------
+
+
+class _FakeSolid:
+    """`measure_part` がダックタイピングで測ることを示す偽のソリッド。
+
+    ⚠️ **build123d の型ではない。** `measure_part` が形状ライブラリの型・関数を
+    参照していれば、この偽物は測れない。CAD 非導入の環境でも走る検査である
+    （要件 5.7）。
+    """
+
+    class _Vec:
+        def __init__(self, x: float, y: float, z: float) -> None:
+            self.X = x
+            self.Y = y
+            self.Z = z
+
+    class _Box:
+        def __init__(self, size: "_FakeSolid._Vec") -> None:
+            self.size = size
+
+    def __init__(
+        self, volume: float, size: tuple[float, float, float], solid_count: int
+    ) -> None:
+        self.volume = volume
+        self._size = _FakeSolid._Vec(*size)
+        self._solid_count = solid_count
+
+    def bounding_box(self) -> "_FakeSolid._Box":
+        return _FakeSolid._Box(self._size)
+
+    def solids(self) -> list[object]:
+        return [object() for _ in range(self._solid_count)]
+
+
+# --- 形状ライブラリを必要としない検査 ---------------------------------------
+
+
+def test_built_part_is_a_frozen_value_with_the_designed_fields() -> None:
+    """`BuiltPart` は design.md の Service Interface どおり3項目の不変値である。"""
+    assert [field.name for field in fields(BuiltPart)] == ["name", "solid", "metrics"]
+    part = BuiltPart(
+        name="rim_segment_1",
+        solid=object(),
+        metrics=PartMetrics(
+            part_name="rim_segment_1",
+            volume_mm3=1.0,
+            bbox_mm=(1.0, 2.0, 3.0),
+            solid_count=1,
+        ),
+    )
+    with pytest.raises(FrozenInstanceError):
+        part.name = "other"  # type: ignore[misc]
+
+
+def test_measure_part_extracts_the_three_metrics_by_duck_typing() -> None:
+    """⚠️ **形状ライブラリの型を参照せずに**体積・境界箱・立体数を抽出する。
+
+    `measure_part(name, solid)` の `solid` は design.md が `object` と宣言する。
+    偽のソリッドで測れることが「build123d の型が署名にも実装にも漏れていない」
+    ことの観測である。CAD 非導入の環境でも走る。
+    """
+    solid = _FakeSolid(volume=1234.5, size=(10.0, 20.0, 30.0), solid_count=2)
+    metrics = measure_part("rim_segment_1", solid)
+    assert isinstance(metrics, PartMetrics)
+    assert metrics.part_name == "rim_segment_1"
+    assert metrics.volume_mm3 == 1234.5
+    assert metrics.bbox_mm == (10.0, 20.0, 30.0)
+    assert metrics.solid_count == 2
+
+
+def test_measure_part_does_not_round_or_quantize_the_extracted_numbers() -> None:
+    """⚠️ **丸めない。** 下位桁までそのまま指標へ渡す。
+
+    量子化すると許容差の機構が二重になる——`metrics.GeometryBaseline` は既に
+    `volume_rel_tolerance` / `bbox_abs_tolerance_mm` を持ち、OCCT の版差は
+    **記録側**で吸収する設計である（design.md「Shapes」Risks）。抽出側でも丸めると
+    記録側の許容差を 0 に置いても観測できないずれが残り、「どれだけ動いたか」を
+    記録から読めなくなる。
+    """
+    volume = 36524.60651339012345
+    size = (51.676571238443471, 168.69436760793977, 30.038475772933681)
+    metrics = measure_part("rim_segment_1", _FakeSolid(volume, size, 1))
+    assert metrics.volume_mm3.hex() == volume.hex()
+    assert tuple(value.hex() for value in metrics.bbox_mm) == tuple(
+        value.hex() for value in size
+    )
+
+
+def test_measure_part_carries_only_plain_numbers_into_the_core_layer() -> None:
+    """指標は**素の数値だけ**であり、形状オブジェクトを中核層へ渡さない（要件 4.1）。
+
+    tasks.md タスク 3.3「抽出は形状オブジェクトを中核層へ渡さない形で行う」の
+    固定である。⚠️ `PartMetrics` にソリッドを載せる項目が生えていないこと自体を
+    検査する。
+    """
+    solid = _FakeSolid(volume=1234.5, size=(10.0, 20.0, 30.0), solid_count=1)
+    metrics = measure_part("rim_segment_1", solid)
+    assert type(metrics.volume_mm3) is float
+    assert type(metrics.bbox_mm) is tuple
+    assert all(type(extent) is float for extent in metrics.bbox_mm)
+    assert type(metrics.solid_count) is int
+    for field in fields(PartMetrics):
+        assert getattr(metrics, field.name) is not solid
+
+
+def test_measure_part_rejects_a_shape_that_holds_no_solid() -> None:
+    """立体を持たない形状は指標として記録しない（`PartMetrics` の不変条件）。
+
+    ⚠️ 形状生成が空を返した事故を「立体数 0 の部品」として通さない。
+    """
+    with pytest.raises(ParameterError):
+        measure_part("rim_segment_1", _FakeSolid(1.0, (1.0, 1.0, 1.0), 0))
+
+
+# --- 形状ライブラリを要する検査（要件 5.7 により個別に skip される）-----------
+
+
+@requires_cad
+def test_build_parts_wraps_every_segment_with_its_metrics() -> None:
+    """`build_parts` は導出された分割数だけ `BuiltPart` を返す（⚠️ 1点ではない）。
+
+    ⚠️ tasks.md「Implementation Notes」タスク 3.2(b): 締結座はリング全体で
+    `retrofit_fastener_count` 箇所であり、出荷値 6箇所 / 5分割では配分が
+    `[1,1,2,1,1]` になる。**部品は5点**であって「1個を5回刷る」のではない。
+    """
+    params = _params()
+    parts = build_parts(params)
+    assert len(parts) == rim_geometry(params).segment_count == 5
+    assert all(isinstance(part, BuiltPart) for part in parts)
+    assert [part.name for part in parts] == list(segment_part_names(params))
+    assert [part.metrics.part_name for part in parts] == [part.name for part in parts]
+    for part in parts:
+        assert part.metrics.solid_count == 1
+        assert part.metrics.volume_mm3 > 0.0
+
+
+@requires_cad
+def test_built_part_metrics_match_the_solid_it_carries() -> None:
+    """指標は `BuiltPart.solid` そのものから抽出した値と厳密に一致する。
+
+    ⚠️ 別のソリッド（例えば常に先頭のセグメント）を測っていれば落ちる。
+    """
+    for part in build_parts(_params()):
+        solid = part.solid
+        size = solid.bounding_box().size  # type: ignore[attr-defined]
+        assert part.metrics.volume_mm3 == solid.volume  # type: ignore[attr-defined]
+        assert part.metrics.bbox_mm == (size.X, size.Y, size.Z)
+        assert part.metrics.solid_count == len(solid.solids())  # type: ignore[attr-defined]
+        assert part.metrics == measure_part(part.name, solid)
+
+
+@requires_cad
+def test_built_part_bbox_is_the_envelope_used_for_the_build_volume_check() -> None:
+    """境界箱は実ソリッドの軸並行外接箱であり、造形可能寸法の検査と同じ量である。
+
+    既存の `_built_envelope`（タスク 3.2 の検査が使う量）と一致することで、指標の
+    境界箱が「別の座標系で測った別物」でないことを固定する。⚠️ 部品固有の座標系へ
+    移し替えた最小外接箱ではなく、`build_segments` が返す位置のままの軸並行箱で
+    ある（リングの中心が原点、セグメントは +X 軸まわりに対称）。
+    """
+    params = _params()
+    for part in build_parts(params):
+        built = _built_envelope(part.solid)
+        assert part.metrics.bbox_mm == (built.x_mm, built.y_mm, built.z_mm)
+        assert check_envelope(part.name, built, params.printing) == ()
+
+
+@requires_cad
+def test_metrics_are_exactly_identical_across_two_independent_builds() -> None:
+    """⚠️ **タスク 3.3 の観測可能な完了状態**: 2回構築した指標が**完全に一致**する。
+
+    ⚠️ **共有フィクスチャを使わない。** 1回だけ構築した結果を2つの名前で見る形は
+    何も観測していない。`build_parts` を2度呼び、独立に構築した2組を比べる。
+
+    ⚠️ **許容差を使わない**（`pytest.approx` を使わない）。実測では体積・境界箱
+    ともに**ビット単位で一致**する（同一プロセス内・別プロセス間の双方で確認済み。
+    build123d 0.11.1）。ここを `approx` に緩めると、再構築ごとに下位桁が動く実装が
+    緑のまま通り、要件 3.7「同一の形状指標を持つ生成物を出力する」が主張だけに
+    なる。
+    """
+    params = _params()
+    first = build_parts(params)
+    second = build_parts(params)
+
+    assert [part.name for part in first] == [part.name for part in second]
+    assert len(first) == 5
+    for left, right in zip(first, second, strict=True):
+        assert left.metrics == right.metrics
+        # ⚠️ `==` は float の厳密比較だが、ビット列でも重ねて固定する
+        # （`-0.0 == 0.0` のような表現の差も許さない）。
+        assert left.metrics.volume_mm3.hex() == right.metrics.volume_mm3.hex()
+        assert tuple(value.hex() for value in left.metrics.bbox_mm) == tuple(
+            value.hex() for value in right.metrics.bbox_mm
+        )
+
+
+@requires_cad
+def test_the_regenerated_metrics_match_a_record_at_zero_tolerance() -> None:
+    """再構築した指標は、許容差 **0** の記録とも一致する（要件 3.7, 4.4）。
+
+    中核層の照合器（`metrics.compare_metrics`）へ実際に通すことで、抽出した指標が
+    そのまま記録・照合の入力になることを固定する。⚠️ 許容差を 0 に置くのは、
+    「完全に一致」を照合器の言葉で言い直したものである。
+
+    ⚠️ **記録ファイルを出荷しない。** `configs/catch_mechanism/geometry-baseline.json`
+    の作成はタスク **4.2** の担当であり（`parameters_digest` と CLI を要する）、
+    本検査は記録を**その場で組み立てる**（tasks.md「Implementation Notes」
+    タスク 2.4(a) と同じ規律）。
+    """
+    params = _params()
+    recorded = {part.name: part.metrics for part in build_parts(params)}
+    baseline = GeometryBaseline(
+        schema_version=SCHEMA_VERSION,
+        parameters_digest="sha256:" + "0" * 64,
+        volume_rel_tolerance=0.0,
+        bbox_abs_tolerance_mm=0.0,
+        generator_version="build123d-test",
+        parts=recorded,
+    )
+    regenerated = {part.name: part.metrics for part in build_parts(params)}
+    assert compare_metrics(baseline, regenerated) == ()
+
+
+@requires_cad
+def test_the_segment_with_two_retrofit_seats_is_measurably_distinct() -> None:
+    """⚠️ **5部品は同一形状ではない**——決定性の検査を空虚にしないための観測。
+
+    tasks.md「Implementation Notes」タスク 3.2(b): 出荷値 6箇所 / 5分割では締結座の
+    配分が `[1,1,2,1,1]` となり、座を2つ持つ `rim_segment_3` だけが他より厚い。
+    ⚠️ **全セグメントが同一形状になる不具合**（たとえば座の配分をセグメントごとに
+    一定にしてしまう誤り）は、決定性の検査だけでは気付けない——どの部品も同じ値なら
+    2回の構築も当然一致する。「違いが実際にある」ことをここで観測して初めて、
+    決定性の一致が意味を持つ。
+
+    ⚠️ 座を1つ持つ4点は既定精度の `Shape.volume` では下位桁が分かれるが、
+    **これは求積誤差であって実形状の差ではない**（`BRepGProp` の `Eps` を 1e-9 まで
+    締めると相対 2e-13 で収束する。`retrofit_fastener_count` を 10 や 5 にして
+    全セグメントを同一相対角にすればビット単位で一致する）。したがって
+    ⚠️ **その差が「存在すること」を assert してはならない**——版が上がって
+    正当に一致したときに、何も壊れていないのにテストが落ちる。ここでは
+    「4点が互いに近いこと」だけを固定する。版差の吸収は記録側の許容差
+    （`metrics.GeometryBaseline.volume_rel_tolerance`）の役割である。
+    """
+    params = _params()
+    parts = build_parts(params)
+    volumes = [part.metrics.volume_mm3 for part in parts]
+    assert [segment.retrofit_seat_count for segment in build_segments(params)] == [
+        1,
+        1,
+        2,
+        1,
+        1,
+    ]
+
+    two_seat = volumes[2]
+    one_seat = volumes[:2] + volumes[3:]
+    # 座が2つある部品は、他の4点のいずれより明確に大きい。
+    assert all(two_seat - value > 1.0 for value in one_seat)
+    # 座が1つの4点は互いに近い。⚠️ 既定精度では下位桁が分かれるが、それは求積誤差で
+    # あり実形状の差ではないため、「分かれていること」は assert しない（docstring 参照）。
+    assert max(one_seat) - min(one_seat) < 1.0e-2
+
+
+@requires_cad
+def test_build_parts_delegates_the_construction_to_build_segments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`build_parts` は `build_segments` へ委譲し、形状の構築を二重に持たない。
+
+    ⚠️ **値の一致だけを見る検査では守れない**——同じ形状を別経路で組み立てても
+    通ってしまい、決定1（内向きに張り出さない）や締結座の配分といった規則が
+    2箇所へ分岐する余地が残る。呼び出しそのものと引数を観測する
+    （`test_segment_envelope_delegates_to_the_constraints_sector_envelope` と同形）。
+    """
+    params = _params()
+    calls: list[MechanismParams] = []
+    real = shapes_module.build_segments
+
+    def spy(argument: MechanismParams) -> tuple[RimSegment, ...]:
+        calls.append(argument)
+        return real(argument)
+
+    monkeypatch.setattr(shapes_module, "build_segments", spy)
+    parts = shapes_module.build_parts(params)
+
+    assert calls == [params]
+    assert [part.name for part in parts] == list(segment_part_names(params))
