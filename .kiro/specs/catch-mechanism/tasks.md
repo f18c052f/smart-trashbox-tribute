@@ -188,7 +188,7 @@
 
 ## 4. 入口と検査
 
-- [ ] 4. 入口と検査
+- [x] 4. 入口と検査
 
 - [x] 4.1 コマンド入口を実装する
   - 生成・照合・選定・許容誤差導出の4サブコマンドを実装する
@@ -222,7 +222,7 @@
   - _Depends: 4.2_
   - _Boundary: Metrics_
 
-- [ ] 4.4 (P) 受け口の不変条件テストを追加する
+- [x] 4.4 (P) 受け口の不変条件テストを追加する
   - 通過できる最小径が常に開口内径以上であること（開口を狭めない）を検証する
   - 採寸値の変更に取り付け部の寸法が追随することを検証する
   - 各セグメントの外接箱が造形可能寸法に収まることを検証する
@@ -741,6 +741,39 @@
   出荷 `dimensions.json` / `geometry-baseline.json` の改変は一切行わず、すべて `tmp_path` の写しに対して
   行っている。⚠️ **テストで出荷ファイルを書き換えないこと**（`test_these_tests_leave_the_shipped_files_untouched`
   が前後のバイト列一致で固定しており、空検査でないことも確認済み）。
+- **タスク4.4 / 後続への申し送り**: (a) 受け口の不変条件は**代表点ではなくパラメータ空間の性質**として
+  固定してある。掃引は 20,000 件・種固定（`random.Random(20260904)`）で、開口径は 120〜300mm の全相異値。
+  ⚠️ **掃引は両枝を厚く踏んでいることを確認済み**（検査1: 拒否 6,571 / 受理 12,359、検査3: 収まる 10,346
+  （n=1〜6 に分散）/ Z違反 2,013）。Z違反の 2,013 件はすべて意図した外接箱ガードが投げている。
+  ⚠️ **`rim_geometry` / `segment_envelope` / `RetentionParams` の挙動を変えるときは、代表点のテストだけ
+  でなくこの掃引も見ること。**
+  (b) ⚠️ **「開口を狭めない」の検査は `clear >= opening` の assert ではない。** Note 3.1(b) のとおり
+  有効値域では常に等号が成立するため、その形は近似的に恒真である。**本物の内容は「取り付け部内径が
+  開口内径を下回るなら `rim_geometry` が拒否する」という二分岐の全域性**であり、5mm の食い込みを許容
+  する変異で既存テストは無反応・本ファイルのみ 6 件落ちることを実測している。
+  (c) ⚠️ **決定2・決定3（`added_depth_mm == 0.0` / `bottom_modification == "none"`）は「表現不可能」
+  として固定してある**（1e-12 / nan / inf / int 1 / "NONE" / 前後空白などの綴りの揺れ / `dataclasses.replace`
+  経由の第2の構築経路）。`abs(depth) > 1.0` と `strip().lower()` を入れる変異で、既存の
+  `test_catch_params.py::test_added_depth_must_be_zero` などは**緑のまま**で本ファイルのみ 9 件落ちる。
+  (d) 既存テストの `retrofit_fastener_count` は 6 / 10 / 19 のみだった。本ファイルが **1 と 7** を追加した。
+  ⚠️ `count=1` では `[0, 0, 1, 0, 0]` となり**座を持たないセグメントが生じる**。等配分の上下界
+  （`max−min <= 1`、`floor`/`ceil`）もここで初めて固定された。
+  (e) 要件 9.6 の警告（「⚠️ 設計の自己整合性の検査であり、合否条件ではない」）を module と**全テスト関数の
+  docstring** に置いている。⚠️ **これを固定するメタテストは無い**ので、テスト関数を足すときは手で入れること。
+  （Note 2.1(e) のとおり docstring の部分文字列照合は逆の方針でも通る弱い検査であり、追加するなら
+  その限界も併記すること。）
+  (f) ⚠️ **実装者の重複監査のうち MUTANT-3（外径の過小申告）だけが過大申告だった。** レビューの再現では
+  既存 `test_catch_shapes.py::test_segment_count_is_delegated_to_the_constraints_module` が −20mm でも
+  −1mm でも反応する。項目3の真の追加分は「実高さでの外接箱」と「掃引の広さ」だけである。
+  なお完全重複だった `test_the_shipping_retrofit_count_lands_on_the_recorded_distribution` は削除した
+  （`[1,1,2,1,1]` の主張は `test_catch_shapes.py:1800` に残っている）。
+  (g) `test_the_derived_split_never_leaves_the_build_plane_over_the_sweep` の `pytest.raises(GeometryError)`
+  はメッセージを assert していない。⚠️ 現時点では 2,013 件すべてが意図したガードで落ちることを実測済み
+  だが、将来別のガードが先行しても緑のままになる。タスク3.2 の「意図したガードが出したことを固定する」
+  規約に合わせるなら補強の余地がある。
+  (h) design.md の正誤訂正候補: `### Directory Structure` は `test_rim_invariants.py`、
+  「受け口の不変条件テスト」節は「`cad` extra 必要」と記すが、実名は `test_catch_rim_invariants.py`
+  （Note 1.1 の衝突回避）であり、48件中 42件は CAD 非導入環境でも走る（要件 5.7 に対して強い方向）。
 - **環境（全タスク共通）**: Python 環境は **WSL2 側にのみ存在する**。Windows 側に `python` / `uv` は無い。
   検証は必ず `wsl -e bash -lc 'cd /mnt/c/Users/user/repos/stb-hardware && uv run pytest -q'` の形で実行する。
   ⚠️ Windows から `uv sync` して `.venv/` を上書きしないこと（Linux venv が壊れる）。
