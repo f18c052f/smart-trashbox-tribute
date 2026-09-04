@@ -213,7 +213,7 @@
   - _Depends: 4.1_
   - _Boundary: Metrics, Cli_
 
-- [ ] 4.3 (P) パラメータ変更と指標記録の不整合検出を追加する
+- [x] 4.3 (P) パラメータ変更と指標記録の不整合検出を追加する
   - 記録に含まれるパラメータ識別子が、現在の寸法設定ファイルの識別子と一致することを検査する
   - この検査が**形状ライブラリ非導入の環境でも実行される**ことを保証する
   - 観測可能な完了状態: 寸法設定ファイルを変更して記録を更新しない状態で、
@@ -720,6 +720,27 @@
   消えてスタブが無効化され、遮断したつもりの実行が CAD 導入時と同じ数字を返す事象を踏んでいる。
   **遮断実行のたびに `PYTHONPATH=... python -c "import build123d"` が `ImportError` になることを
   前後で確認すること。**
+- **タスク4.3 / 後続への申し送り**: (a) ⚠️ **`test_catch_baseline_digest.py` は
+  `test_catch_geometry_regression.py::test_the_shipped_record_matches_the_current_dimensions_digest` を
+  「CAD 依存にされていないか」見張っている。** 3系統の見張りがあり、レビューで次の退行をすべて検出する
+  ことを実証済み: `@requires_cad` の付与 / module 直下の `pytest.importorskip("build123d")` /
+  素の `@pytest.mark.skip` / **対象関数の改名**（3件が落ちるので見張り自体を黙って失えない） /
+  `verify_baseline_digest` 内での遅延 CAD import。
+  ⚠️ **これは要件 5.7「形状生成の環境を持たない実行環境でも、形状生成を除くすべての検査が完了できる」の
+  唯一の機械的な担保である。対象テストを CAD 依存にしないこと。**
+  (b) ⚠️ **`_regression_module()` で `sys.modules` を全走査して `Path.resolve()` してはならない。**
+  build123d を読み込んだ状態では module が数千あり、`/mnt/c` の 9p マウント上では1回あたり約7秒かかる
+  （2回呼ぶので約14秒）。pytest は素の名前 `test_catch_geometry_regression` で登録するため名前引きで足りる。
+  実測で `tests/catch_mechanism` が 56.7s → 42.2s に短縮した。同種の「テストを検分するテスト」を書くときの
+  一般的な注意である。
+  (c) ⚠️ **タスク 5.2 への申し送り**: `_stale_by_provenance` は出荷の出所表に **`assumed` の項目が
+  最低1つ残っていること**に依存する（現在は 3/3 が assumed）。5.2 が採寸値を反映して**全項目を
+  `measured` へ昇格させると**、このヘルパは黙って通るのではなく明示的な `AssertionError` を出す。
+  そうなったら「出所表のみの変更で digest が古くなる」ことを別の方法で示すこと。
+  (d) `metrics.py` は本タスクで**一切変更していない**（4.2 が `verify_baseline_digest` を配置済み）。
+  出荷 `dimensions.json` / `geometry-baseline.json` の改変は一切行わず、すべて `tmp_path` の写しに対して
+  行っている。⚠️ **テストで出荷ファイルを書き換えないこと**（`test_these_tests_leave_the_shipped_files_untouched`
+  が前後のバイト列一致で固定しており、空検査でないことも確認済み）。
 - **環境（全タスク共通）**: Python 環境は **WSL2 側にのみ存在する**。Windows 側に `python` / `uv` は無い。
   検証は必ず `wsl -e bash -lc 'cd /mnt/c/Users/user/repos/stb-hardware && uv run pytest -q'` の形で実行する。
   ⚠️ Windows から `uv sync` して `.venv/` を上書きしないこと（Linux venv が壊れる）。
