@@ -140,7 +140,7 @@
 
 ## 3. CAD 層: 受け口の形状と生成物
 
-- [ ] 3. CAD 層: 受け口の形状と生成物
+- [x] 3. CAD 層: 受け口の形状と生成物
 
 - [x] 3.1 受け口の幾何を寸法パラメータから導出する
   - 取り付け部の内径を「上端外径 ＋ 隙間の2倍」から導出する
@@ -175,7 +175,7 @@
   - _Depends: 3.2_
   - _Boundary: Shapes_
 
-- [ ] 3.4 生成物の原子的な書き出しを実装する
+- [x] 3.4 生成物の原子的な書き出しを実装する
   - 組立確認・図面化に用いる中間形式と、造形に用いるメッシュ形式2種を、単位ミリメートルで書き出す
   - 一時ディレクトリへ全ファイルを書き終えてから出力先へ移し、失敗時は何も残さない
   - 出力先の既定をバージョン管理外の場所とする
@@ -607,6 +607,47 @@
   実測 (51.67657123844347, 168.69436760793977, 30.03847577293368) は解析値と厳密一致し、
   5部品すべてで同一。⚠️ **タスク 3.4 が造形板向けに再配置する場合、指標の境界箱も一緒に変わる**
   ——記録は配置込みの値である。
+- **タスク3.4 / 後続への申し送り（重要）**: (a) ⚠️⚠️ **lib3mf（`build123d.Mesher.write`）はプロセスのロケールを
+  `C` に変えたまま戻さない。** 実測: 呼び出し前 `LC_CTYPE=C.UTF-8` / `getpreferredencoding()=='UTF-8'`、
+  呼び出し後 `'C'` / `'ANSI_X3.4-1968'`。副作用を持つのは `write` だけで、`export_step` / `export_stl` /
+  `Mesher()` / `add_shape` は無害である。これにより `subprocess(..., text=True)` の**日本語出力の復号が壊れ**、
+  `tests/sensing_foundation/test_sensing_cli.py::test_module_entrypoint_smoke` と
+  `tests/trajectory_sim/test_trajectory_sim_cli.py::test_python_dash_m_trajectory_sim_end_to_end` が
+  **フルスイート実行時のみ** `UnicodeDecodeError` で落ちる（単体では通る）。`export.py` は `_write_3mf` で
+  `locale.setlocale(locale.LC_ALL)` を退避し `finally` で復元している。⚠️ **`Mesher.write` を呼ぶ
+  あらゆる経路（タスク 4.1 の `cli` を含む）で同じ退避・復元が要る。**
+  (b) ⚠️ **`build123d.export_step` は `Unit` の全6値（MC/MM/CM/M/IN/FT）で必ず
+  `SI_UNIT(.MILLI.,.METRE.)` を書く。** 単位は表明ではなく**座標の倍率**として効く（10mm の箱を
+  `Unit.M` で出すと 10000mm、`Unit.IN` で 254mm）。したがって当該文字列の検査は**単位の観測にならない**。
+  レビューで一度この空検査を踏んだ。単位は STEP の `CARTESIAN_POINT` 座標から外接箱を組んで
+  `PartMetrics.bbox_mm` と突き合わせて観測する（`test_step_vertex_coordinates_are_in_millimetres`）。
+  ⚠️ ただし **X 軸は使えない**——円・円筒の**中心点**も `CARTESIAN_POINT` として書かれ、それがリング軸
+  （原点）付近にあるためセグメント自身の X 範囲より 64〜81mm 大きく出る。Y と Z で十分である
+  （許容差 1e-4mm に対し最小の単位誤り `Unit.CM` でも 168mm の範囲が10倍になる）。
+  (c) **原子性の保証範囲**（モジュール docstring に明記済み）: 書き出し中の失敗は出力先を一切触らない
+  （15ファイルすべてを staging に書き終えてから移す）。出力先が**存在しない**場合の commit は staging
+  ディレクトリの単一 `os.rename` で真に原子的。⚠️ **出力先が既存の場合は per-file `os.replace` の列**
+  であり、同時に観測すれば新旧が混在しうる。失敗時は補償ロールバックで復元するが、**二重障害
+  （ロールバック自体が失敗）では混在が残りうる**。実測では4ファイル欠落・0破損だった。
+  ⚠️ ディレクトリ差し替えを選ばなかったのは、利用者指定の `--output-dir` にある**無関係なファイルを
+  消してしまう**ため（`test_files_that_the_exporter_does_not_own_survive_a_successful_run` が固定）。
+  (d) staging とロールバックのディレクトリは `tempfile.mkdtemp(dir=destination.parent)` で作る。
+  ⚠️ **システムの一時領域を使ってはならない**——実測でファイルシステムが異なり
+  （`/tmp` の `st_dev=75` に対しリポジトリは `71`）、`os.rename` が `OSError 18 Invalid cross-device link`
+  になる。`shutil.move` は黙って copy+delete に退化するため原子性を失う。
+  (e) **再実行性は形式によって異なる。** STEP と STL はバイト一致する（STEP は表題部の時刻を
+  `export_step(..., timestamp=...)` で固定している。固定しないと壁時計が入って毎回変わる）。
+  ⚠️ **3MF はバイト一致しない**——lib3mf が wrapper の object / component / build item に毎回新しい
+  UUID を刻み、`add_shape` の `uuid_value` では形状ひとつぶんしか制御できない。テストは UUID を
+  マスクしてモデル XML を比較している。タスク 4.2 は**指標**を記録し成果物をハッシュしないため影響しない。
+  (f) **部品は造形板向けに再配置していない。** `build_segments` が返す配置（リング中心が原点）のまま
+  書き出すため、`ExportedPart.metrics` はタスク 3.3 が測った値とビット一致する。
+  ⚠️ **STL / 3MF は造形板のレイアウトになっていない。スライサ側での配置が要る。**
+  (g) `check_material` は `export_parts` が呼ぶ唯一の場所である（`build_segments` は呼ばない）。
+  frozen かつ slots のデータクラスは pickle 復元で `__post_init__` を経由しないため、これが要件 2.7
+  「検査を通らない形状の生成物を出力しない」の実現箇所である。
+  (h) 出荷 `dimensions.json` での成果物は **15ファイル・約1,989,387バイト**。`rim_segment_3`（座2つ）は
+  3形式すべてで他より明確に大きい（STEP 158,502B 対 約111,900B）。
 - **環境（全タスク共通）**: Python 環境は **WSL2 側にのみ存在する**。Windows 側に `python` / `uv` は無い。
   検証は必ず `wsl -e bash -lc 'cd /mnt/c/Users/user/repos/stb-hardware && uv run pytest -q'` の形で実行する。
   ⚠️ Windows から `uv sync` して `.venv/` を上書きしないこと（Linux venv が壊れる）。
