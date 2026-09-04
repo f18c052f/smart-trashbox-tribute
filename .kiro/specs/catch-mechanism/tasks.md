@@ -142,7 +142,7 @@
 
 - [ ] 3. CAD 層: 受け口の形状と生成物
 
-- [ ] 3.1 受け口の幾何を寸法パラメータから導出する
+- [x] 3.1 受け口の幾何を寸法パラメータから導出する
   - 取り付け部の内径を「上端外径 ＋ 隙間の2倍」から導出する
   - フランジの内周径を**ゴミ箱の開口内径以上**とし、通過できる最小径を明示的に返す
   - 外径を「取り付け部＋フランジ幅」から導出し、造形制約の検査へ渡す
@@ -517,6 +517,29 @@
   気付きにくい）。**必ず `uv sync --all-extras` を使うこと。**
   ⚠️ **Windows 側から `uv sync` を実行しないこと**（Linux の `.venv/` が壊れる）。
   導入前後で全スイートは 4517 passed / 14 skipped の同一結果であり、`uv.lock` にも差分は出ない。
+- **タスク3.1 / 後続への申し送り**: (a) ⚠️ **Z 軸は 3.1 で検査されない。** `required_segment_count` は
+  高さに `build_z_mm` を置くため常に Z を通す。実高さ `rim.height_mm > build_z_mm` の違反は 3.1 では
+  検出されない（高さ 500mm で `BuildViolation(axis="z", excess_mm=320.0)` になることを実測確認済み）。
+  **タスク 3.2 / 3.4 は実高さを伴う `check_envelope` を必ず通すこと。**
+  (b) `clear_opening_diameter_mm` は `min(取り付け部内径, 開口内径)` である。⚠️ **有効値域では常に
+  `trash_can.opening_inner_diameter_mm` と一致する**（敵対的2万件で例外0件）。これは決定1
+  （フランジは外向きのみで内向きの絞りを持たない）の内容そのものであり欠陥ではないが、
+  **下流（3.4 / 4.1）はこの値から「リムが狭めていない」以上の情報を得られない**。情報は
+  「`rim_geometry` が例外を投げなかった」事実の側にある。出力設計時に留意すること。
+  (c) `outer_diameter_mm = 取り付け部内径 + 2 × flange_width_mm` であり、**壁の肉厚を算入しない**。
+  Note 2.1(a) の 287.0mm = 225 + 2×1.0 + 2×30 と、購入報告欄の分割数計算（上端外径 212〜218mm →
+  弦長 161〜165mm）の双方が肉厚項を持たないことで裏付けられる。⚠️ `RimParams.wall_thickness_mm` が
+  未使用なのは式の誤りではなく**タスク 3.2 の所有**である。なお wall=8.0（外径 303.0）では両読みが
+  n=5 / n=6 に分岐するため「下流が恒久的に非感応」ではない。
+  (d) `rim_geometry` は `check_envelope` を呼ばない。design.md の Preconditions が呼び出し側の責務と
+  明記しており、`check_envelope` は違反を**値**で返すため失敗へ変えるのはタスク 3.4 の担当である。
+  外径は `required_segment_count`（造形制約の検査を内包し `GeometryError` を投げる）へ渡している。
+  (e) `PART_NAMES` / `build_parts` / `measure_part` は 3.1 に含めていない（部品名を定めるのは実体を作る 3.2）。
+  ⚠️ **`shapes.py` は 3.2 で build123d を module 直下に import してよい唯一のモジュールの一つである**
+  （もう一つは `export.py`）。3.1 時点では import していない。
+  (f) design.md「Error Categories and Responses」に「受け口の形状が成立しない」の行が無く、
+  `GeometryError` の適用は `errors.py` docstring からの外挿である（Note 1.2(a) / 2.2(a) と同構図）。
+  `/kiro-validate-impl` での正誤訂正候補。
 - **環境（全タスク共通）**: Python 環境は **WSL2 側にのみ存在する**。Windows 側に `python` / `uv` は無い。
   検証は必ず `wsl -e bash -lc 'cd /mnt/c/Users/user/repos/stb-hardware && uv run pytest -q'` の形で実行する。
   ⚠️ Windows から `uv sync` して `.venv/` を上書きしないこと（Linux venv が壊れる）。
