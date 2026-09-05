@@ -8,8 +8,8 @@
   "inputs": [
     {
       "name": "trash_can.opening_inner_diameter_mm",
-      "provenance": "assumed",
-      "value_mm": 220.0
+      "provenance": "measured",
+      "value_mm": 210.0
     },
     {
       "name": "target_object.diameter_mm",
@@ -17,7 +17,7 @@
       "value_mm": 65.0
     }
   ],
-  "position_tolerance_mm": 77.5,
+  "position_tolerance_mm": 72.5,
   "provenance": "assumed",
   "schema_version": "1.0"
 }

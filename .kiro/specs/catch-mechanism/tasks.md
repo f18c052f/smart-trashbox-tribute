@@ -261,7 +261,7 @@
   - _Depends: 4.2, 5.1_
   - _Boundary: Config_
 
-- [ ] 5.3 位置許容誤差を確定し、導出記録を更新する
+- [x] 5.3 位置許容誤差を確定し、導出記録を更新する
   - 採寸値（開口内径・対象物の実測径）から位置許容誤差を導出し、導出記録を更新する
   - 入力がすべて実測である場合に出所が実測となることを確認する
   - 対象物が M1 の実験条件である空き缶であること、外向き部分を算入していないことを前提として記録する
@@ -946,6 +946,37 @@
   `mass_g` / `bottom_thickness_mm`）。ユーザ承認済みの要求水準緩和に従ったものであり、
   `test_every_survey_item_has_an_explicit_provenance_entry` が「省略が書き忘れではなく決定である」
   ことを機械的に固定している。要件充足の残余として記録する。
+- **タスク5.3 / 完了。⚠️ タスク5.4 への申し送り**: (a) **`catch-opening.json` を再生成した。**
+  `position_tolerance_mm = **72.5**` / 全体の出所 **`assumed`** / 入力は
+  `trash_can.opening_inner_diameter_mm = 210.0（**measured**）` と
+  `target_object.diameter_mm = 65.0（**assumed**）`。
+  ⚠️ **5.4 が `configs/trajectory_sim/*.json` へ写すのはこの2つの値である**——
+  `parameters.catch.position_tolerance_mm = 72.5` と
+  `parameters.provenance["catch.position_tolerance_mm"] = "assumed"`。
+  ⚠️ **`measured` と書いてはならない。** 対象物（空き缶 φ65）が未実測であり、
+  `Provenance.weakest` が入力の最弱を継承するためである。要件 7.4 の
+  「両方が実測なら実測」の前件は成立していない。
+  (b) ⚠️ **トリップワイヤを設置した**（Note 2.3(b) の宿題）:
+  `load_derivation(DEFAULT_DERIVATION_PATH) == derive_position_tolerance(load_params())`。
+  ⚠️ **5.4 を座礁させないことを実験で確認済み**——`sweep-layout.json` に値と出所を追記すると
+  全スイートは緑のまま `tolerance --check` が exit 1 → **exit 0** へ反転する。
+  トリップワイヤが読むのは `dimensions.json` と `catch-opening.json` の2つだけで、
+  どちらも 5.4 の作業対象ではない。
+  (c) ⚠️ **`ASSUMPTIONS` は編集不要と裁定した。** 要件 7.9 の2前提（対象物は M1 の実験条件である
+  空き缶 / 外向きに張り出す部分の非算入）は既に**逐語で存在**し、採寸状態に依存しない。
+  ⚠️ **「φ65 は未実測である」を散文の第4前提として足してはならない。** その事実は
+  `inputs[1].provenance` が機械検査つきで持っており、散文で重複させると缶を実測したときに
+  前提の側が黙って偽になる。実際、前提を1件**追加**する変異は `__post_init__` の包含検査を
+  すり抜ける唯一の経路であり、逐語一致テストだけがこれを捕捉することをレビューが実証した。
+  (d) ⚠️ **将来「空き缶を実測する」保守が入ると本ファイルの3件が落ちる**（記録が「なお仮値」と
+  主張し続けていることの検出であり、設計どおりの警報）。直し方は記録の再生成
+  （`python -m catch_mechanism tolerance`）＋期待値の1行更新で、どちらも `_Boundary: Tolerance_` の
+  内側で完結する。⚠️ **ただし缶の採寸自体は `dimensions.json`（Config）の変更なので、
+  その保守は Config と Tolerance の両方の権限を持つ形で計画すること**（Note 5.2(e) と同じ構図）。
+  (e) `src/catch_mechanism/tolerance.py` は1バイトも変更していない。
+  (f) **副次的観察（タスク 4.1 の所有・本タスクの責務外）**: `tolerance --check` は照合に加えて
+  既定パスへ記録を**書き出す副作用**を持つ。記録がバイト再現的なため現状は無害だが、
+  検査コマンドが書き込みを行う点は `/kiro-validate-impl` での確認候補。
 - **環境（全タスク共通）**: Python 環境は **WSL2 側にのみ存在する**。Windows 側に `python` / `uv` は無い。
   検証は必ず `wsl -e bash -lc 'cd /mnt/c/Users/user/repos/stb-hardware && uv run pytest -q'` の形で実行する。
   ⚠️ Windows から `uv sync` して `.venv/` を上書きしないこと（Linux venv が壊れる）。

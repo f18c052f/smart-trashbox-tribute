@@ -18,16 +18,20 @@ Preconditions / Postconditions / Invariants と、tasks.md タスク 2.3 の
    あって独立に編集してよい自由記述ではないため、読み戻しは値と入力の整合・
    出所の継承・前提の明示を**そのつど検査する**
 
-⚠️ **本ファイルは `dimensions.json` の値を固定しない。** 公称 φ220・φ65 は
-テスト側で明示的に組み立てた入力であり、出荷される寸法設定を読み取った値では
-ない。出荷値そのもののピン留めはタスク 1.4（`_Boundary: Config_`、
-`test_catch_config.py`）が持つ。同様に、**出荷される導出記録が出荷される寸法と
-食い違っていないか**の照合はここに置かない——tasks.md タスク 5.3
-（`_Boundary: Tolerance_`, `_Depends: 5.2_`）の完了状態が「再導出した値と記録が
-一致することをテストで固定する」と明示的に要求しており、そこの成果物である。
-ここへ前倒しすると、採寸値を書き戻すタスク 5.2（`_Boundary: Config_`）が
-**自らの境界の外にある赤**を踏むことになり、「全テストが通る」という 5.2 の
-完了状態を 5.2 自身の権限では満たせなくなる。
+6. **出荷される導出記録が、出荷される寸法からの再導出と一致する**こと
+   （タスク 5.3 の観測可能な完了状態）。⚠️ この照合は 5.2 の完了まで
+   **意図的に置かれていなかった**——採寸値を書き戻すタスク 5.2
+   （`_Boundary: Config_`）が、記録を再生成する権限（`_Boundary: Tolerance_`）を
+   持たないまま自らの境界の外にある赤を踏むためである。5.2 が完了した今、
+   タスク 5.3（`_Boundary: Tolerance_`, `_Depends: 5.2_`）がこの絶縁を閉じる
+
+⚠️ **本ファイルは `dimensions.json` の値をリテラルで固定しない。** 公称 φ220・φ65
+は導出そのものを検査するためにテスト側で明示的に組み立てた入力であり、出荷される
+寸法設定を読み取った値ではない。出荷値そのもののピン留めはタスク 1.4
+（`_Boundary: Config_`、`test_catch_config.py`）が持つ。⚠️ **出荷記録との照合も
+リテラルでは書かない**——`load_params()` からの再導出と突き合わせる形にしてある。
+採寸が進んで（例えば空き缶を実測して）値が動いたとき、記録さえ再生成されていれば
+これらは緑のままであり、記録の再生成を怠ったときだけ落ちる。
 
 ファイル名について: design.md「Directory Structure」の名からは離れるが、
 `tests/` に `__init__.py` が無くテストモジュール名がセッション全体でフラット
@@ -658,32 +662,135 @@ def test_load_rejects_inputs_that_is_not_an_array(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # 出荷される導出記録（`configs/catch_mechanism/catch-opening.json`）
 #
-# ⚠️ **出荷される寸法との突き合わせはここに置かない。** 「再導出した値と記録が
-# 一致すること」を固定するのは tasks.md タスク 5.3（`_Boundary: Tolerance_`,
-# `_Depends: 5.2_`）の完了状態であり、その成果物である。ここへ前倒しすると、
-# 採寸値を書き戻すタスク 5.2（`_Boundary: Config_`）が自らの境界の外にある赤を
-# 踏み、「全テストが通る」という 5.2 の完了状態を自力で満たせなくなる。
 # 記録**単体**の妥当性（値が入力から導けること・出所が入力の最弱であること・
 # 式・前提）は `load_derivation` → `ToleranceDerivation.__post_init__` が
-# 読み込みのたびに強制するため、下の2件で足りる。
+# 読み込みのたびに強制する。ここに置くのは、それに加えて
+# **記録が出荷される寸法の現在の姿と食い違っていないか**である
+# （tasks.md タスク 5.3 の観測可能な完了状態「再導出した値と記録が一致する」）。
 # ---------------------------------------------------------------------------
 
 
 def test_shipped_record_is_a_valid_derivation_and_still_provisional() -> None:
-    """出荷される記録が導出として整合し、その出所が仮値である（要件 6.7 と同じ扱い）。
+    """出荷される記録が導出として整合し、その出所が**なお**仮値である（要件 7.4）。
 
     `load_derivation` を通ること自体が、値・入力・出所・式・前提の整合の検査で
     ある（記録は導出の写しであり自由記述ではない）。
+
+    ⚠️ **仮値である理由を名指しで固定する。** 開口内径は採寸済み（タスク 5.2）で
+    **実測**だが、対象物（M1 の実験条件である空き缶 φ65）は未実測であり、
+    `Provenance.weakest` により導出全体は仮値に留まる。「まだ仮値」とだけ書くと、
+    採寸が1件も進んでいない状態と、片方だけ進んだ状態を区別できない。
     """
     derivation = load_derivation(DEFAULT_DERIVATION_PATH)
+    provenance_by_name = {item.name: item.provenance for item in derivation.inputs}
 
     assert derivation.provenance is Provenance.ASSUMED
-    assert all(item.provenance is Provenance.ASSUMED for item in derivation.inputs)
+    assert provenance_by_name[OPENING_DIAMETER_PATH] is Provenance.MEASURED
+    assert provenance_by_name[OBJECT_DIAMETER_PATH] is Provenance.ASSUMED
 
 
 def test_shipped_record_has_no_cr_bytes() -> None:
     """出荷される記録が LF で置かれている（`.gitattributes` の個別則と一致）。"""
     assert b"\r" not in DEFAULT_DERIVATION_PATH.read_bytes()
+
+
+# ---------------------------------------------------------------------------
+# ⚠️ 出荷記録 ⇄ 出荷寸法（タスク 5.3 の観測可能な完了状態）
+#
+# ⚠️ **これがタスク 5.3 のトリップワイヤである。** `dimensions.json` を書き換えた
+# まま `catch-opening.json` を再生成し忘れると、ここが落ちる。再生成は
+# `python -m catch_mechanism tolerance`（既定の出力先が出荷記録）で足りる。
+# ⚠️ **リテラルを置かない。** 突き合わせの相手は常に `load_params()` からの
+# 再導出であり、採寸が進んで値が動いても、記録が追随している限り緑である。
+# ---------------------------------------------------------------------------
+
+
+def test_shipped_record_is_the_derivation_from_the_shipped_dimensions() -> None:
+    """⚠️ 出荷記録は出荷寸法からの再導出と**丸ごと等しい**（タスク 5.3）。
+
+    値・出所・入力・式・前提のすべてを一度に固定する。⚠️ 記録の側が単体として
+    整合していても（`load_derivation` は通っても）、それが**古い寸法から作られた
+    記録**であることは検出できない——事実、タスク 5.2 の採寸反映後、この検査が
+    無い間は φ220 由来の 77.5mm を主張する記録が誰にも咎められずに出荷されていた。
+    """
+    assert load_derivation(DEFAULT_DERIVATION_PATH) == derive_position_tolerance(
+        load_params()
+    )
+
+
+def test_shipped_record_carries_the_current_dimensions_as_its_inputs() -> None:
+    """記録の各入力が、寸法設定の現在の値と出所に一致する（要件 7.3）。
+
+    丸ごとの等価より粒度が細かく、どの入力が古いのかを名指しで示す。
+    """
+    params = load_params()
+    record = load_derivation(DEFAULT_DERIVATION_PATH)
+    values = {item.name: item.value_mm for item in record.inputs}
+    provenances = {item.name: item.provenance for item in record.inputs}
+
+    assert values[OPENING_DIAMETER_PATH] == params.trash_can.opening_inner_diameter_mm
+    assert values[OBJECT_DIAMETER_PATH] == params.target_object.diameter_mm
+    for path, provenance in provenances.items():
+        assert provenance is params.provenance.get(path, Provenance.ASSUMED)
+
+
+def test_shipped_record_states_the_can_and_the_non_inclusion() -> None:
+    """記録の前提が現行の `ASSUMPTIONS` そのものである（要件 7.9, 7.2）。
+
+    `ToleranceDerivation.__post_init__` は前提の**包含**しか要求しない（上位集合を
+    許す）ため、文言を書き換えたうえで古い文言を残した記録は単体検査では通って
+    しまう。出荷記録については逐語の一致を要求する。
+    """
+    record = load_derivation(DEFAULT_DERIVATION_PATH)
+
+    assert record.assumptions == ASSUMPTIONS
+    joined = "".join(record.assumptions)
+    assert "空き缶" in joined
+    assert "M1" in joined
+    assert "外向き" in joined
+
+
+def test_measuring_the_can_would_promote_the_shipped_derivation_to_measured() -> None:
+    """⚠️ 「入力がすべて実測なら出所は実測」を**出荷の設定の上で**確かめる（要件 7.4, 1.5）。
+
+    タスク 5.3 の「入力がすべて実測である場合に出所が実測となることを確認する」は
+    **条件文**である。出荷の設定では前件が成立しない（空き缶 φ65 が未実測）ため、
+    出荷記録は正しく仮値を名乗る。⚠️ **記録の側で実測を騙って条件文を満たした
+    ことにしない。** 代わりに、出荷の出所表の**対象物径 1 行だけ**を実測へ昇格
+    させれば導出が実測になることを示す——すなわち、今仮値である理由がその 1 行に
+    局在しており、缶を測れば（実装を1バイトも変えずに）実測になる。
+    """
+    params = load_params()
+    assert params.provenance[OPENING_DIAMETER_PATH] is Provenance.MEASURED
+    assert params.provenance[OBJECT_DIAMETER_PATH] is Provenance.ASSUMED
+
+    promoted = _with_provenance(
+        params, {**params.provenance, OBJECT_DIAMETER_PATH: Provenance.MEASURED}
+    )
+
+    assert derive_position_tolerance(promoted).provenance is Provenance.MEASURED
+    assert derive_position_tolerance(params).provenance is Provenance.ASSUMED
+
+
+def test_shipped_record_is_transcribable_into_a_simulator_config() -> None:
+    """⚠️ 記録の値と出所が、シミュレータ設定へ**そのまま**書ける形である（要件 7.5）。
+
+    タスク 5.4 が `configs/trajectory_sim/*.json` の
+    `parameters.catch.position_tolerance_mm` と
+    `parameters.provenance["catch.position_tolerance_mm"]` へ移すのは、記録の
+    `position_tolerance_mm` と `provenance` の 2 つだけである。⚠️ **変換を挟まずに
+    書ける**ことをここで固定する——値が JSON の数であり（文字列でも真偽値でもなく）、
+    出所が `Provenance` の値集合の語であること。片方でも別の型・別の語彙になれば、
+    還元は「値を写す」ではなく「値を訳す」作業になり、訳し間違いが起こりうる。
+    """
+    document = json.loads(DEFAULT_DERIVATION_PATH.read_text(encoding="utf-8"))
+    value = document["position_tolerance_mm"]
+    provenance = document["provenance"]
+
+    assert isinstance(value, (int, float)) and not isinstance(value, bool)
+    assert isinstance(provenance, str)
+    assert provenance in {item.value for item in Provenance}
+    assert value == derive_position_tolerance(load_params()).position_tolerance_mm
 
 
 # ---------------------------------------------------------------------------
