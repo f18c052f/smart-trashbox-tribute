@@ -1,0 +1,24 @@
+{
+  "decisive_criteria_items": [
+    "shape",
+    "opening_inner_diameter_mm",
+    "height_mm",
+    "mass_g",
+    "taper_deg",
+    "price_jpy",
+    "has_lid"
+  ],
+  "identity_evidence": "底面の成形刻印に「山田化学株式会社 三重県伊賀市」「No.335」「容量 6.9L」「PP」。これにより roadmap が第一候補として名指しした品と同一であることを確認した。⚠️ パッケージ表記（φ220 × H224）は実物と合わない——φ220 は開口の外径であり内径は 210mm、高さは実測 235mm である。",
+  "jan": "4965534335027",
+  "manufacturer": "山田化学株式会社",
+  "model_number": "No.335",
+  "product_name": "ダストボックス丸",
+  "purchase_price_jpy": 110,
+  "purchased_from": "キャンドゥ",
+  "resupply_note": "同一品（JAN 4965534335027）がアスクル等の通信販売で単品約160円で入手できるため、破損しても同一諸元で買い直せる。⚠️ 100円ショップは在庫が入れ替わると同じ品が二度と買えないため、試作では別ルートの入手性が効く。⚠️ 約160円は選定基準 price_max_jpy=110 を超えるが、これは初回の選定を縛る基準であり再調達の可否を左右しない。",
+  "resupply_sources": [
+    "アスクル"
+  ],
+  "schema_version": "1.0",
+  "selected_identifier": "yamada-kagaku-no335"
+}

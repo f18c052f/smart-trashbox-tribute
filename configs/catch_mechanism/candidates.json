@@ -3,15 +3,15 @@
     {
       "has_lid": false,
       "has_outward_rim": null,
-      "height_mm": 244.0,
+      "height_mm": 235.0,
       "identifier": "yamada-kagaku-no335",
       "mass_g": 228.0,
-      "opening_inner_diameter_mm": 220.0,
+      "opening_inner_diameter_mm": 210.0,
       "price_jpy": 110,
       "provenance": "assumed",
       "role": "primary",
       "shape": "round",
-      "taper_deg": 7.0
+      "taper_deg": 4.865
     },
     {
       "has_lid": false,

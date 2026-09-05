@@ -32,6 +32,54 @@ selection-criteria.json` に、候補の諸元は `candidates.json` に置き、
 `(7.24 + 10.0)/2 = 8.62°` を保守側へ丸めた **8.5°** を採る。7.24° に対して +1.26°、
 10.0° に対して −1.5° の余裕がある。
 
+⚠️⚠️ **タスク 5.1 の裁定: 「可」の例 7.24° の寸法的な裏づけは実測で崩れた。**
+7.24° は roadmap が第一候補（山田化学 No.335）の実寸として挙げた φ220 → 底φ158 ・
+H244 から起こした値である。しかし実物を採寸すると**底の外径は φ180、高さは 235mm**
+であり（tasks.md「Implementation Notes」2026-09-05）、同じ品の実テーパーは
+**4.865°** である。⚠️ **したがって「φ220→φ158 の品が実在して可であった」という
+読みはもう成り立たない。**
+
+それでも **`taper_max_deg = 8.5` は動かさない。** 理由は3つある。
+
+1. roadmap が定めているのは**角度についての判断**である——「7.24° 相当は可、
+   10.0° は強すぎる」。どの品から起こした数字であれ、この2点を分ける上限という
+   制約は変わらない。8.5° は依然として両者を 1° 以上の余裕で分ける
+2. **緩める理由が無い。** 実測 4.865° は上限に対してさらに余裕がある側であり、
+   第一候補の適否は上限をどこに置いても変わらない
+3. **締める理由も無い。** 4.865° に合わせて上限を下げれば、roadmap が「可」と
+   言った領域を実測1件で否定することになる。⚠️ **1個体の実測は上限の再定義に
+   足りない**（`constraints.py` と同じ「知らない以上、楽観的にも悲観的にも
+   決めつけない」）
+
+⚠️ **roadmap は本 Spec の境界外であり書き換えていない。** 「φ220→φ158」の記載が
+実物と合わないことは事実として本 docstring とテストに残す
+（`test_primary_candidate_records_the_measured_values_not_the_nominal_ones`）。
+
+## 選定結果の記録（`selection-result.json` / 要件 6.8）
+
+選定基準・候補の諸元・**選定の結論**は別のものである。前二者は「どう判断するか」と
+「何を判断するか」であり、`selection-result.json` が持つのは「**どれを選び、なぜ選び、
+壊したときどこで買い直すか**」——すなわち買った物そのものの記録である。
+
+⚠️ **`candidates.json` へ相乗りさせなかった理由**: 品名・型番・JAN・購入店・
+再調達先は候補の**評価には一切使われない**。`Candidate` は design.md が形を定めて
+おり（`identifier` 以外に識別情報を持たない）、評価に使わない項目を候補の行へ
+足すと「判定の入力」と「買い物の記録」が同じ表に混ざる。
+
+⚠️ **`dimensions.json` へ相乗りさせなかった理由**: 寸法設定ファイルは**採寸値の
+単一の正**であり、その所有はタスク 5.2（`_Boundary: Config_`）である。
+
+記録は `dimensions.json` の `trash_can.model_id` と `selected_identifier` で結ばれる。
+⚠️ **突き合わせるのは識別子だけである。** 寸法値を記録へ写すと単一の正が2つになる。
+
+`decisive_criteria_items` は「根拠になった基準項目」であり、`CRITERIA_ITEMS`
+（`evaluate_candidate` の**必須**項目）の部分列でなければならない。⚠️ **警告どまりの
+項目（`has_outward_rim`）は根拠になりえない**——必須でない項目を根拠に数えると、
+「基準を満たしたから選んだ」という記録の意味が薄まる。
+
+⚠️ **JAN はチェックディジットまで検証する。** 再調達の唯一の鍵であり、1桁の
+転記誤りは「別ルートで入手できる」という記録を黙って嘘にする。
+
 ⚠️ **`price_max_jpy` は 110 である。** roadmap は「110円で足りる。220円以上へ
 上げない」と述べ、実態欄で「5〜7L 帯は4チェーンとも110円で φ215〜225 を満たす」
 と裏付けている。したがって 110 を上限に置いても取りこぼす品は無く、
@@ -112,9 +160,24 @@ selection-criteria.json` に、候補の諸元は `candidates.json` に置き、
   roadmap の判断が読み取れなくなる
 - 非推奨例の価格 110円 — roadmap 実態欄「5〜7L 帯は4チェーンとも110円」による
 
+## 第一候補の諸元は実測が正である（タスク 5.1 / 要件 1.5）
+
+⚠️ **`yamada-kagaku-no335` の行は roadmap の公称値ではなく実測値を持つ。**
+実物（JAN 4965534335027）を購入・採寸した結果、公称と3点食い違った。
+
+| 項目 | 公称 | 実測 |
+|---|---|---|
+| 開口内径 | 220.0 | **210.0**（⚠️ **公称 φ220 は外径**であった。縁の巻き込みは片側 5.0mm） |
+| 高さ | 244.0（パッケージ表記は H224） | **235.0** |
+| テーパー | 7.0（底 φ158 から起こした値） | **4.865**（`atan((220−180)/2 / 235)`。底の外径は実測 φ180） |
+
+⚠️ **実測が公称に優先する**（要件 1.5）。公称へ戻す変更は
+`test_primary_candidate_records_the_measured_values_not_the_nominal_ones` が落とす。
+
 候補の `provenance` は**候補1件につき1つ**である（design.md の型がそう定めている）。
-第一候補の重量 228g は実測だが開口内径ほかは公称であるため、`params.py` の
-「1つでも仮値を含めば仮値」に従い候補全体としては `assumed` を記録する。
+開口内径・高さ・テーパーは実測になったが、**重量 228g は出典が曖昧なまま**である
+（roadmap は「実測」と書くが測定の記録が無い。tasks.md 2026-09-05 の確定表）。
+`params.py` の「1つでも仮値を含めば仮値」に従い候補全体としては `assumed` を記録する。
 ⚠️ **未実測の値から実測を名乗らない。**
 """
 
@@ -134,13 +197,17 @@ from catch_mechanism.params import Provenance
 __all__ = [
     "DEFAULT_CRITERIA_PATH",
     "DEFAULT_CANDIDATES_PATH",
+    "DEFAULT_SELECTION_RESULT_PATH",
     "CANDIDATE_ROLES",
+    "CRITERIA_ITEMS",
     "SelectionCriteria",
     "Candidate",
     "CandidateVerdict",
+    "SelectionResult",
     "evaluate_candidate",
     "load_criteria",
     "load_candidates",
+    "load_selection_result",
 ]
 
 
@@ -158,6 +225,33 @@ DEFAULT_CRITERIA_PATH: Final[Path] = _CONFIG_DIRECTORY / "selection-criteria.jso
 DEFAULT_CANDIDATES_PATH: Final[Path] = _CONFIG_DIRECTORY / "candidates.json"
 """候補機種の諸元（第一候補・次点・非推奨例・例示）の既定パス。"""
 
+DEFAULT_SELECTION_RESULT_PATH: Final[Path] = _CONFIG_DIRECTORY / "selection-result.json"
+"""選定結果の記録の既定パス（要件 6.8 / タスク 5.1）。
+
+⚠️ 候補の諸元（`candidates.json`）とは別のファイルである。理由は本モジュール
+docstring「選定結果の記録」を参照。
+"""
+
+CRITERIA_ITEMS: Final[tuple[str, ...]] = (
+    "shape",
+    "opening_inner_diameter_mm",
+    "height_mm",
+    "mass_g",
+    "taper_deg",
+    "price_jpy",
+    "has_lid",
+)
+"""`evaluate_candidate` が評価する**必須**項目の名前（評価順）。
+
+⚠️ **`has_outward_rim` は含まれない。** 望ましいが必須ではない項目は `warnings`
+にのみ現れ、`accepted` を左右しない（design.md「Selection」Invariants）。
+不適合になりえない項目は、選定の**根拠**にも数えない。
+
+この並びが `evaluate_candidate` の実装と一致していることは
+`test_criteria_items_are_exactly_the_mandatory_items_of_the_evaluation` が
+全項目を落とす候補の `failed_items` と突き合わせて固定する。
+"""
+
 CANDIDATE_ROLES: Final[frozenset[str]] = frozenset(
     {"primary", "runner_up", "not_recommended", "illustrative_non_example"}
 )
@@ -174,6 +268,9 @@ _ROLE_KEY: Final[str] = "role"
 _PROVENANCE_VALUES: Final[Mapping[str, Provenance]] = {
     provenance.value: provenance for provenance in Provenance
 }
+
+_STR_TUPLE: Final[object] = tuple[str, ...]
+"""`_convert` が配列として扱う注釈（`SelectionResult` の2項目が用いる）。"""
 
 
 def _require_positive_finite(value: float, name: str) -> None:
@@ -207,6 +304,62 @@ def _require_nonempty_str(value: str, name: str) -> None:
     """`value` が空でない文字列であることを検証する。"""
     if not isinstance(value, str) or not value:
         raise SelectionError(f"{name}={value!r} は空でない文字列でなければならない。")
+
+
+def _require_jan13(value: str, name: str) -> None:
+    """`value` が JAN-13（EAN-13）として成立することを、チェックディジットまで検証する。
+
+    ⚠️ 桁数と数字であることだけを見る検証では、転記の1桁誤りを通してしまう。JAN は
+    **再調達の唯一の鍵**であり（要件 6.8「同一品が別ルートで入手できること」）、
+    誤った番号は「別ルートで買える」という記録を黙って嘘にする。チェックディジットは
+    先頭12桁に重み 1,3,1,3,… を掛けた和の 10 の補数である。
+    """
+    _require_nonempty_str(value, name)
+    if len(value) != 13 or not value.isascii() or not value.isdigit():
+        raise SelectionError(
+            f"{name}={value!r} は 13 桁の半角数字（JAN-13）でなければならない。"
+        )
+    digits = [int(character) for character in value]
+    total = sum(digit * (3 if index % 2 else 1) for index, digit in enumerate(digits[:12]))
+    expected = (10 - total % 10) % 10
+    if expected != digits[12]:
+        raise SelectionError(
+            f"{name}={value!r} のチェックディジットが合わない"
+            f"（先頭12桁から導かれるのは {expected} である）。"
+        )
+
+
+def _require_nonempty_unique_strs(values: tuple[str, ...], name: str) -> None:
+    """`values` が空でなく、各要素が空でない文字列であり、重複が無いことを検証する。"""
+    if not isinstance(values, tuple):
+        raise SelectionError(f"{name}={values!r} は文字列の並びでなければならない。")
+    if not values:
+        raise SelectionError(f"{name} は空であってはならない（少なくとも1件を記録する）。")
+    for index, element in enumerate(values):
+        _require_nonempty_str(element, f"{name}[{index}]")
+    if len(set(values)) != len(values):
+        raise SelectionError(f"{name}={values!r} に重複がある。")
+
+
+def _require_criteria_item_subsequence(values: tuple[str, ...], name: str) -> None:
+    """`values` が `CRITERIA_ITEMS` の（空でない）部分列であることを検証する。
+
+    ⚠️ 実在しない項目名・警告どまりの項目名・重複・評価順の入れ替えをいずれも拒む。
+    根拠の一覧が評価の項目名と同じ語彙・同じ順序であって初めて、記録と
+    `evaluate_candidate` の出力を突き合わせられる（要件 6.8）。
+    """
+    _require_nonempty_unique_strs(values, name)
+    unknown = [item for item in values if item not in CRITERIA_ITEMS]
+    if unknown:
+        raise SelectionError(
+            f"{name}={values!r} は選定基準の必須項目ではない名前を含む {unknown!r}"
+            f"（指定できるのは {list(CRITERIA_ITEMS)!r} のみ）。"
+        )
+    ordered = tuple(item for item in CRITERIA_ITEMS if item in set(values))
+    if values != ordered:
+        raise SelectionError(
+            f"{name}={values!r} の並びが評価順と違う（評価順では {ordered!r}）。"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -377,6 +530,78 @@ class CandidateVerdict:
     warnings: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class SelectionResult:
+    """選定した機種の記録（要件 6.8 / タスク 5.1）。
+
+    ⚠️ 本型は**判断の結論**であり、候補の諸元（`Candidate`）でも寸法パラメータでも
+    ない。何を買い、なぜ選び、壊したときどこで買い直すかを1箇所に残す
+    （本モジュール docstring「選定結果の記録」）。
+
+    Attributes:
+        selected_identifier: 選定した候補の識別子。⚠️ `candidates.json` の
+            `identifier` および `dimensions.json` の `trash_can.model_id` と
+            一致させる（タスク 5.1 の完了状態）。
+        product_name: 売り場での品名。
+        manufacturer: 製造者。
+        model_number: 型番。
+        jan: JAN-13。⚠️ チェックディジットまで検証する。
+        purchased_from: 購入した店。
+        purchase_price_jpy: 購入時の税込価格。
+        identity_evidence: 同一品であることを確かめた根拠（容器の刻印など）。
+            ⚠️ パッケージ表記は誤りうる——実際に公称 φ220 は**外径**であった。
+        decisive_criteria_items: 選定の根拠になった基準項目。`CRITERIA_ITEMS` の
+            部分列（評価順）でなければならない。
+        resupply_sources: 購入店以外の調達先。⚠️ 空であってはならない
+            （「再調達できる」と言えなくなる）。
+        resupply_note: 再調達についての補足。⚠️ JAN を含める——別ルートで同一品を
+            指定するには番号が要る。
+    """
+
+    selected_identifier: str
+    product_name: str
+    manufacturer: str
+    model_number: str
+    jan: str
+    purchased_from: str
+    purchase_price_jpy: int
+    identity_evidence: str
+    decisive_criteria_items: tuple[str, ...]
+    resupply_sources: tuple[str, ...]
+    resupply_note: str
+
+    def __post_init__(self) -> None:
+        """記録が選定の結論として成立していることを検証する（違反項目名を添えて拒否）。"""
+        for name in (
+            "selected_identifier",
+            "product_name",
+            "manufacturer",
+            "model_number",
+            "purchased_from",
+            "identity_evidence",
+            "resupply_note",
+        ):
+            _require_nonempty_str(getattr(self, name), name)
+        _require_jan13(self.jan, "jan")
+        if not isinstance(self.purchase_price_jpy, int) or isinstance(
+            self.purchase_price_jpy, bool
+        ):
+            raise SelectionError(
+                f"purchase_price_jpy={self.purchase_price_jpy!r} は整数でなければならない。"
+            )
+        _require_nonneg_finite(float(self.purchase_price_jpy), "purchase_price_jpy")
+        _require_criteria_item_subsequence(
+            self.decisive_criteria_items, "decisive_criteria_items"
+        )
+        _require_nonempty_unique_strs(self.resupply_sources, "resupply_sources")
+        if self.purchased_from in self.resupply_sources:
+            # ⚠️ 購入店だけを並べた記録は「別ルートで入手できる」を主張していない。
+            raise SelectionError(
+                f"resupply_sources={self.resupply_sources!r} が購入店 "
+                f"{self.purchased_from!r} を含む（別ルートの調達先を記録する）。"
+            )
+
+
 def evaluate_candidate(candidate: Candidate, criteria: SelectionCriteria) -> CandidateVerdict:
     """候補を全項目について評価し、不適合項目と警告の一覧を返す（要件 6.2, 6.3, 6.4）。
 
@@ -454,11 +679,15 @@ def _field_annotations(dataclass_type: type) -> Mapping[str, object]:
 
 _CRITERIA_ANNOTATIONS: Final[Mapping[str, object]] = _field_annotations(SelectionCriteria)
 _CANDIDATE_ANNOTATIONS: Final[Mapping[str, object]] = _field_annotations(Candidate)
+_SELECTION_RESULT_ANNOTATIONS: Final[Mapping[str, object]] = _field_annotations(SelectionResult)
 
 _CRITERIA_KEYS: Final[frozenset[str]] = frozenset({_SCHEMA_VERSION_KEY, *_CRITERIA_ANNOTATIONS})
 _CANDIDATE_KEYS: Final[frozenset[str]] = frozenset({_ROLE_KEY, *_CANDIDATE_ANNOTATIONS})
 _CANDIDATES_TOP_LEVEL_KEYS: Final[frozenset[str]] = frozenset(
     {_SCHEMA_VERSION_KEY, _CANDIDATES_KEY}
+)
+_SELECTION_RESULT_KEYS: Final[frozenset[str]] = frozenset(
+    {_SCHEMA_VERSION_KEY, *_SELECTION_RESULT_ANNOTATIONS}
 )
 
 
@@ -516,8 +745,25 @@ def _convert(value: object, annotation: object, name: str, label: str) -> object
     明示的に除かなければ JSON の `true` が「重量 1g」「価格 1円」として黙って通る。
 
     整数は浮動小数点の項目へ受け入れて `float` へ広げる（`220` と `220.0` は同じ値で
-    ある）。`X | None` の注釈は `null`（未記録）を受け入れる。
+    ある）。`X | None` の注釈は `null`（未記録）を受け入れる。`tuple[str, ...]` の
+    注釈は JSON の配列を受け入れて組へ変換する（要素はすべて文字列でなければならない）。
     """
+    if annotation == _STR_TUPLE:
+        # ⚠️ `get_args` より先に見る。`tuple[str, ...]` の引数は `(str, Ellipsis)` で
+        # あり、`X | None` を判別する下の分岐に落とすと「扱えない注釈」になる。
+        if not isinstance(value, list):
+            raise SelectionError(
+                f"{label}: {name}={value!r} は配列（[...]）でなければならない"
+                f"（{type(value).__name__} だった）。"
+            )
+        for index, element in enumerate(value):
+            if not isinstance(element, str):
+                raise SelectionError(
+                    f"{label}: {name}[{index}]={element!r} は文字列でなければならない"
+                    f"（{type(element).__name__} だった）。"
+                )
+        return tuple(value)
+
     args = get_args(annotation)
     if args:
         if type(None) not in args:  # pragma: no cover - 現在の型定義には現れない
@@ -681,3 +927,41 @@ def load_candidates(path: Path | None = None) -> tuple[Candidate, ...]:
             )
         seen.add(candidate.identifier)
     return candidates
+
+
+def load_selection_result(path: Path | None = None) -> SelectionResult:
+    """選定結果の記録を読み込み、検証済みの `SelectionResult` を返す（要件 6.8）。
+
+    ⚠️ 本関数は**記録の内部整合だけ**を検証する。「選定した識別子が候補表に実在し、
+    その候補が基準に適合すること」および「`dimensions.json` の `trash_can.model_id`
+    と一致すること」は `tests/catch_mechanism/test_catch_selection.py` が固定する。
+    ここで `load_candidates` / `load_params` を呼ぶと、候補表や寸法設定の不備が
+    「選定結果を読めない」という無関係な失敗として現れる。
+
+    Args:
+        path: 読み込む記録。省略時は `DEFAULT_SELECTION_RESULT_PATH`。
+
+    Returns:
+        構築時検証（識別情報・JAN のチェックディジット・根拠項目の語彙と並び・
+        再調達先）を通った `SelectionResult`。
+
+    Raises:
+        SelectionError: ファイルを読めない場合、JSON として解析できない場合、
+            未知キー・欠損キーがある場合、値の型が違う場合、値が記録として
+            成立しない場合、または記録形式の版が未対応の場合。
+    """
+    target = DEFAULT_SELECTION_RESULT_PATH if path is None else path
+    label = str(target)
+
+    document = _require_object(_read_document(target), label)
+    _reject_unknown_and_missing(document, _SELECTION_RESULT_KEYS, label)
+    _require_schema_version(document, label)
+
+    kwargs = {
+        name: _convert(document[name], annotation, name, label)
+        for name, annotation in _SELECTION_RESULT_ANNOTATIONS.items()
+    }
+    try:
+        return SelectionResult(**kwargs)  # type: ignore[arg-type]
+    except SelectionError as exc:
+        raise SelectionError(f"{label}: {exc}") from exc

@@ -1,7 +1,7 @@
-"""ゴミ箱の選定基準と候補判定（タスク 2.2、要件 6.1, 6.2, 6.3, 6.4）。
+"""ゴミ箱の選定基準・候補判定・選定結果（タスク 2.2 / 5.1、要件 6.1, 6.2, 6.3, 6.4, 6.8）。
 
 本ファイルが固定するのは design.md「Selection」の Service Interface /
-Postconditions / Invariants と、tasks.md タスク 2.2 の「観測可能な完了状態」である。
+Postconditions / Invariants と、tasks.md タスク 2.2 / 5.1 の「観測可能な完了状態」である。
 
 1. **基準の正は `.kiro/steering/roadmap.md`** であり、`selection-criteria.json` は
    その転記にすぎない（design.md「Selection」Responsibilities の
@@ -19,6 +19,10 @@ Postconditions / Invariants と、tasks.md タスク 2.2 の「観測可能な�
    ⚠️ 送出する例外は `SelectionError` である（`errors.py` の docstring が
    「選定基準の設定ファイルが未知の項目名を挙げている、候補の諸元に必須項目が
    欠けている」をこの型に割り当てている）
+7. **第一候補の諸元は roadmap の公称ではなく実測が正である**（タスク 5.1 / 要件 1.5）。
+   実物（JAN 4965534335027）の採寸で開口内径・高さ・テーパーの3点が公称と食い違った
+8. **選定結果が機種の識別情報・根拠の基準項目・再調達性とともに記録され、
+   寸法設定ファイルの機種識別情報と一致する**（タスク 5.1 の完了状態 / 要件 6.8）
 
 ファイル名について: `tests/` 配下には `__init__.py` が無く pytest の import-mode も
 既定（prepend）のため、テストモジュール名はセッション全体でフラットである。
@@ -32,6 +36,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 from dataclasses import FrozenInstanceError, fields
 from pathlib import Path
 from typing import Any
@@ -43,14 +48,18 @@ from catch_mechanism.config import SCHEMA_VERSION
 from catch_mechanism.errors import CatchMechanismError, SelectionError
 from catch_mechanism.params import Provenance
 from catch_mechanism.selection import (
+    CRITERIA_ITEMS,
     DEFAULT_CANDIDATES_PATH,
     DEFAULT_CRITERIA_PATH,
+    DEFAULT_SELECTION_RESULT_PATH,
     Candidate,
     CandidateVerdict,
     SelectionCriteria,
+    SelectionResult,
     evaluate_candidate,
     load_candidates,
     load_criteria,
+    load_selection_result,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -73,6 +82,11 @@ def _candidates_document() -> dict[str, Any]:
     return json.loads(DEFAULT_CANDIDATES_PATH.read_text(encoding="utf-8"))
 
 
+def _selection_result_document() -> dict[str, Any]:
+    """リポジトリの選定結果の記録を素の辞書として読む（改変用の複製）。"""
+    return json.loads(DEFAULT_SELECTION_RESULT_PATH.read_text(encoding="utf-8"))
+
+
 def _write(tmp_path: Path, name: str, document: object) -> Path:
     path = tmp_path / name
     path.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8", newline="\n")
@@ -80,7 +94,12 @@ def _write(tmp_path: Path, name: str, document: object) -> Path:
 
 
 def _compliant(**overrides: object) -> Candidate:
-    """全項目が基準を満たす候補（第一候補の諸元）を作り、指定項目だけ差し替える。"""
+    """全項目が基準を満たす候補を作り、指定項目だけ差し替える。
+
+    ⚠️ **この値は第一候補の諸元ではない**（実測で 210.0 / 235.0 / 4.865 へ変わった。
+    `test_primary_candidate_records_the_measured_values_not_the_nominal_ones`）。
+    判定の性質を調べるための合成の候補であり、基準の中央付近に置いてある。
+    """
     base: dict[str, object] = {
         "identifier": "fixture-compliant",
         "shape": "round",
@@ -152,13 +171,16 @@ def test_taper_limit_separates_the_two_examples_named_by_the_roadmap() -> None:
 
 
 def test_candidates_file_records_the_products_named_by_the_roadmap() -> None:
-    """候補ファイルが第一候補・次点・非推奨例を roadmap の諸元どおりに持つ。"""
+    """候補ファイルが第一候補・次点・非推奨例を roadmap の諸元どおりに持つ。
+
+    ⚠️ **第一候補の寸法だけは roadmap の公称ではなく実測が正である**（要件 1.5）。
+    それは `test_primary_candidate_records_the_measured_values_not_the_nominal_ones`
+    が固定する。ここで突き合わせるのは実測で動かない項目だけである。
+    """
     by_id = {candidate.identifier: candidate for candidate in load_candidates()}
 
     primary = by_id[PRIMARY_IDENTIFIER]
     assert primary.shape == "round"
-    assert primary.opening_inner_diameter_mm == 220.0
-    assert primary.height_mm == 244.0
     assert primary.mass_g == 228.0
     assert primary.price_jpy == 110
     assert primary.has_lid is False
@@ -170,6 +192,69 @@ def test_candidates_file_records_the_products_named_by_the_roadmap() -> None:
     strong_taper = by_id[STRONG_TAPER_IDENTIFIER]
     assert strong_taper.opening_inner_diameter_mm == 225.0
     assert strong_taper.taper_deg == 10.0
+
+
+def test_primary_candidate_records_the_measured_values_not_the_nominal_ones() -> None:
+    """第一候補の3項目が実測値で記録されている（タスク 5.1 / 要件 1.5）。
+
+    実物（JAN 4965534335027 = 山田化学 No.335）を購入・採寸した結果、roadmap と
+    パッケージの公称値が3点とも実物と食い違うことが判明した
+    （tasks.md「Implementation Notes」2026-09-05 の訂正）:
+
+    | 項目 | 公称 | 実測 |
+    |---|---|---|
+    | 開口内径 | 220.0（⚠️ **公称 φ220 は外径**であった） | **210.0** |
+    | 高さ | 244.0（パッケージ表記は H224。公称が3通りある） | **235.0** |
+    | テーパー | 7.0（底 φ158 から起こした値） | **4.865**（底の外径は実測 φ180） |
+
+    ⚠️ **実測が正である**（要件 1.5）。公称へ戻す変更はこのテストが捕捉する。
+    """
+    by_id = {candidate.identifier: candidate for candidate in load_candidates()}
+    primary = by_id[PRIMARY_IDENTIFIER]
+    roadmap = ROADMAP_PATH.read_text(encoding="utf-8")
+
+    assert primary.opening_inner_diameter_mm == 210.0
+    assert primary.height_mm == 235.0
+    assert primary.taper_deg == 4.865
+
+    # ⚠️ roadmap は公称のままである（本 Spec の境界外・READ-ONLY）。実測が公称と
+    # **異なる**ことを明示的に固定し、「roadmap を写しただけ」へ戻す変更を落とす。
+    assert "φ220 × H244mm" in roadmap
+    assert primary.opening_inner_diameter_mm != 220.0
+    assert primary.height_mm != 244.0
+
+
+def test_primary_taper_follows_from_the_measured_outer_diameters() -> None:
+    """記録したテーパー角が、実測3値から起こした片側角と一致する。
+
+    `atan(((上端外径 − 底の外径) / 2) / 高さ)` = `atan((220 − 180) / 2 / 235)`。
+    ⚠️ **テーパーは `Candidate` の他の項目からは再導出できない**（型が上端外径も
+    底の外径も持たない）。数値の出所をここで固定しないと 4.865 が根拠を失う。
+    ⚠️ 高さ 235 は縁を含む全高であり、テーパーのついた側壁はそれより短い可能性が
+    ある。その場合の実テーパーは 4.865° より僅かに急だが、上限 8.5° に対する
+    余裕が大きく判定は変わらない（tasks.md 2026-09-05 の確定表）。
+    """
+    by_id = {candidate.identifier: candidate for candidate in load_candidates()}
+
+    expected_deg = math.degrees(math.atan(((220.0 - 180.0) / 2.0) / 235.0))
+
+    assert by_id[PRIMARY_IDENTIFIER].taper_deg == pytest.approx(expected_deg, abs=1e-3)
+
+
+def test_primary_candidate_provenance_stays_assumed_while_the_mass_is_unmeasured() -> None:
+    """寸法が実測になっても候補全体の出所は `ASSUMED` に留まる。
+
+    `Candidate.provenance` は**候補1件につき1つ**であり（design.md「Selection」
+    Service Interface）、`Provenance.weakest` の半順序に従って最弱を採る。
+    開口内径・高さ・テーパーは実測になったが、**重量 228g は出典が曖昧なまま**で
+    ある（roadmap は「実測」と書くが測定の記録が無い。tasks.md 2026-09-05 の確定表）。
+    ⚠️ **1項目でも仮値が残る以上、候補全体として実測を名乗ってはならない**
+    （tasks.md「Implementation Notes」タスク 2.2(f)）。
+    """
+    by_id = {candidate.identifier: candidate for candidate in load_candidates()}
+
+    assert by_id[PRIMARY_IDENTIFIER].provenance is Provenance.ASSUMED
+    assert Provenance.weakest(Provenance.MEASURED, Provenance.ASSUMED) is Provenance.ASSUMED
 
 
 def test_primary_identifier_matches_the_dimensions_file_model_id() -> None:
@@ -379,19 +464,22 @@ def test_postconditions_hold_for_every_recorded_candidate() -> None:
 
 
 def test_default_paths_point_at_the_repository_config_files() -> None:
-    """既定パスが `configs/catch_mechanism/` の2ファイルを指す。"""
+    """既定パスが `configs/catch_mechanism/` の3ファイルを指す。"""
     configs = REPO_ROOT / "configs" / "catch_mechanism"
 
     assert DEFAULT_CRITERIA_PATH == configs / "selection-criteria.json"
     assert DEFAULT_CANDIDATES_PATH == configs / "candidates.json"
+    assert DEFAULT_SELECTION_RESULT_PATH == configs / "selection-result.json"
     assert DEFAULT_CRITERIA_PATH.is_file()
     assert DEFAULT_CANDIDATES_PATH.is_file()
+    assert DEFAULT_SELECTION_RESULT_PATH.is_file()
 
 
 def test_both_files_share_the_schema_version_owned_by_config() -> None:
     """記録形式の版は `config.SCHEMA_VERSION` の1箇所が正である。"""
     assert _criteria_document()["schema_version"] == SCHEMA_VERSION
     assert _candidates_document()["schema_version"] == SCHEMA_VERSION
+    assert _selection_result_document()["schema_version"] == SCHEMA_VERSION
     assert selection_module.SCHEMA_VERSION is SCHEMA_VERSION
 
 
@@ -628,3 +716,275 @@ def test_selection_errors_are_catchable_as_the_package_base_and_value_error() ->
         _compliant(height_mm=0.0)
     with pytest.raises(ValueError):
         _compliant(identifier="")
+
+
+# ---------------------------------------------------------------------------
+# 6. 選定結果の記録（タスク 5.1 / 要件 6.8）
+# ---------------------------------------------------------------------------
+
+
+def test_criteria_items_are_exactly_the_mandatory_items_of_the_evaluation() -> None:
+    """`CRITERIA_ITEMS` が `evaluate_candidate` の**必須**項目と評価順まで一致する。
+
+    ⚠️ この束縛が無いと、選定結果が「根拠になった基準項目」として実在しない項目名や
+    警告どまりの項目名を主張できてしまう（要件 6.8 が記録経由で破れる）。
+    """
+    hopeless = _compliant(
+        identifier="fixture-fails-every-item",
+        shape="square",
+        opening_inner_diameter_mm=150.0,
+        height_mm=150.0,
+        mass_g=500.0,
+        taper_deg=20.0,
+        price_jpy=550,
+        has_lid=True,
+    )
+
+    assert evaluate_candidate(hopeless, load_criteria()).failed_items == CRITERIA_ITEMS
+    # ⚠️ 望ましいが必須でない項目は根拠になりえない（design.md「Selection」Invariants）。
+    assert "has_outward_rim" not in CRITERIA_ITEMS
+
+
+def test_selection_result_identifies_the_selected_model() -> None:
+    """選定結果が機種を識別できる情報（品名・製造者・型番・JAN）を持つ（要件 6.8）。"""
+    result = load_selection_result()
+    roadmap = ROADMAP_PATH.read_text(encoding="utf-8")
+
+    assert result.jan == "4965534335027"
+    assert result.product_name == "ダストボックス丸"
+    assert result.model_number == "No.335"
+    assert "山田化学" in result.manufacturer
+    assert result.purchased_from == "キャンドゥ"
+    assert result.purchase_price_jpy == 110
+
+    # roadmap が第一候補として名指しした品と同一である（tasks.md 2026-09-05 の訂正）。
+    assert result.jan in roadmap
+    assert result.product_name in roadmap
+    assert result.model_number in roadmap
+
+
+def test_selection_result_matches_the_dimensions_file_model_id() -> None:
+    """選定結果が寸法設定ファイルの機種識別情報と一致する（タスク 5.1 の完了状態）。
+
+    ⚠️ **突き合わせるのは `model_id` だけである。** 採寸値の反映はタスク 5.2
+    （`_Boundary: Config_`）の所有であり、`dimensions.json` の寸法をここで
+    主張すると 5.2 が自力で緑に戻せなくなる（tasks.md 2.3(b) と同じ轍）。
+    """
+    dimensions = json.loads(
+        (REPO_ROOT / "configs" / "catch_mechanism" / "dimensions.json").read_text(encoding="utf-8")
+    )
+
+    assert load_selection_result().selected_identifier == dimensions["trash_can"]["model_id"]
+
+
+def test_selection_result_names_a_candidate_that_the_evaluation_accepts() -> None:
+    """選定した機種が候補表に実在し、選定基準に適合する（要件 6.1, 6.2）。
+
+    ⚠️ 記録が「評価していない品」や「不適合の品」を選定結果として主張できると、
+    要件 6.8 が記録経由で破れる。
+    """
+    criteria = load_criteria()
+    by_id = {candidate.identifier: candidate for candidate in load_candidates()}
+    result = load_selection_result()
+
+    assert result.selected_identifier in by_id
+    verdict = evaluate_candidate(by_id[result.selected_identifier], criteria)
+    assert verdict.accepted is True
+    assert verdict.failed_items == ()
+
+
+def test_selection_result_records_the_criteria_items_that_justified_the_choice() -> None:
+    """根拠として記録された基準項目が、実際に適合した必須項目と一致する（要件 6.8）。"""
+    criteria = load_criteria()
+    by_id = {candidate.identifier: candidate for candidate in load_candidates()}
+    result = load_selection_result()
+
+    verdict = evaluate_candidate(by_id[result.selected_identifier], criteria)
+    satisfied = tuple(item for item in CRITERIA_ITEMS if item not in verdict.failed_items)
+
+    assert result.decisive_criteria_items == satisfied
+    assert result.decisive_criteria_items == CRITERIA_ITEMS
+
+
+def test_selection_result_records_reprocurability_through_another_route() -> None:
+    """再調達性（同一品が別ルートで入手できること）が記録に含まれる（タスク 5.1）。
+
+    ⚠️ 100均は在庫が入れ替わると同じ品が二度と買えない。**購入店と異なる調達先**が
+    1つ以上記録されていなければ「再調達できる」と言えない。
+    """
+    result = load_selection_result()
+    roadmap = ROADMAP_PATH.read_text(encoding="utf-8")
+
+    assert result.resupply_sources
+    assert result.purchased_from not in result.resupply_sources
+    assert "アスクル" in result.resupply_sources
+    assert "アスクル" in roadmap
+    assert result.jan in result.resupply_note
+
+
+def test_selection_result_records_how_the_identity_was_confirmed() -> None:
+    """同一品であることの根拠（底面の刻印）が記録に残る。
+
+    ⚠️ 公称 φ220 が**外径**であったように、パッケージ表記だけでは同定も採寸も
+    誤る。刻印は容器そのものが持つ唯一の一次情報である。
+    """
+    result = load_selection_result()
+
+    assert result.model_number in result.identity_evidence
+    assert "山田化学" in result.identity_evidence
+
+
+def test_selection_result_field_names_are_stable() -> None:
+    """記録の形（フィールド名と順序）を固定する。"""
+    assert tuple(field.name for field in fields(SelectionResult)) == (
+        "selected_identifier",
+        "product_name",
+        "manufacturer",
+        "model_number",
+        "jan",
+        "purchased_from",
+        "purchase_price_jpy",
+        "identity_evidence",
+        "decisive_criteria_items",
+        "resupply_sources",
+        "resupply_note",
+    )
+
+
+def _selection_result_kwargs(**overrides: object) -> dict[str, object]:
+    """出荷の記録と同じ形の素の辞書を作り、指定項目だけ差し替える。"""
+    base: dict[str, object] = {
+        "selected_identifier": PRIMARY_IDENTIFIER,
+        "product_name": "ダストボックス丸",
+        "manufacturer": "山田化学株式会社",
+        "model_number": "No.335",
+        "jan": "4965534335027",
+        "purchased_from": "キャンドゥ",
+        "purchase_price_jpy": 110,
+        "identity_evidence": "底面の刻印（山田化学株式会社 / No.335）",
+        "decisive_criteria_items": CRITERIA_ITEMS,
+        "resupply_sources": ("アスクル",),
+        "resupply_note": "同一品（JAN 4965534335027）が単品で入手できる。",
+    }
+    base.update(overrides)
+    return base
+
+
+def test_selection_result_is_frozen() -> None:
+    result = load_selection_result()
+
+    with pytest.raises(FrozenInstanceError):
+        result.selected_identifier = "changed"  # type: ignore[misc]
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("selected_identifier", ""),
+        ("product_name", ""),
+        ("jan", "496553433502"),
+        ("jan", "4965534335028"),
+        ("jan", "49655343350x7"),
+        ("purchase_price_jpy", -1),
+        ("decisive_criteria_items", ()),
+        ("decisive_criteria_items", ("shape", "shape")),
+        ("decisive_criteria_items", ("no_such_item",)),
+        ("decisive_criteria_items", ("height_mm", "shape")),
+        ("decisive_criteria_items", ("has_outward_rim",)),
+        ("resupply_sources", ()),
+        ("resupply_sources", ("アスクル", "アスクル")),
+        ("resupply_sources", ("",)),
+    ],
+)
+def test_selection_result_construction_rejects_impossible_records(
+    name: str, value: object
+) -> None:
+    """構築時検証が項目名を添えて拒否する（`params.py` / `Candidate` と同じ規律）。
+
+    ⚠️ JAN はチェックディジットまで検証する。再調達の唯一の鍵であり、
+    転記を1桁誤れば「別ルートで入手できる」という記録が黙って嘘になる。
+    ⚠️ 根拠の基準項目は `CRITERIA_ITEMS` の**部分列**でなければならない
+    （実在しない項目名・警告どまりの項目名・重複・評価順の入れ替えを拒む）。
+    """
+    with pytest.raises(SelectionError) as excinfo:
+        SelectionResult(**_selection_result_kwargs(**{name: value}))  # type: ignore[arg-type]
+
+    assert name in str(excinfo.value)
+
+
+def test_selection_result_accepts_the_shipped_shape() -> None:
+    """出荷の記録と同じ形が構築時検証を通る（上の否定例が過剰でないことの対）。"""
+    assert SelectionResult(**_selection_result_kwargs())  # type: ignore[arg-type]
+
+
+def test_selection_result_unknown_key_is_rejected_with_the_item_name(tmp_path: Path) -> None:
+    document = _selection_result_document()
+    document["colour"] = "black"
+    path = _write(tmp_path, "selection-result.json", document)
+
+    with pytest.raises(SelectionError) as excinfo:
+        load_selection_result(path)
+
+    assert "colour" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("name", ["schema_version", "jan", "resupply_sources"])
+def test_selection_result_missing_key_is_rejected_with_the_item_name(
+    tmp_path: Path, name: str
+) -> None:
+    document = _selection_result_document()
+    del document[name]
+    path = _write(tmp_path, "selection-result.json", document)
+
+    with pytest.raises(SelectionError) as excinfo:
+        load_selection_result(path)
+
+    assert name in str(excinfo.value)
+
+
+def test_selection_result_wrong_schema_version_is_rejected(tmp_path: Path) -> None:
+    document = _selection_result_document()
+    document["schema_version"] = "0.9"
+    path = _write(tmp_path, "selection-result.json", document)
+
+    with pytest.raises(SelectionError):
+        load_selection_result(path)
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("jan", 4965534335027),
+        ("purchase_price_jpy", "110"),
+        ("purchase_price_jpy", True),
+        ("decisive_criteria_items", "shape"),
+        ("resupply_sources", [123]),
+    ],
+)
+def test_selection_result_wrong_value_types_are_rejected(
+    tmp_path: Path, name: str, value: object
+) -> None:
+    """型違いを項目名つきで拒否する。⚠️ 真偽値を数値として通さない。"""
+    document = _selection_result_document()
+    document[name] = value
+    path = _write(tmp_path, "selection-result.json", document)
+
+    with pytest.raises(SelectionError) as excinfo:
+        load_selection_result(path)
+
+    assert name in str(excinfo.value)
+
+
+def test_missing_selection_result_file_is_rejected(tmp_path: Path) -> None:
+    with pytest.raises(SelectionError):
+        load_selection_result(tmp_path / "absent.json")
+
+
+def test_selection_result_round_trips_through_the_loader() -> None:
+    """出荷の記録が、素の JSON の値と同じ内容で読み戻る。"""
+    document = _selection_result_document()
+    result = load_selection_result()
+
+    assert result.selected_identifier == document["selected_identifier"]
+    assert result.decisive_criteria_items == tuple(document["decisive_criteria_items"])
+    assert result.resupply_sources == tuple(document["resupply_sources"])

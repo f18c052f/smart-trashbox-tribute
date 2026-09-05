@@ -239,7 +239,7 @@
 
 - [ ] 5. 受け口の確定: 選定・採寸・還元
 
-- [ ] 5.1 候補を評価して機種を選定し、選定結果を記録する（OQ-08 の決着）
+- [x] 5.1 候補を評価して機種を選定し、選定結果を記録する（OQ-08 の決着）
   - 候補評価を実行し、適合した候補と不適合の理由を得る
   - 選定した機種を識別できる情報（品名・型番・JAN 等）と、選定の根拠となった基準項目を記録する
   - 再調達性（同一品が別ルートで入手できること）を選定記録に含める
@@ -874,6 +874,43 @@
   項目が最低1つ残ることに依存する。5.2 で複数項目が `measured` へ昇格しても、
   `bottom_flat_diameter_mm` / `mass_g` / `bottom_thickness_mm` / `target_object.*` が `assumed` に
   残るため条件は満たされる。
+- **タスク5.1 / 後続への申し送り**: (a) **`configs/catch_mechanism/selection-result.json` を出荷した**
+  （JAN 4965534335027 / 山田化学株式会社 / No.335 / ダストボックス丸 / キャンドゥ 110円 / 根拠7項目 /
+  再調達先アスクル）。`selection.py` に `SelectionResult` / `load_selection_result` / `CRITERIA_ITEMS` /
+  `DEFAULT_SELECTION_RESULT_PATH` を追加した。⚠️ **記録には寸法値を一切書いていない。** 跨ぎの表明は
+  `selected_identifier == dimensions.json の trash_can.model_id` の**1点のみ**であり、`model_id` は
+  5.2 でも変わらない。レビューで 5.2 の採寸反映を模擬したところ選定テストは 0 件しか反応しないことを実証済み。
+  ⚠️ JAN は**チェックディジットまで検証**する（再調達の唯一の鍵であり、1桁の転記誤りは記録を黙って嘘にする）。
+  (b) ⚠️ **候補行 `yamada-kagaku-no335` を実測値へ更新した**: 開口内径 220.0 → **210.0**、
+  高さ 244.0 → **235.0**、テーパー 7.0 → **4.865**。⚠️ **`provenance` は `assumed` のまま**である
+  （`mass_g = 228.0` の出典が曖昧で、`Candidate.provenance` は候補1件に1つ・`Provenance.weakest` に従うため）。
+  **重量を実測できたら候補行と `dimensions.json` の両方を昇格させること。**
+  ⚠️ テーパーの丸めは 4.864514437760525 → **4.865**（**不合格側**への切り上げ）。Note 2.2 の
+  「楽観側＝合格側へ丸めない」規則に従っている。4.864 は合格側なので採らない。
+  (c) ⚠️⚠️ **`taper_max_deg = 8.5` の根拠が一部崩れたが据え置きと裁定した。** roadmap の「可」の例 7.24° は
+  φ220→底φ158・H244 から起こした値で、第一候補の実寸として挙げられていた。**実測で底の外径は φ180、
+  高さは 235mm と判明したため、この幾何が実在品だったという帰属は成り立たない。** それでも上限は動かさない:
+  (1) roadmap が定めるのは**角度についての判断**（「7°相当は可 / 10.0° は強すぎる」）であり、
+  どの品から起こした数字であれこの2点を分ける制約は変わらない。roadmap 自身の表記「約7°」を使っても
+  8.5 − 7.0 = 1.5° ≥ 1.0° で結論は不変。(2) 実測 4.865° は余裕がある側で緩める理由が無い。
+  (3) 1個体の実測で上限を締めれば roadmap が「可」と言った領域を根拠不足で否定することになる。
+  ⚠️ **テストはリテラル 8.5 ではなく「両例を1°以上の余裕で分離する」制約を固定している**ので、
+  値の見直しはその範囲で行える。⚠️ **roadmap は本 Spec の境界外であり書き換えていない。**
+  (d) ⚠️ **`cli select` に選定結果の行を足せない。** `test_catch_cli.py:340` が
+  「各候補の識別子は出力中ちょうど1行にしか現れない」を主張しており、行を足すと落ちる。
+  加えて `cli.py` は 5.1 の境界外である。記録を CLI から見せたい場合は 1候補1行の規律の扱いを含めて別途決めること。
+  (e) ⚠️ **`has_outward_rim` は `null`（不明）のまま**である。実物が手元にあるので、
+  **5.2 のついでに外向きリムの有無を確認できると記録が閉じる**（警告に出るのみで適否は左右しない）。
+  (f) ⚠️ **design.md の不整合3件（タスク 6.1 / `/kiro-validate-impl` が拾うこと）**:
+  ①要件 6.8 の帰属が内部矛盾（design.md:333 は Params/Config/`TrashCanMeasurements`、
+  design.md:358,511 は Selection）。`TrashCanMeasurements` では「どの項目を根拠に選んだか」を
+  表現できないため 333 行が不備側であり、tasks.md 5.1 の `_Boundary: Selection_` が正。
+  ②`### Directory Structure` の設定ファイル一覧に `selection-result.json` が無い（6ファイルになった）。
+  ③`#### PublicApi` の `__all__` に `SelectionResult` / `load_selection_result` / `CRITERIA_ITEMS` が無い。
+  ⚠️ **タスク 6.1 はこの3名を拾うこと。**
+  (g) ⚠️ **CAD 遮断スタブは素の `raise ImportError(...)` を書いた `build123d.py` を使うこと。**
+  `sitecustomize.py` + `ModuleNotFoundError` 方式だと `test_catch_baseline_digest.py` の2件が落ちる
+  （子プロセスの stderr にリテラル `"ImportError"` が現れることを主張しているため）。
 - **環境（全タスク共通）**: Python 環境は **WSL2 側にのみ存在する**。Windows 側に `python` / `uv` は無い。
   検証は必ず `wsl -e bash -lc 'cd /mnt/c/Users/user/repos/stb-hardware && uv run pytest -q'` の形で実行する。
   ⚠️ Windows から `uv sync` して `.venv/` を上書きしないこと（Linux venv が壊れる）。
