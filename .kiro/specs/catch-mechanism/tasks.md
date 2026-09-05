@@ -237,7 +237,7 @@
 
 ## 5. 受け口の確定: 選定・採寸・還元
 
-- [ ] 5. 受け口の確定: 選定・採寸・還元
+- [x] 5. 受け口の確定: 選定・採寸・還元
 
 - [x] 5.1 候補を評価して機種を選定し、選定結果を記録する（OQ-08 の決着）
   - 候補評価を実行し、適合した候補と不適合の理由を得る
@@ -271,7 +271,7 @@
   - _Depends: 5.2_
   - _Boundary: Tolerance_
 
-- [ ] 5.4 シミュレータ設定へ還元し、整合検査を追加する
+- [x] 5.4 シミュレータ設定へ還元し、整合検査を追加する
   - 実行可能なシミュレータ設定の該当項目へ、導出した位置許容誤差と出所を反映する。
     ⚠️ **値の更新のみ。スキーマ・キー構造・実装コードには触れない**
   - 設定に記録された値と導出記録の値・出所が一致することを検査するテストを追加し、
@@ -977,6 +977,48 @@
   (f) **副次的観察（タスク 4.1 の所有・本タスクの責務外）**: `tolerance --check` は照合に加えて
   既定パスへ記録を**書き出す副作用**を持つ。記録がバイト再現的なため現状は無害だが、
   検査コマンドが書き込みを行う点は `/kiro-validate-impl` での確認候補。
+- **タスク5.4 / 完了。⚠️ 後続・保守への申し送り**: (a) **`configs/trajectory_sim/sweep-layout.json` と
+  `sweep-reachability.json` へ `parameters.catch.position_tolerance_mm = 72.5` と
+  `parameters.provenance["catch.position_tolerance_mm"] = "assumed"` を書いた。**
+  ⚠️ **`measured` ではない**（空き缶 φ65 が未実測で `Provenance.weakest` が仮値を継承するため）。
+  `drivetrain-wheel48/60.json` は `parameters` オブジェクトを持たない機体パラメータであり対象外
+  （`catch` ブロックを足すのはスキーマ変更で、タスクが明示的に禁じている）。
+  ⚠️ **`src/` は0バイト変更**（要件 7.8 の観測可能な完了状態）。`cli tolerance --check` は
+  両設定で exit 1 → **exit 0** へ反転した（`cli.py` の変更なし）。
+  (b) ⚠️⚠️ **`sweep-reachability` は位置許容誤差をそもそも参照していない。** セルの指標が
+  `hold_time_ms` と `required_distance_mm` のみで `position_error_mm` を持たないため、許容誤差を
+  0.0001 と 1000.0 に振っても結果が **30 catchable / 42 not_catchable** のまま動かない
+  （レビュアーが実測）。⚠️ **還元が観測可能な形で効くのは `sweep-layout` だけ**であり、
+  reachability 側の「格子点の状態変化ゼロ」は**空虚に真**である。上流シミュレータの性質であって
+  本 Spec の欠陥ではない（値は `trajectory_sim.PARAMETER_PATHS` の実在パスへ正しく書かれ、
+  4通りの実行がすべて exit 0）が、`/kiro-validate-impl` へ記録すべき事実。
+  (c) **許容誤差 67.5 → 72.5 で状態が変わった格子点は 4 組すべてで 0 件**（レビュアーがシミュレータを
+  8回実行してセル単位で突き合わせ）。`sweep-layout` は許容誤差に**確かに反応する**（0.0001 で 24/0、
+  1000.0 で 11/13）が、新たに許容される帯 (67.5, 72.5] に落ちる格子点が1つも無かった
+  （`position_error_mm` の実測域は 0.000792〜945.425）。
+  ⚠️ 内訳の正確な数: sweep-layout×wheel60/48 = **23 not_catchable / 1 catchable**、
+  sweep-reachability×wheel60 = **42 not_catchable / 30 catchable**、×wheel48 = **43 / 29**。
+  (d) ⚠️ **`tests/trajectory_sim/test_layout_study.py::test_catchable_and_not_catchable_boundary_exists`
+  は 24 格子点中わずか 1 件の `catchable` に懸かっている。** 本変更の前後で 23/1 のまま不変であることを
+  67.5 / 72.5 の両側で確認済みだが、⚠️ **今後 `position_tolerance_mm` が動くと最初に壊れる場所**である。
+  `tests/trajectory_sim/` は本 Spec の境界外。
+  (e) ⚠️ **`cli._check_simulator_config` に穴がある（タスク 4.1 の所有・5.4 の境界外）。**
+  `provenance` 表ごと無い設定、および出所行だけ無い設定に対し `tolerance --check` は**いずれも exit 0**
+  で終わる（`if recorded_provenance is None: return` の早期 return）。兄弟関数 `_recorded_tolerance` の
+  docstring 自身の裁定「記録が無いことを一致として読み飛ばさない」と矛盾する。⚠️ 出荷設定は
+  `test_catch_trajectory_sim_sync.py::test_deleting_the_provenance_row_is_not_read_as_agreement` が
+  守っているが、**利用者が任意の設定へ CLI を掛ける経路は塞がっていない。**
+  タスク 4.x の保守または `/kiro-validate-impl` で拾う候補。併せて CLI の出所不一致メッセージは
+  導出側の参照元を挙げない（値不一致は双方を挙げる）。要件 7.7 はライブラリ側検査で満たされている。
+  (f) 新テストに**リテラル 72.5 を置いていない**。突き合わせの相手は常に
+  `load_derivation(DEFAULT_DERIVATION_PATH)` であり、缶を実測して値・出所が動いても、記録と設定が
+  揃って更新されている限り緑である。値そのもののピン留めは `test_catch_tolerance.py`
+  （`_Boundary: Tolerance_`）が持ち、記録が `dimensions.json` へ追随していることは 5.3 の
+  トリップワイヤが持つ。⚠️ **3者のどこがずれたかが落ち方から読める**よう役割を分けてある。
+  (g) 対象設定は**ファイル名ではなく構造**（`parameters` オブジェクトの有無）で走査する。
+  将来 `parameters` を持つ設定が増えれば自動的に検査対象になる（レビュアーが仮の第3設定を足して実証）。
+  ⚠️ ただし該当キーを欠く設定に対して変異ヘルパが素の `KeyError` を投げるため、
+  設定追加時のトレースバックが読みにくい（主検査は正しいメッセージで落ちるので信号は失われない）。
 - **環境（全タスク共通）**: Python 環境は **WSL2 側にのみ存在する**。Windows 側に `python` / `uv` は無い。
   検証は必ず `wsl -e bash -lc 'cd /mnt/c/Users/user/repos/stb-hardware && uv run pytest -q'` の形で実行する。
   ⚠️ Windows から `uv sync` して `.venv/` を上書きしないこと（Linux venv が壊れる）。

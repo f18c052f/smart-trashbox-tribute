@@ -16,7 +16,8 @@
       "prediction_latency_ms": 5.0
     },
     "catch": {
-      "policy": "stop_and_wait"
+      "policy": "stop_and_wait",
+      "position_tolerance_mm": 72.5
     },
     "layout": {
       "home_x_mm": 0.0,
@@ -36,6 +37,7 @@
       "observation.sample_latency_ms": "assumed",
       "observation.prediction_latency_ms": "assumed",
       "catch.policy": "assumed",
+      "catch.position_tolerance_mm": "assumed",
       "layout.home_x_mm": "assumed",
       "layout.home_y_mm": "assumed"
     }
