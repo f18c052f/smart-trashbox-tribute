@@ -774,6 +774,38 @@
   (h) design.md の正誤訂正候補: `### Directory Structure` は `test_rim_invariants.py`、
   「受け口の不変条件テスト」節は「`cad` extra 必要」と記すが、実名は `test_catch_rim_invariants.py`
   （Note 1.1 の衝突回避）であり、48件中 42件は CAD 非導入環境でも走る（要件 5.7 に対して強い方向）。
+- **⚠️ 実測値の確定（2026-09-05 / ユーザ回答）。先の記録の未確定事項1・2・3が解消した。**
+
+  | 項目 | 値 | 状態 |
+  |---|---|---|
+  | `opening_inner_diameter_mm` | **210.0** | ⚠️ **内径であることを確認済み** |
+  | `top_outer_diameter_mm` | **220.0** | ⚠️ 「220mm ほど」= 概数。下記参照 |
+  | `bottom_outer_diameter_mm` | **180.0** | ⚠️ **底の外径であることを確認済み** |
+  | `height_mm` | **235.0** | |
+
+  ここから導かれる値（親が実コードで検証済み）:
+  - 縁の巻き込みは**片側 5.0mm**（内径 210 に対し外径 220）
+  - **`taper_deg` = atan((220−180)/2 / 235) = 4.865°**（上端外径→底の外径、片側）。上限 8.5° に対し
+    余裕がある。⚠️ **固定アダプタ（`chassis-mechanism`）の円錐台座が浅くて済む**
+  - **`position_tolerance_mm` = 210/2 − 65/2 = 72.5mm**（暫定値 67.5 より +7.4%）
+  - **リムの取り付け部内径 = 222.0mm**（220 + 隙間 1.0mm × 2）
+  - **リム外径 = 282.0mm**（出荷仮値 287.0 から 5mm 縮小）
+  - **分割数 = 5**（変わらず）
+
+  ⚠️ **タスク 5.2 の前になお確定が要る項目**:
+  1. **`bottom_flat_diameter_mm`（接地する平面部の径）** — 底の外径 180.0 とは別項目。型が
+     `bottom_flat <= bottom_outer <= opening_inner` を構築時に検査する。底が丸まっていれば平面部は
+     180 より小さい。⚠️ **`liner_flat_min_diameter_mm`（緩衝材を貼れる平面の下限、出荷仮値 140.0）と
+     突き合わせる対象**でもある（要件 9.4）
+  2. **`mass_g`（実測重量）** — 基準は 300g 以下
+  3. **`bottom_thickness_mm`（底の肉厚）**
+  4. **品名・型番・JAN・購入店・価格** — `model_id` と要件 6.8「再調達性」の記録に要る。
+     ⚠️ **この品は `candidates.json` に行が無い**ため、タスク 5.1 は候補表への追加を伴う
+     （`_Boundary: Selection_` 内）
+  5. ⚠️ **`top_outer_diameter_mm` の「ほど」を潰すこと。** 取り付け部内径は「上端外径 + 隙間 × 2」で
+     導出され、隙間の出荷仮値は片側 1.0mm しかない。実測が 221mm なら隙間は実質 0.5mm、222mm なら
+     ゼロになる。**リムが物理的に嵌まるかがこの1値に懸かっている。**
+     0.1mm 単位で測るか、測れないなら `fit_clearance_mm` を上げること（`dimensions.json` の値変更のみ）。
 - **環境（全タスク共通）**: Python 環境は **WSL2 側にのみ存在する**。Windows 側に `python` / `uv` は無い。
   検証は必ず `wsl -e bash -lc 'cd /mnt/c/Users/user/repos/stb-hardware && uv run pytest -q'` の形で実行する。
   ⚠️ Windows から `uv sync` して `.venv/` を上書きしないこと（Linux venv が壊れる）。
