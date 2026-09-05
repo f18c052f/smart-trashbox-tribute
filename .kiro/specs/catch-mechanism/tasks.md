@@ -249,7 +249,7 @@
   - _Depends: 2.2_
   - _Boundary: Selection_
 
-- [ ] 5.2 実物を採寸し、寸法設定ファイルへ反映する
+- [x] 5.2 実物を採寸し、寸法設定ファイルへ反映する
   - ⚠️ **本計画で唯一、実物の購入を要するタスクである**（他タスクは仮値のまま完了できる）
   - 採寸項目（開口内径・上端外径・底の外径・底の平面部径・高さ・実測重量・底の肉厚・テーパー角）を測る。
     ⚠️ **開口内径は外径ではなく内径を測る**（縁の巻き込み分を引く）
@@ -911,6 +911,41 @@
   (g) ⚠️ **CAD 遮断スタブは素の `raise ImportError(...)` を書いた `build123d.py` を使うこと。**
   `sitecustomize.py` + `ModuleNotFoundError` 方式だと `test_catch_baseline_digest.py` の2件が落ちる
   （子プロセスの stderr にリテラル `"ImportError"` が現れることを主張しているため）。
+- **タスク5.2 / 完了。⚠️ タスク5.3 への申し送り（必読）**: (a) **`dimensions.json` に採寸値を反映した。**
+  開口内径 **210.0** / 上端外径 **220.0** / 底の外径 **180.0** / 高さ **235.0** / テーパー **4.865** の
+  **5パスが `measured`**。⚠️ `bottom_flat_diameter_mm`(170.0) / `mass_g`(228.0) /
+  `bottom_thickness_mm`(1.5) / `target_object.diameter_mm`(65.0) は **`assumed` のまま**である。
+  併せて `rim.fit_clearance_mm` を 1.0 → **2.0** へ上げた。
+  新しい識別子は **`sha256:c09aae4ce16add2c467c4d3fbb0b254bc4cfc0973a3dddf57faefa926b5e89b1`**
+  （旧 `sha256:b97c7410…89775`）。導出値: 取り付け部内径 **224.0** / 通過径 **210.0** /
+  リム外径 **284.0** / 分割数 **5** / **`position_tolerance_mm` = 72.5**。
+  ⚠️ **`src/**` は1バイトも変更していない**（要件 1.6 の観測可能な完了状態）。
+  (b) ⚠️⚠️ **タスク 5.3 では `tests/catch_mechanism/test_catch_tolerance.py:673-682` の
+  `assert all(item.provenance is Provenance.ASSUMED for item in derivation.inputs)` が必ず落ちる。**
+  出荷記録を再生成すると `trash_can.opening_inner_diameter_mm` が MEASURED になるためである。
+  ⚠️ **これは退行ではなく、5.3 が閉じるべき当然の帰結**。`_Boundary: Tolerance_` 内で完結する。
+  (c) ⚠️ **`position_tolerance_mm` の出所は `measured` にならず `assumed` に留まる。**
+  `target_object.diameter_mm`（空き缶 φ65）が未実測であり、`Provenance.weakest` により入力の最弱を
+  継承するためである。**5.3 はこちらの枝を採ること**（要件 7.4 の「両方が実測なら実測」は成立しない）。
+  ⚠️ 缶を実測できれば `dimensions.json` の当該行を measured へ昇格させるだけで許容誤差も実測になる。
+  (d) ⚠️ **`configs/catch_mechanism/catch-opening.json` は 77.5 / 入力 220.0 のまま古い。**
+  単一の正（210.0 / measured / 72.5）と矛盾するが、**これを検出するテストは存在しない**
+  （Note 2.3(b) の意図した絶縁。`test_catch_tolerance.py:659-669` にコメントとして明記）。
+  5.3 が記録の再生成とトリップワイヤ追加の両方を行うこと。
+  (e) **`geometry-baseline.json` を再生成した**（`build --update-baseline`）。⚠️ **これは
+  `_Boundary: Config_` の外にある 4.2 の成果物だが、Note 1.4(a) が 4.2 から明示的に義務を送って
+  おり、境界内の代替が存在しない**（放置すると9件が恒久的に赤になり、5.2 の完了状態
+  「全テストが通り」を満たせない）。レビュアーが独立に再実行してバイト単位一致を確認済み。
+  許容差 `volume_rel_tolerance=1e-06` / `bbox_abs_tolerance_mm=0.001` は無傷。
+  ⚠️ **tasks.md の `_Boundary: Config_` はタスク分解の側の不備**であり、`Config, Metrics` で
+  あるべきだった。`/kiro-validate-impl` での訂正候補。
+  (f) 形状が新しい寸法へ追随したことの証拠: 境界箱 (51.6766, 168.6944, 30.0385) →
+  **(51.3901, 166.9310, 30.0385)**、体積 36524.6 → **36158.7**（座2つの `rim_segment_3` は
+  36708.4 → **36342.5**）。リム外径 287.0 → 284.0mm の縮小と一致する。
+  (g) ⚠️ **要件 6.5 の採寸8項目のうち3項目は実測されていない**（`bottom_flat_diameter_mm` /
+  `mass_g` / `bottom_thickness_mm`）。ユーザ承認済みの要求水準緩和に従ったものであり、
+  `test_every_survey_item_has_an_explicit_provenance_entry` が「省略が書き忘れではなく決定である」
+  ことを機械的に固定している。要件充足の残余として記録する。
 - **環境（全タスク共通）**: Python 環境は **WSL2 側にのみ存在する**。Windows 側に `python` / `uv` は無い。
   検証は必ず `wsl -e bash -lc 'cd /mnt/c/Users/user/repos/stb-hardware && uv run pytest -q'` の形で実行する。
   ⚠️ Windows から `uv sync` して `.venv/` を上書きしないこと（Linux venv が壊れる）。

@@ -17,8 +17,14 @@
   },
   "provenance": {
     "target_object.diameter_mm": "assumed",
-    "trash_can.bottom_outer_diameter_mm": "assumed",
-    "trash_can.opening_inner_diameter_mm": "assumed"
+    "trash_can.bottom_flat_diameter_mm": "assumed",
+    "trash_can.bottom_outer_diameter_mm": "measured",
+    "trash_can.bottom_thickness_mm": "assumed",
+    "trash_can.height_mm": "measured",
+    "trash_can.mass_g": "assumed",
+    "trash_can.opening_inner_diameter_mm": "measured",
+    "trash_can.taper_deg": "measured",
+    "trash_can.top_outer_diameter_mm": "measured"
   },
   "retention": {
     "added_depth_mm": 0.0,
@@ -27,7 +33,7 @@
     "retrofit_fastener_count": 6
   },
   "rim": {
-    "fit_clearance_mm": 1.0,
+    "fit_clearance_mm": 2.0,
     "flange_slope_deg": 15.0,
     "flange_width_mm": 30.0,
     "height_mm": 18.0,
@@ -39,14 +45,14 @@
     "height_mm": 122.0
   },
   "trash_can": {
-    "bottom_flat_diameter_mm": 140.0,
-    "bottom_outer_diameter_mm": 158.0,
+    "bottom_flat_diameter_mm": 170.0,
+    "bottom_outer_diameter_mm": 180.0,
     "bottom_thickness_mm": 1.5,
-    "height_mm": 244.0,
+    "height_mm": 235.0,
     "mass_g": 228.0,
     "model_id": "yamada-kagaku-no335",
-    "opening_inner_diameter_mm": 220.0,
-    "taper_deg": 7.0,
-    "top_outer_diameter_mm": 225.0
+    "opening_inner_diameter_mm": 210.0,
+    "taper_deg": 4.865,
+    "top_outer_diameter_mm": 220.0
   }
 }

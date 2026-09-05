@@ -5,9 +5,10 @@
 Invariants と、tasks.md タスク 1.4 の「観測可能な完了状態」である。
 
 1. **`configs/catch_mechanism/dimensions.json` が寸法パラメータの単一の正**で
-   あり、第一候補の公称値が**すべて仮値**として記録されていること
-   （要件 1.1, 6.7）。⚠️ 出所表に現れないパスは `ASSUMED` として扱う運用である
-   ため、「明示されていない = 実測ではない」が全パスについて成り立つ
+   あり、採寸した項目**だけ**が実測として記録されていること
+   （要件 1.1, 1.6, 6.5, 6.6, 6.7 / タスク 5.2）。⚠️ 出所表に現れないパスは
+   `ASSUMED` として扱う運用であるため、「明示されていない = 実測ではない」が
+   全パスについて成り立つ
 2. **あらゆる階層で未知キーを拒否する**こと（要件 1.3 / design.md「Config」
    Responsibilities）。最上位・コンポーネント・出所表のどこに混ぜても、
    該当する項目名を示して失敗する
@@ -101,33 +102,111 @@ def test_load_without_arguments_reads_the_default_path() -> None:
     assert load_params() == load_params(DEFAULT_DIMENSIONS_PATH)
 
 
-def test_shipped_values_match_the_design_data_model() -> None:
-    """出荷値が design.md「Logical Data Model」の第一候補の公称値である。"""
+def test_shipped_values_match_the_measured_trash_can() -> None:
+    """出荷値が実物の採寸値である（タスク 5.2、要件 1.6, 6.5）。
+
+    ⚠️ **パッケージ表記の φ220 は外径であり、開口内径ではない。** 縁の巻き込みが
+    片側 5.0mm あり、開口内径は 210.0mm である。テーパーは
+    `atan((220−180)/2 / 235)` = 4.864514… を**不合格側へ切り上げた** 4.865 である
+    （楽観側＝合格側へ丸めない。tasks.md「Implementation Notes」タスク 2.2）。
+    """
     params = load_params()
     assert params.trash_can.model_id == "yamada-kagaku-no335"
-    assert params.trash_can.opening_inner_diameter_mm == 220.0
-    assert params.trash_can.taper_deg == 7.0
+    assert params.trash_can.opening_inner_diameter_mm == 210.0
+    assert params.trash_can.top_outer_diameter_mm == 220.0
+    assert params.trash_can.bottom_outer_diameter_mm == 180.0
+    assert params.trash_can.bottom_flat_diameter_mm == 170.0
+    assert params.trash_can.height_mm == 235.0
+    assert params.trash_can.taper_deg == 4.865
+    assert params.trash_can.mass_g == 228.0
     assert params.target_object.diameter_mm == 65.0
     assert params.printing.material == "PETG"
     assert params.joint.bolt_designation == "M3"
     assert params.rim.flange_width_mm == 30.0
+    # ⚠️ 個体差（PP 成形品の真円度・造形機の XY 精度）を吸収する隙間であり、
+    # 測定精度を上げる代わりに広げてある（要件 8.6 / タスク 5.2 の設計判断）。
+    assert params.rim.fit_clearance_mm == 2.0
     assert params.retention.retrofit_fastener_count == 6
     # 設計上の決定は型でも固定されているが、設定ファイル側でも同じ値である。
     assert params.retention.added_depth_mm == 0.0
     assert params.retention.bottom_modification == "none"
 
 
-def test_every_shipped_value_is_assumed() -> None:
-    """⚠️ 出荷値は**すべて仮値**である（要件 6.7 / タスク 1.4）。
+MEASURED_PATHS = frozenset(
+    {
+        "trash_can.opening_inner_diameter_mm",
+        "trash_can.top_outer_diameter_mm",
+        "trash_can.bottom_outer_diameter_mm",
+        "trash_can.height_mm",
+        "trash_can.taper_deg",
+    }
+)
+"""⚠️ 実物を採寸した項目（タスク 5.2）。**この表に無いパスはすべて仮値である。**"""
 
-    実測が1つでも紛れていれば、未実測の公称値が合否条件として使われうる。
+
+def test_shipped_provenance_names_exactly_the_measured_paths() -> None:
+    """実測を名乗るのは採寸した項目**だけ**である（要件 1.2, 6.6, 6.7）。
+
+    ⚠️ 採寸していない値が実測を名乗ると、未実測の値が合否条件として使われる
+    （requirements.md A-6）。実測を名乗らない主な項目とその理由:
+
+    - `bottom_flat_diameter_mm`: 「底面はほぼ全て平ら」という**定性的**な観察を
+      底外径 180 から片側 5mm 保守側へ引いた値であり、定量測定ではない
+    - `mass_g`: roadmap が「実測」と書くが**出典が曖昧**である
+    - `bottom_thickness_mm`: 現設計で未使用のため採寸を省いた
+    - `target_object.*`: M1 の実験条件である空き缶をまだ採寸していない
+
     明示されている出所も、明示されていないパス（= 仮値扱い）も、まとめて
-    全 32 パスについて `ASSUMED` であることを固定する。
+    全 32 パスについて固定する。
     """
     effective = _effective_provenance(load_params())
     assert set(effective) == set(PARAMETER_PATHS)
-    measured = sorted(path for path, prov in effective.items() if prov is not Provenance.ASSUMED)
-    assert measured == []
+    measured = {path for path, prov in effective.items() if prov is Provenance.MEASURED}
+    assert measured == set(MEASURED_PATHS)
+    assert set(MEASURED_PATHS) <= set(PARAMETER_PATHS)
+
+
+SURVEY_PATHS = frozenset(
+    {
+        "trash_can.opening_inner_diameter_mm",
+        "trash_can.top_outer_diameter_mm",
+        "trash_can.bottom_outer_diameter_mm",
+        "trash_can.bottom_flat_diameter_mm",
+        "trash_can.height_mm",
+        "trash_can.mass_g",
+        "trash_can.bottom_thickness_mm",
+        "trash_can.taper_deg",
+    }
+)
+"""要件 6.5 が採寸すべきと定める8項目（開口内径・上端外径・底の外径・底の平面部径・
+高さ・実測重量・底の肉厚・テーパー角）。"""
+
+
+def test_every_survey_item_has_an_explicit_provenance_entry() -> None:
+    """採寸項目8つが**すべて**出所表に明示されている（要件 6.5, 6.6）。
+
+    ⚠️ 表に無いパスも仮値として扱われるため、明示しなくても読み込みは通る。
+    それでも明示するのは、**採寸したのか・採寸を見送ったのか**を記録から
+    区別できるようにするためである。省いた項目（`bottom_thickness_mm`）が
+    「書き忘れ」ではなく決定であることは、ここでしか読めない。
+    """
+    document = _shipped_document()
+    assert set(SURVEY_PATHS) <= set(document["provenance"])
+    assert set(SURVEY_PATHS) <= set(PARAMETER_PATHS)
+    assert set(MEASURED_PATHS) < set(SURVEY_PATHS)
+
+
+def test_shipped_provenance_table_still_lists_an_assumed_entry() -> None:
+    """出荷の出所表に、明示された `assumed` が最低1つ残っている。
+
+    ⚠️ `test_catch_baseline_digest.py` の `_stale_by_provenance` は「値を変えず
+    出所だけ昇格した写し」を作るため、出荷の出所表に `assumed` の項目が残って
+    いることに依存する（tasks.md「Implementation Notes」タスク 4.3(c)）。全項目を
+    実測へ昇格させると、あちらは黙って通るのではなく `AssertionError` で落ちる。
+    ここで先に気づけるようにしておく。
+    """
+    document = _shipped_document()
+    assert "assumed" in document["provenance"].values()
 
 
 def test_shipped_document_has_the_schema_version_outside_the_parameters() -> None:
@@ -393,12 +472,12 @@ def test_wrong_value_type_is_rejected(
 
 
 def test_integer_is_accepted_where_a_float_is_expected(tmp_path: Path) -> None:
-    """`220` と `220.0` は同じ値である（JSON の書式差を値の差にしない）。"""
+    """`210` と `210.0` は同じ値である（JSON の書式差を値の差にしない）。"""
     document = _shipped_document()
-    document["trash_can"]["opening_inner_diameter_mm"] = 220
+    document["trash_can"]["opening_inner_diameter_mm"] = 210
     params = load_params(_write(tmp_path, document))
     assert isinstance(params.trash_can.opening_inner_diameter_mm, float)
-    assert params.trash_can.opening_inner_diameter_mm == 220.0
+    assert params.trash_can.opening_inner_diameter_mm == 210.0
 
 
 @pytest.mark.parametrize("component", ["trash_can", "provenance"])
@@ -569,8 +648,8 @@ def test_digest_is_independent_of_formatting(tmp_path: Path) -> None:
 
     scrambled_document = dict(reversed(list(document.items())))
     scrambled_document["trash_can"] = dict(reversed(list(document["trash_can"].items())))
-    scrambled_document["trash_can"]["opening_inner_diameter_mm"] = 220
-    scrambled_document["trash_can"]["taper_deg"] = 7e0
+    scrambled_document["trash_can"]["opening_inner_diameter_mm"] = 210
+    scrambled_document["trash_can"]["taper_deg"] = 4.865e0
     scrambled = load_params(
         _write(
             tmp_path,
@@ -636,10 +715,14 @@ def test_digest_changes_when_provenance_changes(tmp_path: Path) -> None:
     値が同じでも仮値から実測へ変われば、記録済みの形状指標が「まだ仮値だった
     ときの記録」であることは変わらない。⚠️ 出所を識別子から外すと、この
     昇格が CAD 非導入環境では一切検出できなくなる。
+
+    ⚠️ 昇格させるのは**出荷時点でまだ仮値である**パスでなければならない
+    （既に実測の項目を「昇格」させても表は変わらず、検査が空になる）。
     """
     document = _shipped_document()
     baseline = load_params(_write(tmp_path, document, name="baseline.json"))
-    document["provenance"]["trash_can.opening_inner_diameter_mm"] = "measured"
+    assert document["provenance"].get("target_object.diameter_mm") == "assumed"
+    document["provenance"]["target_object.diameter_mm"] = "measured"
     measured = load_params(_write(tmp_path, document, name="measured.json"))
     assert parameters_digest(measured) != parameters_digest(baseline)
 
