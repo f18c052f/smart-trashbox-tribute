@@ -614,7 +614,10 @@ def update_upstream_measurement(path_key: str, value: float) -> None: ...
   ⚠️ **基準は「機体 +x から反時計回り」**であり、これは `firmware` の `GeometryParams` の定義に合わせる。
   ⚠️ **輪番号と符号の対応をここで定義し直さない**
 - 鉛直スタックを接地点（床）を原点として組み立てる:
-  実効転がり半径 → 車軸中心 → モータ胴体下面 → 取付面（＝ベース板下面）→ ボルト頭下端
+  モータ胴体下面 → 車軸中心（＝実効転がり半径）→ 締結の下端 → 取付面（＝ベース板下面）
+  ⚠️ **これは物理的な高さの順であり、`VerticalStack` の項目の宣言順ではない。**
+  `drivetrain-spec.md §6.3` は車軸中心 30mm に対しモータ胴体下面 11.5mm を与えており、
+  宣言順で単調増加する並びは実機では成立しない
 - 軸方向スタック（ギヤボックス端面 → ホイール内側面 → ホイール中心面）を導出し、
   実測との照合結果を保持する（要件 1.7）
 - 転倒余裕の見積もり `a_limit = g * R / (2 * h_cog)` を**推定として**保持する。
@@ -664,7 +667,11 @@ def load_layout(path: Path | None = None) -> ChassisLayout: ...
 - Preconditions: `params` は検証済み。`wheel_count >= 3`
 - Postconditions: `len(wheel_angles_deg) == wheel_count` かつ隣接角の差が等しい。
   `arm_length_mm > 0`（アームが成立しない `R` は `GeometryError`）
-- Invariants: `vertical` の各高さは単調に増加する。⚠️ 逆転する入力は `GeometryError` で拒否する
+- Invariants: `0 < motor_body_bottom_height_mm < axle_center_height_mm ==
+  effective_rolling_radius_mm < fastener_bottom_height_mm <= mount_face_height_mm`。
+  ⚠️ この順序が崩れる入力は `GeometryError` で拒否し、逆転した対と差の量をメッセージに載せる
+  （`fastener_bottom_height_mm == mount_face_height_mm` は
+  `clearance.fastener_protrusion_mm == 0` のとき成立する正当な状態である）
 
 **Implementation Notes**
 - Integration: 実効転がり半径は、観測があれば `measurements.json` の代表値、

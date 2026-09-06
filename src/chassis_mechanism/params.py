@@ -477,6 +477,18 @@ class BaseSpec:
             `#### Layout` Preconditions）。分割数もこの数から従属する。
         hub_outer_diameter_mm: 中央部の外径（mm）。⚠️ `HubSpec`（シャフト側の
             ハブ）とは別物であり、こちらは駆動ベースの中央部である。
+        hub_center_to_mount_face_mm: 機体中心から取付面（＝ベース板下面のブラケット
+            取付位置）までの**半径方向**の距離（mm）。⚠️ **ホイール配置半径の式の
+            第1項であり、本 Spec が決める唯一の設計変数である**（要件 3.3 /
+            design.md `#### Layout`: `base_radius_mm = hub_center_to_mount_face_mm
+            + bracket.mount_face_to_wheel_center_mm`）。`docs/bom.md §B` は
+            「駆動ベースの半径を決めれば R が定まるため、設計変数が1つに減る」と
+            記録しており、OQ-07 はこの1つの値へ帰着する。
+            ⚠️ **この値を選ぶのはタスク 5.4 である**——造形可能性・接合の成立・
+            座の到達・転倒余裕の記録可能性の4条件を同時に満たす範囲から選び、
+            根拠を記録する。現在の値は仮値であり、⚠️ **式としてコードへ埋めない**
+            （要件 1.1: 実物に由来する値は設定ファイルの1箇所に置く / 要件 1.5:
+            値を書き換えるだけで再導出できる）。
         plate_thickness_mm: ベース板の厚さ（mm）。
         arm_width_mm: 放射状アームの幅（mm）。
         arm_thickness_mm: 放射状アームの厚さ（mm）。
@@ -495,6 +507,7 @@ class BaseSpec:
 
     wheel_count: int
     hub_outer_diameter_mm: float
+    hub_center_to_mount_face_mm: float
     plate_thickness_mm: float
     arm_width_mm: float
     arm_thickness_mm: float
@@ -505,6 +518,9 @@ class BaseSpec:
         """全不変条件を検証し、違反時は違反項目名と値を添えて拒否する。"""
         _require_count(self.wheel_count, "wheel_count", 3)
         _require_positive_finite(self.hub_outer_diameter_mm, "hub_outer_diameter_mm")
+        _require_positive_finite(
+            self.hub_center_to_mount_face_mm, "hub_center_to_mount_face_mm"
+        )
         _require_positive_finite(self.plate_thickness_mm, "plate_thickness_mm")
         _require_positive_finite(self.arm_width_mm, "arm_width_mm")
         _require_positive_finite(self.arm_thickness_mm, "arm_thickness_mm")

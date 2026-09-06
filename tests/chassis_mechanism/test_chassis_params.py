@@ -134,6 +134,7 @@ def make_base(**overrides: object) -> BaseSpec:
     values: dict[str, object] = {
         "wheel_count": 3,
         "hub_outer_diameter_mm": 120.0,
+        "hub_center_to_mount_face_mm": 101.3,
         "plate_thickness_mm": 6.0,
         "arm_width_mm": 30.0,
         "arm_thickness_mm": 8.0,
