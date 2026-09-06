@@ -30,3 +30,10 @@ uv.lock text eol=lf
 # チェックアウト内容がずれ、git status が空の差分を報告し続ける。
 # ⚠️ git は最後にマッチした行を採用する。この行は *.json より後ろに置くこと。
 configs/catch_mechanism/*.json  text eol=lf
+
+# 本 Spec（chassis-mechanism）の設定ファイルも LF に固定する（要件 1.1）。
+# chassis_mechanism.config の書き出しはプラットフォーム非依存に LF を書くため、
+# 上の一般則 *.json（eol=crlf）のままだと書き戻すたびに作業ツリーと
+# チェックアウト内容がずれ、git status が空の差分を報告し続ける。
+# ⚠️ git は最後にマッチした行を採用する。この行は *.json より後ろに置くこと。
+configs/chassis_mechanism/*.json  text eol=lf
