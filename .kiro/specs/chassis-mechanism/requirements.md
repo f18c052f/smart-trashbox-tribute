@@ -191,23 +191,30 @@ _出典: A-1 / A-6 / `docs/bom.md §E`（整備スタンド）/ `docs/drivetrain
 9. When 機体を台へ載せる場合、または台から降ろす場合, the chassis-mechanism shall 一人で実施できる手順を備える
 10. The chassis-mechanism shall 台上で実施する確認項目そのものの実施を自身の責務に含めない
 
-### Requirement 6: ゴミ箱固定アダプタ（円錐台を受ける座）
+### Requirement 6: ゴミ箱固定アダプタ（底を抜いた缶を残った縁で掴む）
 
-**Objective:** As a 機構を設計する開発者, I want 固定アダプタがゴミ箱の底が円錐台であることを前提とした座として設計され、依存する採寸値が実測で裏付けられていること, so that 円筒前提で作って現物と合わない事態と、仮値の上に座面形状が乗る事態を避けられる
+**Objective:** As a 機構を設計する開発者, I want 底を抜いたゴミ箱を、残った縁と円錐台の側壁で掴むアダプタが設計され、依存する採寸値が実測で裏付けられていること, so that 缶の内側を段積み土台の空間として使えるようにしつつ、円筒前提で作って現物と合わない事態と、仮値の上に受け面が乗る事態を避けられる
 
-_出典: A-2 / A-3 / `brief.md`「Scope」/ roadmap.md「テーパーは設計へ2方向に効く」/ catch-mechanism 要件 10.1_
+_出典: A-2 / A-3 / `brief.md`「Scope」/ roadmap.md「テーパーは設計へ2方向に効く」/ catch-mechanism 要件 10.1 / **catch-mechanism 決定 3（改訂版・`bottom_modification = "bottom_removed"`）**_
+
+> ⚠️ **本要件は改訂されている。** 当初は「底が残っている缶を、円錐台を受ける**座**で下から支える」設計であった。
+> 上流 `catch-mechanism` の決定 3 が改訂され底の抜き取りが許可されたため、
+> アダプタは**座ではなく側壁のクランプ**になり、缶の内側は要件 7 の段積み土台が使う。
+> ⚠️ **切断は不可逆である**（受入基準 11）。
 
 #### Acceptance Criteria
 
 1. The chassis-mechanism shall ゴミ箱固定アダプタの寸法を、上流が公開する底の外径・底の平面部径・テーパー角・底の肉厚から導出する
-2. The chassis-mechanism shall アダプタの受け面を円錐台の側面に沿う座として設計し、円筒を前提としない
+2. The chassis-mechanism shall アダプタの受け面を円錐台の側面に沿う形状として設計し、円筒を前提としない
 3. If アダプタの設計に用いる上流の寸法値の出所が仮値である場合, then the chassis-mechanism shall その値を現物で実測し、上流の設定ファイルの値と出所を更新したうえで設計に用いる
 4. The chassis-mechanism shall 上流の設定ファイルに対して、値と出所以外の構造・キー名・単位を変更しない
 5. The chassis-mechanism shall ゴミ箱を水平方向および上方向へ拘束する締結を備え、手で加える力で外れないことを確認する手順を備える
 6. When ゴミ箱を取り外す場合, the chassis-mechanism shall 駆動ベースを分解せずに着脱できる手順を備える
 7. The chassis-mechanism shall アダプタがゴミ箱の開口内径を狭めず、上流が設計した受け口と干渉しないことを検査する
-8. The chassis-mechanism shall 締結箇所の配置の根拠を、ゴミ箱の底の肉厚と変形しやすさとともに記録する
+8. The chassis-mechanism shall 締結箇所の配置の根拠を、底を抜いた後に残る縁の幅と側壁の変形しやすさとともに記録する
 9. When 上流のゴミ箱の採寸値が更新された場合, the chassis-mechanism shall アダプタの寸法をその値から再導出する
+10. The chassis-mechanism shall 底の切り取り径を上流が公開する底の平面部径以下とし、⚠️ **外径との差として残る縁を上方向の拘束の掴み代として用いる**
+11. The chassis-mechanism shall 底の切断を、⚠️ **段の寸法が確定し造形可能性と干渉の検査を通るまで行わない**（切断は不可逆であり、再調達は一度しか使えない）
 
 ### Requirement 7: 搭載物の保持と重心
 
@@ -226,6 +233,10 @@ _出典: A-1 / `docs/requirements.md §5` / `docs/drivetrain-spec.md §8`（電�
 7. The chassis-mechanism shall モータ配線・エンコーダ配線・電源配線を、取り違えが起きないよう識別できる形で分離して通す
 8. The chassis-mechanism shall 各搭載物の質量と保持高さを記録し、合成重心の見積もりを導出する
 9. The chassis-mechanism shall 合成重心の見積もりを未実測の推定として扱い、合否条件に用いない
+10. The chassis-mechanism shall 底を抜いたゴミ箱の内側へ段積み土台を通し、各段の高さと担当する搭載物を記録する
+11. The chassis-mechanism shall 各段の外形を、その高さにおける缶の内径から導出する。⚠️ **缶はテーパーで上へ広がるため、段の使える径は高さごとに異なる**
+12. The chassis-mechanism shall 最上段を受け止め面とし、⚠️ **上流が定める緩衝材用の平面の最小径（`retention.liner_flat_min_diameter_mm`）以上の平面**を持たせる（底を抜いたことで失われた平面を、ここが肩代わりする）
+13. The chassis-mechanism shall 段が造形可能寸法を超える場合、上流の分割数導出に従って分割する
 
 ### Requirement 8: 電源系の機構的決着（OQ-11 / OQ-12 の決着）
 
