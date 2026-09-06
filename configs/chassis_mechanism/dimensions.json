@@ -6,12 +6,12 @@
     "wall_thickness_mm": 3.0
   },
   "base": {
-    "arm_thickness_mm": 6.0,
+    "arm_thickness_mm": 15.0,
     "arm_width_mm": 45.0,
     "first_wheel_angle_deg": 0.0,
     "hub_center_to_mount_face_mm": 101.3,
     "hub_outer_diameter_mm": 120.0,
-    "plate_thickness_mm": 6.0,
+    "plate_thickness_mm": 15.0,
     "slot_travel_mm": 4.0,
     "wheel_count": 3
   },

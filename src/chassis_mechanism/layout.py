@@ -753,20 +753,31 @@ def derive_layout(params: ResolvedParams) -> ChassisLayout:
     arm_length_mm = base_radius_mm - base.hub_outer_diameter_mm / 2.0
 
     # ⚠️ **アームが成立しない配置半径はここで拒否する**（要件 3.10 の前提 /
-    # design.md `#### Layout` Validation）。当たり面の下限も幅も正であるため
+    # design.md `#### Layout` Validation）。当たり面の下限も厚さも正であるため
     # `minimum_arm_length_mm` は必ず正であり、この検査は「長さが正であること」
     # （design.md Postconditions）を含む——正でない長さは必ず下限を下回る。
+    #
+    # ⚠️ **割るのは `arm_thickness_mm` であって `arm_width_mm` ではない。**
+    # 中央部↔モータ取付部の接合面は**接線方向を法線に持つ**
+    # （`joints._TANGENTIAL_NORMAL_AXIS`。要件 2.8 / A-5 が積層方向 `z` を法線に
+    # 持つ面を禁じるため、この向き以外を採れない）。その面の面内2軸は
+    # **半径方向（アーム長）と厚さ方向**であり、幅 `arm_width_mm` は
+    # ⚠️ **ボルトの軸そのもの**である（`_check_fragment_envelopes` が
+    # `arm_width_mm` を `y` へ写しているのと同じ対応）。
+    # `arm_length × arm_width` で割ると、水平（`z` 法線）な当たり面——要件 2.8 が
+    # 禁じる面——を前提に配置半径の下限を決めることになる。
     minimum_arm_length_mm = (
-        chassis.joint_local.min_bearing_area_mm2 / base.arm_width_mm
+        chassis.joint_local.min_bearing_area_mm2 / base.arm_thickness_mm
     )
     if arm_length_mm < minimum_arm_length_mm:
         raise GeometryError(
             f"{_ARM_LENGTH_KEY}={arm_length_mm!r} は "
             f"min_bearing_area_mm2={chassis.joint_local.min_bearing_area_mm2!r} と "
-            f"arm_width_mm={base.arm_width_mm!r} が要求する最小長さ "
+            f"arm_thickness_mm={base.arm_thickness_mm!r} が要求する最小長さ "
             f"{minimum_arm_length_mm!r}mm を "
             f"{minimum_arm_length_mm - arm_length_mm!r}mm 下回る"
-            "（ハブとの接合部の当たり面を確保できない配置半径は成立しない。要件 3.10）。"
+            "（ハブとの接合部の当たり面を確保できない配置半径は成立しない。要件 3.10。"
+            "⚠️ 接合面は接線方向を法線に持ち、面内2軸はアーム長と厚さである）。"
         )
 
     step_deg = 360.0 / base.wheel_count

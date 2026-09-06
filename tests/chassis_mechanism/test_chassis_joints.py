@@ -486,21 +486,59 @@ def test_the_bearing_area_of_a_bolted_joint_is_the_analytic_boss_area() -> None:
 
 
 def test_raising_the_local_floor_adds_bolts() -> None:
-    """⚠️ 本 Spec の下限を上げると、下限を満たすまでボルト本数が増える。"""
+    """⚠️ 本 Spec の下限を上げると、下限を満たすまでボルト本数が増える。
+
+    ⚠️ **下限は 150mm^2 を採る（かつては 200mm^2 だった）。** 本数が増えると
+    重ね代（`ARM_JOINT_LAP_LENGTH_FORMULA` = 本数 × 座径）も伸び、中央部の
+    外接箱がその2倍だけ広がる——200mm^2 は4本 ＝ 重ね代 36.8mm となり、
+    中央部が 193.6mm で造形可能寸法 180mm を超える。⚠️ **緩めたのではない**：
+    見たいのは「下限を上げると本数が増える」ことであり、造形可能寸法の関門は
+    `test_a_central_plate_that_exceeds_the_build_volume_is_rejected` が別に持つ。
+    """
+    floor_mm2 = 150.0
     params = _params()
-    stricter = replace(
-        params,
-        chassis=replace(
-            params.chassis,
-            joint_local=replace(
-                params.chassis.joint_local, min_bearing_area_mm2=200.0
-            ),
-        ),
-    )
+    stricter = _with_joint_local(params, min_bearing_area_mm2=floor_mm2)
     before = _named(_derived(params), "hub_plate__motor_arm_1")
     after = _named(_derived(stricter), "hub_plate__motor_arm_1")
     assert after.bolt_count > before.bolt_count
-    assert after.bearing_area_mm2 >= 200.0
+    assert after.bearing_area_mm2 >= floor_mm2
+
+
+def test_the_lap_length_is_the_bolt_row_and_widens_the_central_plate() -> None:
+    """⚠️ 重ね代は「本数 × 座径」であり、中央部の外接箱をその2倍だけ広げる。
+
+    ハブ板の舌はアームの二股へ差し込まれるため、中央部の外縁から重ね代のぶん
+    **外へ張り出す**（要件 2.6 の重ね継手）。⚠️ **この量を無視した外接箱は、
+    実際より小さい部品について「収まっている」と述べる**——それは検査が無い
+    ことより悪い。本数が増えれば舌も伸び、外接箱も追随する。
+    """
+    params = _params()
+    layout = derive_layout(params)
+    boss_diameter_mm = (
+        joints_module.BOSS_DIAMETER_FACTOR * params.joint.insert_outer_diameter_mm
+    )
+    arm_joint = _named(_derived(params), "hub_plate__motor_arm_1")
+    lap_mm = joints_module.arm_joint_lap_length_mm(layout, params)
+    assert lap_mm == pytest.approx(arm_joint.bolt_count * boss_diameter_mm)
+
+    # 下限を上げて本数が増えると、重ね代も 1:1 で伸びる。
+    stricter = _with_joint_local(params, min_bearing_area_mm2=150.0)
+    stricter_layout = derive_layout(stricter)
+    stricter_lap_mm = joints_module.arm_joint_lap_length_mm(stricter_layout, stricter)
+    assert stricter_lap_mm > lap_mm
+
+    # 舌のぶんだけ広げた外接箱で造形可能寸法を見ている（公称外径のままではない）。
+    outer_diameter_mm = params.chassis.base.hub_outer_diameter_mm
+    too_big = _with_base(
+        params, hub_outer_diameter_mm=params.printing.build_x_mm - lap_mm
+    )
+    assert too_big.chassis.base.hub_outer_diameter_mm < params.printing.build_x_mm
+    with pytest.raises(GeometryError) as excinfo:
+        _derived(too_big)
+    message = str(excinfo.value)
+    assert "hub_plate" in message
+    # 公称外径そのままで判定していたら、この寸法は「収まっている」と通っていた。
+    assert outer_diameter_mm < params.printing.build_x_mm
 
 
 def test_a_floor_that_no_joint_face_can_carry_is_rejected() -> None:
@@ -523,6 +561,97 @@ def test_a_floor_that_no_joint_face_can_carry_is_rejected() -> None:
     with pytest.raises(GeometryError) as excinfo:
         _derived(impossible)
     assert "hub_plate__motor_arm_1" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# 5b. ボルト座を並べる方向は接合面の**面内**である（軸の取り違えの再発防止）
+# ---------------------------------------------------------------------------
+
+
+def test_the_seat_row_is_measured_along_the_arm_length_not_the_arm_width() -> None:
+    """⚠️ **座を並べる幅はアーム長（半径方向）であり、アーム幅ではない。**
+
+    中央部↔モータ取付部の接合面は接線方向 `y` を法線に持つ
+    （`print_normal_axis`。要件 2.8 / A-5 が積層方向 `z` を法線に持つ面を禁じる
+    ため、この向き以外を採れない）。したがって面内2軸は**半径方向（アーム長）と
+    厚さ方向**であり、⚠️ `arm_width_mm` は `_check_fragment_envelopes` が `y` へ
+    写している量——**ボルトの軸そのもの**である。座をその方向へ並べることは
+    できない（並べれば座がボルトの軸上に重なる）。
+
+    かつて `face_width_mm` にはこの `arm_width_mm` が渡されていた。出荷値では
+    2 本 × 座径 9.2mm = 18.4mm ≦ 45mm で通ってしまうため、⚠️ **値の一致では
+    捉えられない**。ここでは「不足している」とメッセージが述べる**使える幅**が
+    アーム長であることを見る。
+    """
+    params = _params()
+    layout = derive_layout(params)
+    impossible = _with_joint_local(params, min_bearing_area_mm2=1000.0)
+    with pytest.raises(GeometryError) as excinfo:
+        _derived(impossible)
+    message = str(excinfo.value)
+    assert repr(layout.arm_length_mm) in message, message
+    assert repr(params.chassis.base.arm_width_mm) not in message, message
+
+
+def test_narrowing_the_arm_width_never_moves_the_bolt_row(
+) -> None:
+    """⚠️ アーム幅を座の並びより細くしても導出は成立する（幅は軸方向である）。
+
+    出荷値の 2 本 × 座径 9.2mm = 18.4mm より細い 12mm のアーム幅でも、座は
+    半径方向へ並ぶため接合部は成立する。⚠️ **旧実装ではここが `GeometryError`
+    になっていた**——座の並びを締結の軸方向で測っていたためである。
+    """
+    params = _params()
+    boss_diameter_mm = (
+        joints_module.BOSS_DIAMETER_FACTOR * params.joint.insert_outer_diameter_mm
+    )
+    before = _named(_derived(params), "hub_plate__motor_arm_1")
+    assert before.bolt_count * boss_diameter_mm > 12.0  # 旧実装ならここで落ちる幅
+    narrow = _named(_derived(_with_base(params, arm_width_mm=12.0)), "hub_plate__motor_arm_1")
+    assert narrow.bolt_count == before.bolt_count
+    assert narrow.bearing_area_mm2 == pytest.approx(before.bearing_area_mm2)
+
+
+def test_shortening_the_arm_makes_the_seat_row_stop_fitting() -> None:
+    """⚠️ **アームを短くすると座が並ばなくなる**（正しい軸で測っている証拠）。
+
+    設計変数「機体中心 → 取付面」を内側へ寄せるとアーム長が 1:1 で縮む。
+    座の並びに要る `bolt_count × 座径` を下回った時点で `joints` が拒否する。
+    ⚠️ **旧実装（幅で測る）ではアームをいくら短くしてもこの関門は動かなかった**
+    ——アーム幅は設計変数と無関係だからである。ここが `joints` 側の関門であり、
+    `derive_layout` の最小アーム長（当たり面 ÷ アーム厚 = 6.0mm）はまだ満たす
+    値を選んでいる。
+    """
+    params = _params()
+    base = params.chassis.base
+    boss_diameter_mm = (
+        joints_module.BOSS_DIAMETER_FACTOR * params.joint.insert_outer_diameter_mm
+    )
+    required_mm = joints_module.MIN_BOLTS_PER_FASTENED_JOINT * boss_diameter_mm
+
+    # 座の並びにあと 0.4mm 足りないアーム長へ寄せる。
+    target_arm_length_mm = required_mm - 0.4
+    shortened = _with_base(
+        params,
+        hub_center_to_mount_face_mm=(
+            target_arm_length_mm
+            + base.hub_outer_diameter_mm / 2.0
+            - params.chassis.bracket.mount_face_to_wheel_center_mm
+        ),
+    )
+    layout = derive_layout(shortened)
+    assert layout.arm_length_mm == pytest.approx(target_arm_length_mm)
+    # ⚠️ アーム長の下限（当たり面 ÷ アーム厚）はまだ満たしている＝落ちるのは
+    # `layout` ではなく `joints` の関門である。
+    assert layout.arm_length_mm > (
+        shortened.chassis.joint_local.min_bearing_area_mm2 / base.arm_thickness_mm
+    )
+
+    with pytest.raises(GeometryError) as excinfo:
+        derive_joints(layout, shortened)
+    message = str(excinfo.value)
+    assert "hub_plate__motor_arm_1" in message
+    assert repr(required_mm) in message, message
 
 
 def test_a_joint_below_its_own_floor_cannot_be_constructed() -> None:

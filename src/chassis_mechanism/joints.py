@@ -112,6 +112,8 @@ __all__ = [
     "ANNULAR_PART_NAMES",
     "PHASE_PART_NAMES",
     "ASSUMPTIONS",
+    "ARM_JOINT_LAP_LENGTH_FORMULA",
+    "arm_joint_lap_length_mm",
     "JointSpec",
     "FastenerLine",
     "FastenerSchedule",
@@ -252,6 +254,24 @@ FASTENER_LENGTH_FORMULA: Final[str] = (
 「締結部品の長さ」を参照）——別の物理量であり、`0.0` が正当な値になる条件も
 異なる。積み上がり厚さは接合部ごとに異なり、`_JOINT_FAMILIES` の各行が何を
 積んでいるかを記述している。
+"""
+
+ARM_JOINT_LAP_LENGTH_FORMULA: Final[str] = (
+    "bolt_count * BOSS_DIAMETER_FACTOR * joint.insert_outer_diameter_mm"
+)
+"""中央部↔モータ取付部の**重ね代**（ハブ板の舌がアームの二股へ差し込まれる
+半径方向の長さ、mm）の導出式（要件 2.6, 3.10）。
+
+接合面は接線方向 `y` を法線に持ち（要件 2.8 / A-5）、ボルト座はその面の
+**半径方向**へ一列に並ぶ。したがって重ねている長さは「本数 × 座の外径」であり、
+⚠️ **これが `_bolt_count` の検査（`count * boss_diameter <= face_width`）が
+言っている量そのものである**。
+
+⚠️ **この量は形（`shapes`）と断片の外接箱（`_check_fragment_envelopes`）の
+双方が読む。** 舌は中央部の外縁（`base.hub_outer_diameter_mm / 2`）から
+この長さだけ**外へ張り出す**ため、中央部の外接箱は公称外径のままではない——
+片側ずつ張り出すので直径には2倍で効く。⚠️ **ここを公称外径のままにすると、
+「造形可能寸法に収まる」という判定が実際より小さい部品について述べたものになる。**
 """
 
 ADAPTER_OUTER_DIAMETER_FORMULA: Final[str] = (
@@ -855,17 +875,30 @@ def _check_fragment_envelopes(layout: ChassisLayout, params: ResolvedParams) -> 
     当て推量になる。当て推量の外接箱で「収まっている」と言うほうが、検査が無い
     ことより悪い。
 
+    ## ⚠️ 中央部の外接箱は公称外径ではない（`ARM_JOINT_LAP_LENGTH_FORMULA`）
+
+    中央部↔モータ取付部は**重ね継手**であり、ハブ板の舌は中央部の外縁から
+    重ね代のぶん**外へ張り出す**（アームの二股がそれを挟む。要件 2.6）。
+    ⚠️ アーム側は張り出さない——`ARM_LENGTH_FORMULA` が「中央部の外縁から
+    ホイール中心面まで」と定めており、二股はその区間の内側にある。したがって
+    外接箱が公称外径より大きくなるのは中央部だけであり、⚠️ **重ね代を無視した
+    外接箱で「収まっている」と述べると、実際より小さい部品について述べたことに
+    なる**（`shapes.drive_base_geometry` が構築する形と食い違う）。
+
     Raises:
         GeometryError: 収まらない断片がある場合。⚠️ **超過を全件**、部品名・軸・
             外接箱・上限・超過量つきで示す（1件ずつ直す往復を避ける）。
     """
     base = params.chassis.base
+    hub_plate_outer_diameter_mm = base.hub_outer_diameter_mm + _BOTH_SIDES * (
+        arm_joint_lap_length_mm(layout, params)
+    )
     fragments = (
         (
             "hub_plate",
             Envelope(
-                x_mm=base.hub_outer_diameter_mm,
-                y_mm=base.hub_outer_diameter_mm,
+                x_mm=hub_plate_outer_diameter_mm,
+                y_mm=hub_plate_outer_diameter_mm,
                 z_mm=base.plate_thickness_mm,
             ),
         ),
@@ -947,6 +980,9 @@ def _bolt_count(
         minimum_bearing_area_mm2: この接合部へ課される当たり面の下限。
         pad_area_mm2: ボルト1本あたりの当たり面。
         face_width_mm: 接合面のうち、ボルト座を並べられる幅（mm）。
+            ⚠️ **接合面の面内の軸で測った量である。** 締結の軸（＝
+            `print_normal_axis` が指す軸）で測った量を渡さない——その方向には
+            座を並べられない（並べれば座がボルトの軸上に重なる）。
         boss_diameter_mm: ボルト座の外径（mm）。
         floor_count: 設計上の最小本数（保持箇所の数など）。
 
@@ -972,6 +1008,52 @@ def _bolt_count(
             "接合面を広げるか、下限を見直すこと。"
         )
     return count
+
+
+ARM_JOINT_NAME_TEMPLATE: Final[str] = "hub_plate__motor_arm_{index}"
+"""中央部↔モータ取付部の接合部の名（⚠️ 名の組み立てはここ1箇所である）。"""
+
+
+def _arm_bolt_count(layout: ChassisLayout, params: ResolvedParams) -> int:
+    """中央部↔モータ取付部のボルト本数（要件 2.9, 2.10, 3.10）。
+
+    ⚠️ **本数の出所を1箇所にする。** 重ね代（`arm_joint_lap_length_mm`）と
+    実際の接合部（`derive_joints`）と形（`shapes.drive_base_geometry`）が同じ
+    本数を読む——別々に数えれば、下限を上げたときに舌だけが伸びない、あるいは
+    座だけが増える、という食い違いが黙って残る。
+
+    Raises:
+        GeometryError: 必要な本数のボルト座が接合面の半径方向の幅に並ばない場合。
+    """
+    return _bolt_count(
+        name=ARM_JOINT_NAME_TEMPLATE.format(index=1),
+        minimum_bearing_area_mm2=params.chassis.joint_local.min_bearing_area_mm2,
+        pad_area_mm2=_bolt_bearing_area_mm2(params),
+        # ⚠️ 接合面の面内で座を並べられる方向は**半径方向**である（面の法線は
+        # 接線方向 `y`）。`arm_width_mm` はボルトの軸そのものであり渡さない。
+        face_width_mm=layout.arm_length_mm,
+        boss_diameter_mm=_boss_diameter_mm(params),
+        floor_count=MIN_BOLTS_PER_FASTENED_JOINT,
+    )
+
+
+def arm_joint_lap_length_mm(layout: ChassisLayout, params: ResolvedParams) -> float:
+    """ハブ板の舌がアームの二股へ差し込まれる半径方向の長さ（mm）。
+
+    `ARM_JOINT_LAP_LENGTH_FORMULA` を参照。⚠️ **形（`shapes`）と断片の外接箱
+    （`_check_fragment_envelopes`）の双方がこの1つの関数を読む。**
+
+    Args:
+        layout: `layout.derive_layout` の戻り値。
+        params: `config.load_params()` の戻り値。
+
+    Returns:
+        重ね代（mm）。⚠️ 座の並びに要る幅と同じ量である。
+
+    Raises:
+        GeometryError: ボルト座が接合面の半径方向の幅に並ばない場合。
+    """
+    return _arm_bolt_count(layout, params) * _boss_diameter_mm(params)
 
 
 def _fastened_joint(
@@ -1081,11 +1163,21 @@ def derive_joints(
         # 要件 3.10「中央部と各モータ取付部の接合を、要件2が定める荷重の受け方に
         # 従って設計する」。モータ反力を受けるため本 Spec の下限を課す。
         _fastened_joint(
-            name=f"hub_plate__motor_arm_{index}",
+            name=ARM_JOINT_NAME_TEMPLATE.format(index=index),
             members=("hub_plate", f"motor_arm_{index}"),
             # 二股の側壁 ＋ ハブ板の舌を貫き、反対側の側壁のインサートで受ける。
             stack_thickness_mm=base.arm_thickness_mm + base.plate_thickness_mm,
-            face_width_mm=base.arm_width_mm,
+            # ⚠️ **接合面は接線方向（`y`）を法線に持つ**——面内2軸は
+            # **半径方向（アーム長）と厚さ方向**である。座を並べられるのは
+            # 半径方向であり、⚠️ **`arm_width_mm` を渡さない**：それは
+            # `_check_fragment_envelopes` が `y` へ写している量、すなわち
+            # **ボルトの軸そのもの**であり、その方向に座は並ばない。
+            # ⚠️ 面のもう一方の辺（厚さ `arm_thickness_mm`）が座の外径を下回ると、
+            # `BEARING_AREA_FORMULA` が数える環が面に載らない。それは形の側の
+            # 成立条件であるため `shapes.drive_base_geometry` が拒否し、
+            # 解析値と実形状の一致は `test_chassis_invariants.py` が検査する
+            # （本モジュールは build123d を import できない。design.md Risks）。
+            face_width_mm=layout.arm_length_mm,
             minimum_bearing_area_mm2=local_floor_mm2,
             print_normal_axis=_TANGENTIAL_NORMAL_AXIS,
             dowel_count=_LOCATING_DOWEL_COUNT,

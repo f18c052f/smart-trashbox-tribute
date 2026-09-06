@@ -1,12 +1,41 @@
 """部品の形状構築と指標の抽出（design.md `#### Shapes` / 要件 1.11, 1.12, 2.2,
-5.1-5.6, 5.8）。
+2.5, 2.6, 2.11, 3.1, 3.2, 3.7, 3.8, 3.10, 5.1-5.6, 5.8）。
 
-⚠️ **本タスク（3.1）が構築するのは整備スタンドだけである。** 要件 5.1 は整備
-スタンドを他のどの造形物よりも先に設計・造形・検証することを求めており、
-design.md `#### Shapes` の部品表の残り（`hub_plate` / `motor_arm_*` /
-`adapter_segment_*` / `battery_tray` / `board_tray` / `cable_guide_*`）は
-タスク 3.2〜3.5 が本モジュールへ足す。`PART_NAMES` と `build_parts` はその都度
-広がる。
+⚠️ **現在構築するのは整備スタンドと駆動ベースである。** 要件 5.1 は整備スタンドを
+他のどの造形物よりも先に設計・造形・検証することを求めており（タスク 3.1）、
+駆動ベース（`hub_plate` / `motor_arm_*`、タスク 3.2）がそれに続く。design.md
+`#### Shapes` の部品表の残り（`adapter_segment_*` / `battery_tray` /
+`board_tray` / `cable_guide_*`）はタスク 3.3〜3.5 が本モジュールへ足す。
+`PART_NAMES` と `build_parts` はその都度広がる。
+
+## 常時荷重がかかる部位の断面の根拠（要件 2.5 / design.md「機構の決定」決定 3）
+
+design.md は「⚠️ **PLA は Tg 以下でも常時荷重下でクリープする**。PETG も耐
+クリープ性が高いわけではないため、**常時荷重を薄いリブや小さな当たり面で受けない**」
+と定めている。駆動ベースはその「常時荷重がかかる部位」そのものである
+——⚠️ **Ø270 を張る構造が機体と搭載物の質量を常時支える。**
+
+`base.plate_thickness_mm` と `base.arm_thickness_mm` を 15.0mm に採るのは、
+独立した2つの根拠が同じ向きを指すためである。
+
+1. **接合面が座の環を載せられること**（要件 2.9）。中央部↔モータ取付部の接合面の
+   高さはアームの厚さであり、⚠️ **座の外径 Ø9.2（＝ `BOSS_DIAMETER_FACTOR ×
+   insert_outer_diameter_mm`）を下回ると `joints.BEARING_AREA_FORMULA` が数える環が
+   面に載らない**。6.0mm では実現する当たり面が 83.82mm^2 にしかならず、本 Spec の
+   下限 90.0mm^2 を下回る——にもかかわらず解析式は 114.79mm^2 を報告する。
+   15.0mm は 9.2 ＋ 両側 2.9mm の肉である
+2. **断面がクリープに対して薄くないこと**（要件 2.5）。6mm の PETG で Ø270 を
+   張る構造は、座の話を抜きにしても常時荷重に対して薄い
+
+⚠️ **1 だけを根拠にしない。** 上流がより細いインサートへ変われば 1 は緩むが、
+2 は緩まない（`drive_base_geometry` が拒否するのは 1 の側だけである）。
+
+## ⚠️ 点数と接合部の諸元を数え直さない（要件 2.1, 2.9）
+
+部品の点数は `joints.segment_counts()`、中央部↔モータ取付部のボルト本数と重ね代は
+`joints.arm_joint_lap_length_mm` が唯一の正である。⚠️ **形の側で数え直すと、
+当たり面の下限を上げたときに座だけが増えて舌が伸びない、という食い違いが黙って
+残る**——本モジュールは `joints` の左側ではなく右側の層であり、読む側である。
 
 ## 形状ライブラリを module 直下で import しない（design.md「Allowed Dependencies」）
 
@@ -15,10 +44,11 @@ design.md `#### Shapes` の部品表の残り（`hub_plate` / `motor_arm_*` /
 `shapes` / `export` に限る）と「Dependency Direction」（`__init__` は `shapes` /
 `export` を import せず、公開 API が OCCT を要求しない）、および上流
 `catch_mechanism.shapes` の先例である。⚠️ **許されていることと「モジュール読み込み
-時に必要にしてよい」ことは別である**。`stand_geometry` は
-純粋な算術であり、`cad` extra 非導入の環境でも**全数値と成立条件**を評価できる
-——脚が成立するかどうかを知るために CAD を要求しない。import は実際にソリッドを
-構築する `build_service_stand_legs` の内側にあり、失敗は `CadUnavailableError`
+時に必要にしてよい」ことは別である**。`stand_geometry` と
+`drive_base_geometry` は純粋な算術であり、`cad` extra 非導入の環境でも**全数値と
+成立条件**を評価できる——脚や駆動ベースが成立するかどうかを知るために CAD を
+要求しない。import は実際にソリッドを構築する関数（`build_service_stand_legs` /
+`build_drive_base`）の内側にあり、失敗は `CadUnavailableError`
 （`errors.py`、`cli` の終了コード 3）へ写す。⚠️ **形状生成の要求を成功として
 黙って読み飛ばさない。**
 
@@ -108,16 +138,27 @@ from catch_mechanism import (
 
 from chassis_mechanism.config import ResolvedParams
 from chassis_mechanism.errors import CadUnavailableError, GeometryError
+from chassis_mechanism.joints import (
+    BOSS_DIAMETER_FACTOR,
+    arm_joint_lap_length_mm,
+    segment_counts,
+)
 from chassis_mechanism.layout import ChassisLayout
 
 __all__ = [
     "MIN_HAND_ACCESS_MM",
     "PART_NAMES",
+    "HUB_PLATE_PART_NAME",
+    "MOTOR_ARM_PART_NAME",
+    "SERVICE_STAND_PART_NAME",
     "BuiltPart",
+    "DriveBaseGeometry",
     "StandGeometry",
     "StandInputs",
+    "build_drive_base",
     "build_parts",
     "build_service_stand_legs",
+    "drive_base_geometry",
     "measure_part",
     "part_names",
     "stand_geometry",
@@ -125,13 +166,21 @@ __all__ = [
 ]
 
 
-PART_NAMES: Final[tuple[str, ...]] = ("service_stand",)
+HUB_PLATE_PART_NAME: Final[str] = "hub_plate"
+MOTOR_ARM_PART_NAME: Final[str] = "motor_arm"
+SERVICE_STAND_PART_NAME: Final[str] = "service_stand"
+
+PART_NAMES: Final[tuple[str, ...]] = (
+    HUB_PLATE_PART_NAME,
+    MOTOR_ARM_PART_NAME,
+    SERVICE_STAND_PART_NAME,
+)
 """本モジュールが構築する部品の**種類**（design.md `#### Shapes` の部品表）。
 
-⚠️ **1件の要素は「部品の種類」であって造形する点数ではない。** 整備スタンドは
-1種類の脚からなり、実際に造形するのは `stand.leg_count` 点である（部品名は
-`part_names` が本定数から導く）。⚠️ タスク 3.2〜3.5 が駆動ベース・アダプタ・
-トレイ・配線ガイドを足すと、この表はその順に伸びる。
+⚠️ **1件の要素は「部品の種類」であって造形する点数ではない。** 実際に造形する
+点数は `joints.segment_counts()` が持ち（要件 2.1: 分割数は導出であって設定値では
+ない）、部品名は `part_names` がその2つから組み立てる。⚠️ タスク 3.3〜3.5 が
+アダプタ・トレイ・配線ガイドを足すと、この表はその順に伸びる。
 """
 
 MIN_HAND_ACCESS_MM: Final[float] = 85.0
@@ -172,6 +221,26 @@ _MIN_TROUGH_FLOOR_MM: Final[float] = 3.0
 
 ⚠️ 台上でのホイール最下点と回転の隙間の差がこれを下回る配置は、「作れるが割れる」
 形である。黙って薄い底を作らず `GeometryError` で拒否する。
+"""
+
+_BOTH_SIDES: Final[int] = 2
+"""量が中心線の**両側**に効くことを表す係数（⚠️ 寸法ではない）。
+
+`joints._BOTH_SIDES` と同じ趣旨である。舌の隙間も、中央部の外径への舌の張り出しも、
+片側ずつ効くため直径・厚さには2倍で効く。
+"""
+
+_UNSPLIT_PART_COUNT: Final[int] = 1
+"""分割しない部品の点数（⚠️ 番号を付けない部品を表す。`joints._UNSPLIT_SEGMENT_COUNT`）。"""
+
+_JOINT_FIT_CLEARANCE_MM: Final[float] = 0.4
+"""重ね継手の片側あたりの嵌め合い隙間（mm、要件 2.11 / 決定 4）。
+
+⚠️ **切削加工を前提とする嵌合・面出しを設計に含めない。** ハブ板の舌は二股の溝
+より両側で本値ぶん薄く、舌の先端と溝の底の間にも同じ量を残す。0.4mm は 0.4mm
+ノズルの押出幅1本ぶんであり、FDM の造形誤差をそのまま逃がせる大きさである
+——⚠️ **これを詰めると「削って合わせる」ことが前提の設計になる**（寸法差は長穴と
+隙間で吸収する、が決定 4 である）。
 """
 
 _SUPPORT_PAD_DEPTH_MULTIPLE: Final[float] = 1.0
@@ -561,20 +630,32 @@ def stand_geometry(inputs: StandInputs) -> StandGeometry:
 def part_names(params: ResolvedParams) -> tuple[str, ...]:
     """造形する部品の名を返す（design.md `#### Shapes` Service Interface）。
 
-    ⚠️ **名は `PART_NAMES` から導く。** 部品名の正は1箇所であり、ここで別の
-    文字列を作らない。⚠️ 現在は整備スタンドの脚だけである（タスク 3.2〜3.5 が
-    駆動ベース・アダプタ・トレイ・配線ガイドを足す）。
+    ⚠️ **名は `PART_NAMES` から、点数は `joints.segment_counts()` から導く。**
+    部品名の正は1箇所であり、ここで別の文字列を作らない。⚠️ **点数をここで
+    数え直さない**——分割数は導出であって設定値ではなく（要件 2.1）、`joints` が
+    その唯一の置き場所である。
+
+    分割しない部品は番号を持たず（`"hub_plate"`）、分割する部品は 1 から始まる
+    連番を持つ（`"motor_arm_1"`）。⚠️ この規約は `joints.derive_joints` が組み立てる
+    接合部の部材名と一致する——一致しなければ、接合部の一覧が存在しない部品を
+    指すことになる。
 
     Args:
         params: `config.load_params()` の戻り値。
 
     Returns:
-        `("service_stand_1", …)`。長さは `stand.leg_count`。
+        `("hub_plate", "motor_arm_1", …, "service_stand_1", …)`。並びは
+        `PART_NAMES` の順である。
     """
-    return tuple(
-        f"{PART_NAMES[0]}_{index}"
-        for index in range(1, params.chassis.stand.leg_count + 1)
-    )
+    counts = segment_counts(params)
+    names: list[str] = []
+    for base_name in PART_NAMES:
+        count = counts[base_name]
+        if count == _UNSPLIT_PART_COUNT:
+            names.append(base_name)
+            continue
+        names.extend(f"{base_name}_{index}" for index in range(1, count + 1))
+    return tuple(names)
 
 
 # ---------------------------------------------------------------------------
@@ -696,7 +777,7 @@ def build_service_stand_legs(
 
     # 要件 2.2, 2.3: 断片の外接箱が造形可能寸法に収まることを、上流の検査で見る。
     # ⚠️ **1脚ずつ**の検査である（決定 5「1体の枠にすると造形可能寸法を超える」）。
-    violations = check_envelope(PART_NAMES[0], geometry.envelope, printing)
+    violations = check_envelope(SERVICE_STAND_PART_NAME, geometry.envelope, printing)
     if violations:
         detail = "、".join(
             f"軸 {violation.axis} が {violation.envelope_mm}mm で"
@@ -704,7 +785,7 @@ def build_service_stand_legs(
             for violation in violations
         )
         raise GeometryError(
-            f"{PART_NAMES[0]} の外接箱が造形可能寸法に収まらない（{detail}）。"
+            f"{SERVICE_STAND_PART_NAME} の外接箱が造形可能寸法に収まらない（{detail}）。"
             "⚠️ 脚は3つに分かれているため、これ以上の分割で解決する問題ではない"
             "（決定 5: 1体の枠にしない）。ホイール配置と隙間の値を見直すこと。"
         )
@@ -712,9 +793,9 @@ def build_service_stand_legs(
     solid = _build_leg(geometry)
     return tuple(
         BuiltPart(
-            name=f"{PART_NAMES[0]}_{index}",
+            name=f"{SERVICE_STAND_PART_NAME}_{index}",
             solid=solid,
-            metrics=measure_part(f"{PART_NAMES[0]}_{index}", solid),
+            metrics=measure_part(f"{SERVICE_STAND_PART_NAME}_{index}", solid),
         )
         for index in range(1, geometry.leg_count + 1)
     )
@@ -802,18 +883,19 @@ def build_parts(
 ) -> tuple[BuiltPart, ...]:
     """全部品を構築し、それぞれの形状指標を添えて返す（design.md `#### Shapes`）。
 
-    ⚠️ **現在返るのは整備スタンドの脚だけである**（要件 5.1: 他のどの造形物よりも
-    先に出す。タスク 3.2〜3.5 が残りの部品を足す）。並びと名前は
-    `part_names(params)` に一致する。
+    ⚠️ **現在返るのは駆動ベースと整備スタンドの脚である**（タスク 3.3〜3.5 が
+    アダプタ・トレイ・配線ガイドを足す）。並びと名前は `part_names(params)` に
+    一致する。
 
     ⚠️ **設計入力の絞り込みは `stand_inputs` が行う。** 本関数がスタンドの構築へ
-    `ResolvedParams` を渡すことはない（要件 5.2）。
+    `ResolvedParams` を渡すことはない（要件 5.2）——駆動ベースにはその限定が無い
+    （スタンドだけが「ゴミ箱とトレイ類の確定を待たない」ことを求められている）。
 
     ## 決定性（要件 1.12）
 
     同一の `ResolvedParams` からの複数回の生成は同一の `PartMetrics` を返す。
-    ⚠️ 3脚は**同一のソリッド**を共有するため、指標も互いに一致する——脚が
-    別形状になるのは、脚ごとに違う値を読んだときだけである。
+    ⚠️ 3脚と3本のアームはそれぞれ**同一のソリッド**を共有するため、指標も互いに
+    一致する——別形状になるのは、点ごとに違う値を読んだときだけである。
 
     Args:
         params: `config.load_params()` の戻り値。
@@ -827,4 +909,576 @@ def build_parts(
         ParameterError: 材料が上流の許可一覧に無い場合。
         CadUnavailableError: 形状ライブラリが導入されていない場合。
     """
-    return build_service_stand_legs(stand_inputs(params, layout), params.printing)
+    return build_drive_base(params, layout) + build_service_stand_legs(
+        stand_inputs(params, layout), params.printing
+    )
+
+
+# ---------------------------------------------------------------------------
+# 駆動ベース（タスク 3.2 / 要件 2.5, 2.6, 2.11, 3.1, 3.2, 3.7, 3.8, 3.10）
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class DriveBaseGeometry:
+    """駆動ベース（中央部＋放射状のモータ取付部）の幾何。
+
+    ⚠️ **形状オブジェクトを持たない**（`StandGeometry` と同じ規律）。値はすべて
+    **機体座標**であり、原点は機体中心、`z` は接地面（床）からの高さ、
+    第1輪の方向を `+x` に採る。アーム1点はこの向きで構築し、⚠️ **据え付けの角度を
+    形へ焼き付けない**——3本は同一形状であり、`wheel_angles_deg` だけが位置を与える
+    （中央部は3方向の舌を持つため角度を知っている）。
+
+    ## 中央部↔モータ取付部は重ね継手である（要件 2.6, 3.10）
+
+    ハブ板の**舌**をアームの**二股**が挟み、接線方向のボルトが二面せん断で受ける
+    （`joints.derive_joints` の家族表）。⚠️ **接合面の法線は接線方向 `y` であり、
+    積層方向 `z` ではない**（要件 2.8 / A-5）。この向きにしたことの帰結は3つある。
+
+    - 座を並べられるのは面内の**半径方向**だけである。重ね代
+      （`joints.arm_joint_lap_length_mm`）はその並びの長さそのものである
+    - 面のもう一方の辺は**アームの厚さ**である。⚠️ **厚さが座の外径
+      （`joints.BOSS_DIAMETER_FACTOR × insert_outer_diameter_mm`）を下回ると、
+      `joints.BEARING_AREA_FORMULA` が数える環が面に載らない**——解析値だけが
+      下限を満たし、実物は満たさない状態になる。`drive_base_geometry` はその寸法を
+      構築の前に拒否し、実形状との一致は `test_chassis_invariants.py` が測る
+    - ボルトが貫くのは「二股の側壁 ＋ 舌」であり、⚠️ 側壁の厚さを
+      `base.arm_thickness_mm`、溝の幅を `base.plate_thickness_mm` に採ることで
+      `joints.FASTENER_LENGTH_FORMULA` の積み上がり厚さと一致する
+
+    ## 寸法差は長穴と隙間で吸収する（要件 2.11 / 決定 4）
+
+    ⚠️ **切削加工を前提とする嵌合・面出しを含めない。** 舌は溝より
+    `_JOINT_FIT_CLEARANCE_MM` だけ薄く、ブラケット取付穴は長穴であり、
+    造形する穴はどれも上流の貫通穴径以上である（`bore_diameters_mm`）。
+
+    ## モータ本体を掴まない（要件 3.7）
+
+    モータ胴体は付属金属ブラケットにぶら下がる。⚠️ **胴体の最上点は駆動ベースの
+    下面より低い**——半径方向では中央部ともアームとも重なるため、隔てているのは
+    高さだけである。`motor_*` の各値はその関係を検査できる形で持つ。
+
+    Attributes:
+        wheel_count: 輪の数（＝アームの本数）。
+        wheel_angles_deg: 各輪の取付角（度）。⚠️ `ChassisLayout` から受け取る。
+        hub_radius_mm: 中央部の外径の半分（`base.hub_outer_diameter_mm / 2`）。
+        underside_height_mm: ベース板下面の高さ（＝取付面。鉛直スタックが持つ）。
+        plate_thickness_mm: 中央部の厚さ（mm）。
+        arm_thickness_mm: アームの厚さ（mm）。⚠️ **接合面の高さである。**
+        arm_half_width_mm: アームの半幅（mm、接線方向）。
+        arm_outer_radius_mm: アームの外端の半径（＝ホイール配置半径）。
+        bolt_count: 中央部↔アームの接合部のボルト本数（⚠️ `joints` が正）。
+        boss_diameter_mm: ボルト座の外径（mm、⚠️ `joints` が正）。
+        through_hole_diameter_mm: 貫通穴の径（mm、上流 `JointPolicy`）。
+        insert_bore_diameter_mm: インサート座の下穴径（mm、上流）。
+        insert_bore_depth_mm: インサート座の深さ（mm、上流のインサート長）。
+        lap_length_mm: 重ね代（mm、⚠️ `joints.arm_joint_lap_length_mm` が正）。
+        tongue_thickness_mm: ハブ板の舌の厚さ（mm）。⚠️ 溝より隙間ぶん薄い。
+        fork_slot_width_mm: 二股の溝の幅（mm、＝ `base.plate_thickness_mm`）。
+        fork_wall_thickness_mm: 二股の側壁の厚さ（mm、＝ `base.arm_thickness_mm`）。
+        fork_half_width_mm: 二股の外側の半幅（mm）。⚠️ **接合面はこの位置にある。**
+        fork_root_radius_mm: 二股の溝の底の半径（mm）。舌の先端より隙間ぶん外。
+        bolt_radii_mm: ボルトの半径方向の位置（mm）。
+        bolt_height_mm: ボルトの軸の高さ（mm、アームの厚さの中央）。
+        slot_width_mm: ブラケット取付長穴の幅（mm、＝上流の貫通穴径）。
+        slot_length_mm: 長穴の長さ（mm、＝幅 ＋ 移動量）。
+        slot_travel_mm: 長穴が吸収できる移動量（mm、`base.slot_travel_mm`）。
+        slot_center_radius_mm: 長穴の中心の半径（mm、＝取付面までの距離）。
+        slot_offsets_mm: 長穴の接線方向の位置（mm）。ブラケットの穴ピッチに従う。
+        motor_body_diameter_mm: モータ胴体の外径（mm）。
+        motor_axis_height_mm: モータ軸の高さ（mm、＝車軸中心）。
+        motor_inner_radius_mm: 胴体の機体側の端の半径（mm）。
+        motor_outer_radius_mm: 胴体のギヤボックス端面の半径（mm）。
+        bore_diameters_mm: ⚠️ **造形する穴の径の一覧**（要件 2.11 の検査対象）。
+        hub_plate_envelope: 中央部の軸並行外接箱。⚠️ 舌の張り出しを含む。
+        motor_arm_envelope: アーム1本の軸並行外接箱。
+    """
+
+    wheel_count: int
+    wheel_angles_deg: tuple[float, ...]
+    hub_radius_mm: float
+    underside_height_mm: float
+    plate_thickness_mm: float
+    arm_thickness_mm: float
+    arm_half_width_mm: float
+    arm_outer_radius_mm: float
+    bolt_count: int
+    boss_diameter_mm: float
+    through_hole_diameter_mm: float
+    insert_bore_diameter_mm: float
+    insert_bore_depth_mm: float
+    lap_length_mm: float
+    tongue_thickness_mm: float
+    fork_slot_width_mm: float
+    fork_wall_thickness_mm: float
+    fork_half_width_mm: float
+    fork_root_radius_mm: float
+    bolt_radii_mm: tuple[float, ...]
+    bolt_height_mm: float
+    slot_width_mm: float
+    slot_length_mm: float
+    slot_travel_mm: float
+    slot_center_radius_mm: float
+    slot_offsets_mm: tuple[float, ...]
+    motor_body_diameter_mm: float
+    motor_axis_height_mm: float
+    motor_inner_radius_mm: float
+    motor_outer_radius_mm: float
+    bore_diameters_mm: tuple[float, ...]
+    hub_plate_envelope: Envelope
+    motor_arm_envelope: Envelope
+
+
+def _bracket_hole_offsets_mm(bracket: Any) -> tuple[float, ...]:
+    """ブラケット取付穴の接線方向の位置を、穴数とピッチから等配置で並べる。
+
+    ⚠️ **手で書いた位置を持たない。** 2穴なら `±pitch/2` であり、穴数が増えれば
+    ピッチの区間を等分する。
+
+    Raises:
+        GeometryError: 穴が2つ未満の場合（1点では機体が回る）。
+    """
+    count = bracket.mount_hole_count
+    if count < 2:
+        raise GeometryError(
+            f"bracket.mount_hole_count={count!r} は 2 以上でなければならない"
+            "（1点で留めると取付部がボルトのまわりに回る）。"
+        )
+    pitch_mm = bracket.mount_hole_pitch_mm
+    return tuple(
+        pitch_mm * (index / (count - 1) - 0.5) for index in range(count)
+    )
+
+
+def drive_base_geometry(
+    params: ResolvedParams, layout: ChassisLayout
+) -> DriveBaseGeometry:
+    """寸法パラメータと幾何の導出結果から駆動ベースの形を決める（タスク 3.2）。
+
+    ⚠️ **形状を構築しない。** 本関数は算術のみで完結し、形状ライブラリの無い環境
+    でも**全数値と成立条件**を評価できる（design.md「Allowed Dependencies」/
+    「Dependency Direction」。`stand_geometry` と同じ規律）。
+
+    ⚠️ **座の本数と重ね代を数え直さない**——`joints.arm_joint_lap_length_mm` と
+    `joints.derive_joints` が唯一の正である（要件 2.1, 2.9）。形の側で数え直せば、
+    当たり面の下限を上げたときに座だけが増えて舌が伸びない、という食い違いが
+    黙って残る。
+
+    Args:
+        params: `config.load_params()` の戻り値。
+        layout: `layout.derive_layout()` の戻り値。
+
+    Returns:
+        駆動ベースの幾何。
+
+    Raises:
+        GeometryError: 接合面がボルト座の環を載せられない厚さの場合（要件 2.5,
+            2.9）、二股がアームの幅に収まらない場合、舌の肉が残らない場合、
+            インサート座が側壁に収まらない場合、造形部品がモータ胴体を掴む
+            配置になる場合（要件 3.7）、または長穴がアームに収まらない場合。
+            ⚠️ メッセージには**項目名と値**を載せる。
+        catch_mechanism.ParameterError: 上流の `check_joint` が当たり面を拒否した
+            場合（`derive_joints` からの伝播）。
+    """
+    chassis = params.chassis
+    base = chassis.base
+    joint = params.joint
+
+    hub_radius_mm = base.hub_outer_diameter_mm / 2.0
+    underside_height_mm = layout.vertical.mount_face_height_mm
+    boss_diameter_mm = BOSS_DIAMETER_FACTOR * joint.insert_outer_diameter_mm
+
+    # ⚠️ **接合面の厚さが座の外径を下回ると、記録された当たり面が面に載らない。**
+    # `joints.BEARING_AREA_FORMULA` は座の環をまるごと数えるため、面が薄いほうへ
+    # 環がはみ出しても解析値は下がらない——下限を満たすという判定だけが残る。
+    # これが `base.arm_thickness_mm` を 6.0mm から引き上げた根拠である（要件 2.5:
+    # 「⚠️ 薄いリブや小さな当たり面で受けない」）。
+    if base.arm_thickness_mm < boss_diameter_mm:
+        raise GeometryError(
+            f"arm_thickness_mm={base.arm_thickness_mm!r} が接合面の高さであり、"
+            f"ボルト座の外径 {boss_diameter_mm!r}mm"
+            f"（BOSS_DIAMETER_FACTOR={BOSS_DIAMETER_FACTOR!r} × "
+            f"insert_outer_diameter_mm={joint.insert_outer_diameter_mm!r}）を"
+            f"{boss_diameter_mm - base.arm_thickness_mm!r}mm 下回る。"
+            "⚠️ 座の環が接合面に載らないため、joints.BEARING_AREA_FORMULA が"
+            "記録する当たり面は実形状では実現しない（要件 2.5, 2.9）。"
+            "断面を厚く取ること。"
+        )
+
+    fork_wall_thickness_mm = base.arm_thickness_mm
+    fork_slot_width_mm = base.plate_thickness_mm
+    fork_half_width_mm = fork_wall_thickness_mm + fork_slot_width_mm / 2.0
+    arm_half_width_mm = base.arm_width_mm / 2.0
+    if fork_half_width_mm > arm_half_width_mm:
+        raise GeometryError(
+            f"二股の外側の半幅 {fork_half_width_mm!r}mm が "
+            f"arm_width_mm={base.arm_width_mm!r} の半分 {arm_half_width_mm!r}mm を"
+            f"超える（側壁 arm_thickness_mm={base.arm_thickness_mm!r} ＋ 溝の半分 "
+            f"plate_thickness_mm={base.plate_thickness_mm!r}/2）。"
+            "⚠️ 二股がアームの幅を超えると、joints が断片の外接箱へ渡している "
+            "arm_width_mm が実形状を覆わなくなる。"
+        )
+
+    tongue_thickness_mm = fork_slot_width_mm - _BOTH_SIDES * _JOINT_FIT_CLEARANCE_MM
+    if tongue_thickness_mm <= 0.0:
+        raise GeometryError(
+            f"舌の厚さが {tongue_thickness_mm!r}mm になり肉が残らない"
+            f"（溝の幅 plate_thickness_mm={base.plate_thickness_mm!r} − "
+            f"両側の隙間 {_BOTH_SIDES * _JOINT_FIT_CLEARANCE_MM!r}mm）。"
+            "⚠️ 寸法差は隙間で吸収する（要件 2.11 / 決定 4）ため、隙間を削って"
+            "解決しない。"
+        )
+
+    if joint.insert_length_mm > fork_wall_thickness_mm:
+        raise GeometryError(
+            f"インサート長 insert_length_mm={joint.insert_length_mm!r} が二股の"
+            f"側壁の厚さ {fork_wall_thickness_mm!r}mm を超える"
+            f"（arm_thickness_mm={base.arm_thickness_mm!r}）——"
+            "⚠️ 座が側壁を突き抜ける。"
+        )
+
+    # ⚠️ 本数と重ね代は `joints` が正である（形の側で数え直さない）。
+    lap_length_mm = arm_joint_lap_length_mm(layout, params)
+    bolt_count = round(lap_length_mm / boss_diameter_mm)
+    bolt_radii_mm = tuple(
+        hub_radius_mm + boss_diameter_mm * (index + 0.5) for index in range(bolt_count)
+    )
+    fork_root_radius_mm = hub_radius_mm + lap_length_mm + _JOINT_FIT_CLEARANCE_MM
+
+    # ⚠️ モータ胴体は付属金属ブラケットにぶら下がる（要件 3.7）。胴体の最上点が
+    # ベース下面へ届く寸法は、造形部品が胴体を掴む設計そのものである。
+    motor_axis_height_mm = layout.vertical.axle_center_height_mm
+    motor_top_height_mm = motor_axis_height_mm + chassis.motor.body_diameter_mm / 2.0
+    if motor_top_height_mm > underside_height_mm:
+        raise GeometryError(
+            f"モータ胴体の最上点 {motor_top_height_mm!r}mm が駆動ベース下面 "
+            f"{underside_height_mm!r}mm を超える"
+            f"（body_diameter_mm={chassis.motor.body_diameter_mm!r}、"
+            f"車軸中心 {motor_axis_height_mm!r}mm）。⚠️ 造形部品でモータ本体を"
+            "直接クランプしない（要件 3.7）——取り付けは付属金属ブラケットが担う。"
+        )
+    # ⚠️ ギヤボックス端面はホイール中心面から軸方向スタックのぶん内側にある
+    # （`layout.axial_stack_mm[1]` ＝ ハブのフランジ厚 ＋ ホイール半幅）。
+    motor_outer_radius_mm = layout.base_radius_mm - layout.axial_stack_mm[1]
+    motor_inner_radius_mm = motor_outer_radius_mm - chassis.motor.body_length_mm
+
+    slot_width_mm = joint.through_hole_diameter_mm
+    slot_length_mm = slot_width_mm + base.slot_travel_mm
+    slot_center_radius_mm = base.hub_center_to_mount_face_mm
+    slot_offsets_mm = _bracket_hole_offsets_mm(chassis.bracket)
+    slot_inner_radius_mm = slot_center_radius_mm - slot_length_mm / 2.0
+    slot_outer_radius_mm = slot_center_radius_mm + slot_length_mm / 2.0
+    if slot_inner_radius_mm <= fork_root_radius_mm:
+        raise GeometryError(
+            f"ブラケット取付長穴の内端 {slot_inner_radius_mm!r}mm が二股の溝の底 "
+            f"{fork_root_radius_mm!r}mm へ掛かる"
+            f"（hub_center_to_mount_face_mm={slot_center_radius_mm!r}、"
+            f"重ね代 {lap_length_mm!r}mm）。⚠️ 接合部と長穴が同じ場所を奪い合う。"
+        )
+    if slot_outer_radius_mm >= layout.base_radius_mm:
+        raise GeometryError(
+            f"ブラケット取付長穴の外端 {slot_outer_radius_mm!r}mm がアームの外端 "
+            f"{layout.base_radius_mm!r}mm へ届く"
+            f"（hub_center_to_mount_face_mm={slot_center_radius_mm!r}）。"
+        )
+    edge_mm = max(abs(offset_mm) for offset_mm in slot_offsets_mm) + slot_width_mm / 2.0
+    if edge_mm >= arm_half_width_mm:
+        raise GeometryError(
+            f"ブラケット取付長穴の外縁 {edge_mm!r}mm が arm_width_mm="
+            f"{base.arm_width_mm!r} の半分 {arm_half_width_mm!r}mm へ届く"
+            f"（mount_hole_pitch_mm={chassis.bracket.mount_hole_pitch_mm!r}、"
+            f"長穴の幅 {slot_width_mm!r}mm）。"
+        )
+
+    # ⚠️ **造形する穴の径の一覧である**（要件 2.11 の検査対象）。相手部品の呼び
+    # 寸法と一致する穴を1つも持たないことを `test_chassis_shapes.py` が固定する。
+    bore_diameters_mm = tuple(
+        sorted({slot_width_mm, joint.through_hole_diameter_mm, joint.insert_outer_diameter_mm})
+    )
+
+    hub_plate_outer_diameter_mm = base.hub_outer_diameter_mm + _BOTH_SIDES * lap_length_mm
+    return DriveBaseGeometry(
+        wheel_count=base.wheel_count,
+        wheel_angles_deg=layout.wheel_angles_deg,
+        hub_radius_mm=hub_radius_mm,
+        underside_height_mm=underside_height_mm,
+        plate_thickness_mm=base.plate_thickness_mm,
+        arm_thickness_mm=base.arm_thickness_mm,
+        arm_half_width_mm=arm_half_width_mm,
+        arm_outer_radius_mm=layout.base_radius_mm,
+        bolt_count=bolt_count,
+        boss_diameter_mm=boss_diameter_mm,
+        through_hole_diameter_mm=joint.through_hole_diameter_mm,
+        insert_bore_diameter_mm=joint.insert_outer_diameter_mm,
+        insert_bore_depth_mm=joint.insert_length_mm,
+        lap_length_mm=lap_length_mm,
+        tongue_thickness_mm=tongue_thickness_mm,
+        fork_slot_width_mm=fork_slot_width_mm,
+        fork_wall_thickness_mm=fork_wall_thickness_mm,
+        fork_half_width_mm=fork_half_width_mm,
+        fork_root_radius_mm=fork_root_radius_mm,
+        bolt_radii_mm=bolt_radii_mm,
+        bolt_height_mm=underside_height_mm + base.arm_thickness_mm / 2.0,
+        slot_width_mm=slot_width_mm,
+        slot_length_mm=slot_length_mm,
+        slot_travel_mm=base.slot_travel_mm,
+        slot_center_radius_mm=slot_center_radius_mm,
+        slot_offsets_mm=slot_offsets_mm,
+        motor_body_diameter_mm=chassis.motor.body_diameter_mm,
+        motor_axis_height_mm=motor_axis_height_mm,
+        motor_inner_radius_mm=motor_inner_radius_mm,
+        motor_outer_radius_mm=motor_outer_radius_mm,
+        bore_diameters_mm=bore_diameters_mm,
+        # ⚠️ 舌の張り出しを含む（`joints._check_fragment_envelopes` と同じ量）。
+        # 舌の先端が描く円の外接正方形であり、実形状の外接箱の**覆い**である。
+        hub_plate_envelope=Envelope(
+            x_mm=hub_plate_outer_diameter_mm,
+            y_mm=hub_plate_outer_diameter_mm,
+            z_mm=base.plate_thickness_mm,
+        ),
+        motor_arm_envelope=Envelope(
+            x_mm=layout.arm_length_mm,
+            y_mm=base.arm_width_mm,
+            z_mm=base.arm_thickness_mm,
+        ),
+    )
+
+
+def _box_between(
+    build123d: Any,
+    x_range: tuple[float, float],
+    y_range: tuple[float, float],
+    z_range: tuple[float, float],
+) -> Any:
+    """座標の範囲で表した直方体（機体座標）。"""
+    x_min, x_max = x_range
+    y_min, y_max = y_range
+    z_min, z_max = z_range
+    return build123d.Location(
+        ((x_min + x_max) / 2.0, (y_min + y_max) / 2.0, (z_min + z_max) / 2.0)
+    ) * build123d.Box(
+        x_max - x_min,
+        y_max - y_min,
+        z_max - z_min,
+        align=(build123d.Align.CENTER, build123d.Align.CENTER, build123d.Align.CENTER),
+    )
+
+
+def _bolt_bore(
+    build123d: Any,
+    *,
+    diameter_mm: float,
+    radius_mm: float,
+    height_mm: float,
+    y_range: tuple[float, float],
+) -> Any:
+    """接線方向（`y`）に開ける穴。`y_range` は穴の始端と終端である。"""
+    y_min, y_max = y_range
+    align = (build123d.Align.CENTER, build123d.Align.CENTER, build123d.Align.CENTER)
+    return (
+        build123d.Location((radius_mm, (y_min + y_max) / 2.0, height_mm))
+        * build123d.Rotation(90, 0, 0)
+        * build123d.Cylinder(diameter_mm / 2.0, y_max - y_min, align=align)
+    )
+
+
+def _slot_void(
+    build123d: Any,
+    geometry: DriveBaseGeometry,
+    offset_mm: float,
+    z_range: tuple[float, float],
+) -> Any:
+    """ブラケット取付長穴の抜き形状（半径方向に伸びる小判形）。
+
+    ⚠️ **移動量は「長さ − 幅」である**——両端の半円が幅を、間の直線が移動量を
+    与える。`slot_travel_mm == 0` のときは丸穴になり、それも設定として成立する
+    （要件 3.8: 「0 を許す」）。
+    """
+    align = (build123d.Align.CENTER, build123d.Align.CENTER, build123d.Align.CENTER)
+    z_min, z_max = z_range
+    travel_mm = geometry.slot_length_mm - geometry.slot_width_mm
+    void = _box_between(
+        build123d,
+        (
+            geometry.slot_center_radius_mm - travel_mm / 2.0,
+            geometry.slot_center_radius_mm + travel_mm / 2.0,
+        ),
+        (offset_mm - geometry.slot_width_mm / 2.0, offset_mm + geometry.slot_width_mm / 2.0),
+        (z_min, z_max),
+    ) if travel_mm > 0.0 else None
+    for end_mm in (
+        geometry.slot_center_radius_mm - travel_mm / 2.0,
+        geometry.slot_center_radius_mm + travel_mm / 2.0,
+    ):
+        cap = build123d.Location(
+            (end_mm, offset_mm, (z_min + z_max) / 2.0)
+        ) * build123d.Cylinder(geometry.slot_width_mm / 2.0, z_max - z_min, align=align)
+        void = cap if void is None else void + cap
+    return void
+
+
+def _build_motor_arm(geometry: DriveBaseGeometry) -> Any:
+    """モータ取付部1本のソリッドを組み立てる（機体座標、第1輪の向き）。
+
+    参照は**幾何セレクタ**（座標と範囲）で明示的に組み立てる。⚠️ 生成名を一切
+    使わない（`_build_leg` と同じ規律）。
+    """
+    build123d = _require_shape_library()
+    z_bottom_mm = geometry.underside_height_mm
+    z_top_mm = z_bottom_mm + geometry.arm_thickness_mm
+    overshoot_mm = geometry.arm_thickness_mm + geometry.lap_length_mm
+
+    # 二股の区間（内側）と、その外側の本体。⚠️ 二股はアームの幅の内側に収まる。
+    body = _box_between(
+        build123d,
+        (geometry.hub_radius_mm, geometry.fork_root_radius_mm),
+        (-geometry.fork_half_width_mm, geometry.fork_half_width_mm),
+        (z_bottom_mm, z_top_mm),
+    )
+    body += _box_between(
+        build123d,
+        (geometry.fork_root_radius_mm, geometry.arm_outer_radius_mm),
+        (-geometry.arm_half_width_mm, geometry.arm_half_width_mm),
+        (z_bottom_mm, z_top_mm),
+    )
+
+    # ⚠️ 溝は**機体側へ開いている**（舌を半径方向に差し込む）。厚さ方向にも
+    # 貫いており、舌が板より厚くても噛み合う。
+    body -= _box_between(
+        build123d,
+        (geometry.hub_radius_mm - overshoot_mm, geometry.fork_root_radius_mm),
+        (-geometry.fork_slot_width_mm / 2.0, geometry.fork_slot_width_mm / 2.0),
+        (z_bottom_mm - overshoot_mm, z_top_mm + overshoot_mm),
+    )
+
+    for radius_mm in geometry.bolt_radii_mm:
+        # 貫通穴（ボルトが入る側）。⚠️ 座の当たり面はこの側の側壁の外面である。
+        body -= _bolt_bore(
+            build123d,
+            diameter_mm=geometry.through_hole_diameter_mm,
+            radius_mm=radius_mm,
+            height_mm=geometry.bolt_height_mm,
+            y_range=(-geometry.fork_half_width_mm - overshoot_mm, 0.0),
+        )
+        # 反対側の側壁のインサート座（⚠️ **袋穴**である。側壁を突き抜けない）。
+        body -= _bolt_bore(
+            build123d,
+            diameter_mm=geometry.insert_bore_diameter_mm,
+            radius_mm=radius_mm,
+            height_mm=geometry.bolt_height_mm,
+            y_range=(
+                geometry.fork_slot_width_mm / 2.0,
+                geometry.fork_slot_width_mm / 2.0 + geometry.insert_bore_depth_mm,
+            ),
+        )
+
+    for offset_mm in geometry.slot_offsets_mm:
+        body -= _slot_void(
+            build123d,
+            geometry,
+            offset_mm,
+            (z_bottom_mm - overshoot_mm, z_top_mm + overshoot_mm),
+        )
+    return body
+
+
+def _build_hub_plate(geometry: DriveBaseGeometry) -> Any:
+    """中央部のソリッドを組み立てる（機体座標。3方向の舌を持つ）。"""
+    build123d = _require_shape_library()
+    align = (build123d.Align.CENTER, build123d.Align.CENTER, build123d.Align.CENTER)
+    z_bottom_mm = geometry.underside_height_mm
+    z_top_mm = z_bottom_mm + geometry.plate_thickness_mm
+    half_mm = geometry.tongue_thickness_mm / 2.0
+
+    body = build123d.Location(
+        (0.0, 0.0, (z_bottom_mm + z_top_mm) / 2.0)
+    ) * build123d.Cylinder(
+        geometry.hub_radius_mm, geometry.plate_thickness_mm, align=align
+    )
+
+    tongue = _box_between(
+        build123d,
+        (
+            geometry.hub_radius_mm - geometry.lap_length_mm,
+            geometry.hub_radius_mm + geometry.lap_length_mm,
+        ),
+        (-half_mm, half_mm),
+        (z_bottom_mm, z_top_mm),
+    )
+    for radius_mm in geometry.bolt_radii_mm:
+        tongue -= _bolt_bore(
+            build123d,
+            diameter_mm=geometry.through_hole_diameter_mm,
+            radius_mm=radius_mm,
+            height_mm=geometry.bolt_height_mm,
+            y_range=(-half_mm - 1.0, half_mm + 1.0),
+        )
+    for angle_deg in geometry.wheel_angles_deg:
+        body += build123d.Rotation(0, 0, angle_deg) * tongue
+    return body
+
+
+def build_drive_base(
+    params: ResolvedParams, layout: ChassisLayout
+) -> tuple[BuiltPart, ...]:
+    """駆動ベース（中央部1点とモータ取付部 `wheel_count` 点）を構築する。
+
+    ⚠️ **検査が先である**（design.md `#### Shapes`）——材料と外接箱を通してから
+    ソリッドを作る。⚠️ 3本のアームは**同一形状**であり、据え付けの角度だけが
+    異なる（角度を形へ焼き付けない）。
+
+    Args:
+        params: `config.load_params()` の戻り値。
+        layout: `layout.derive_layout()` の戻り値。
+
+    Returns:
+        `("hub_plate", "motor_arm_1", …)` の順の構築済み部品。
+
+    Raises:
+        GeometryError: 幾何が成立しない場合、または外接箱が造形可能寸法に
+            収まらない場合（⚠️ **超過を全件**示す）。
+        ParameterError: 材料が上流の許可一覧に無い場合。
+        CadUnavailableError: 形状ライブラリが導入されていない場合。
+    """
+    geometry = drive_base_geometry(params, layout)
+    check_material(params.printing)
+
+    violations = [
+        violation
+        for part_name, envelope in (
+            (HUB_PLATE_PART_NAME, geometry.hub_plate_envelope),
+            (MOTOR_ARM_PART_NAME, geometry.motor_arm_envelope),
+        )
+        for violation in check_envelope(part_name, envelope, params.printing)
+    ]
+    if violations:
+        detail = "、".join(
+            f"{violation.part_name} の 軸 {violation.axis} が "
+            f"{violation.envelope_mm}mm で上限 {violation.limit_mm}mm を "
+            f"{violation.excess_mm}mm 超過"
+            for violation in violations
+        )
+        raise GeometryError(
+            f"駆動ベースの外接箱が造形可能寸法に収まらない（{detail}）。"
+            "⚠️ 中央部の外接箱は舌の張り出しを含む（要件 2.3）。"
+            "中央部の外径かホイール配置半径を見直すこと。"
+        )
+
+    plate = _build_hub_plate(geometry)
+    parts = [
+        BuiltPart(
+            name=HUB_PLATE_PART_NAME,
+            solid=plate,
+            metrics=measure_part(HUB_PLATE_PART_NAME, plate),
+        )
+    ]
+    arm = _build_motor_arm(geometry)
+    parts.extend(
+        BuiltPart(
+            name=f"{MOTOR_ARM_PART_NAME}_{index}",
+            solid=arm,
+            metrics=measure_part(f"{MOTOR_ARM_PART_NAME}_{index}", arm),
+        )
+        for index in range(1, geometry.wheel_count + 1)
+    )
+    return tuple(parts)

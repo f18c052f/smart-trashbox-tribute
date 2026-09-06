@@ -38,10 +38,12 @@ from chassis_mechanism.shapes import (
     MIN_HAND_ACCESS_MM,
     PART_NAMES,
     BuiltPart,
+    DriveBaseGeometry,
     StandGeometry,
     StandInputs,
     build_parts,
     build_service_stand_legs,
+    drive_base_geometry,
     measure_part,
     part_names,
     stand_geometry,
@@ -347,9 +349,11 @@ def test_three_independent_legs_are_named_one_per_wheel(
 ) -> None:
     """脚は輪ごとに1つの独立した部品である（要件 5.1 / 決定 5「3脚独立」）。"""
     params, _ = shipped
-    assert PART_NAMES == ("service_stand",)
+    assert "service_stand" in PART_NAMES
     assert geometry.leg_count == inputs.leg_count == len(inputs.wheel_angles_deg)
-    assert part_names(params) == tuple(  # type: ignore[arg-type]
+    # ⚠️ タスク 3.2 で駆動ベースが加わったため、脚は一覧の**末尾**にある
+    # （`PART_NAMES` の並びがそのまま `part_names` の並びである）。
+    assert part_names(params)[-inputs.leg_count :] == tuple(  # type: ignore[arg-type]
         f"service_stand_{index}" for index in range(1, inputs.leg_count + 1)
     )
     assert geometry.leg_angles_deg == inputs.wheel_angles_deg
@@ -494,6 +498,7 @@ from chassis_mechanism.errors import CadUnavailableError
 from chassis_mechanism.layout import derive_layout
 from chassis_mechanism.shapes import (
     build_parts,
+    drive_base_geometry,
     part_names,
     stand_geometry,
     stand_inputs,
@@ -502,6 +507,7 @@ from chassis_mechanism.shapes import (
 params = load_params()
 layout = derive_layout(params)
 geometry = stand_geometry(stand_inputs(params, layout))
+drive_base = drive_base_geometry(params, layout)
 
 report = {
     "stub_blocked_the_shape_library": blocked,
@@ -509,6 +515,12 @@ report = {
     "trough_floor_height_mm": geometry.trough_floor_height_mm,
     "socket_radius_mm": geometry.socket_radius_mm,
     "support_pad_height_mm": geometry.support_pad_height_mm,
+    "lap_length_mm": drive_base.lap_length_mm,
+    "bolt_count": drive_base.bolt_count,
+    "slot_length_mm": drive_base.slot_length_mm,
+    "slot_width_mm": drive_base.slot_width_mm,
+    "arm_thickness_mm": drive_base.arm_thickness_mm,
+    "boss_diameter_mm": drive_base.boss_diameter_mm,
     "build_failed": False,
     "error_type": "",
     "message": "",
@@ -561,27 +573,37 @@ def test_the_cad_blocking_stub_actually_blocks_the_shape_library(tmp_path: Path)
 
 
 def test_geometry_is_available_and_building_fails_loudly_without_the_shape_library(
-    tmp_path: Path, geometry: StandGeometry
+    tmp_path: Path, geometry: StandGeometry, drive_base: DriveBaseGeometry
 ) -> None:
     """CAD 非導入の環境で、幾何は導けて**形状生成だけが専用の失敗になる**。
 
     ⚠️ **成功にしない**（design.md「Error Categories and Responses」/
-    「Allowed Dependencies」）。
+    「Allowed Dependencies」）。⚠️ 駆動ベース（タスク 3.2）についても同じである
+    ——重ね代・座の本数・長穴の寸法・接合面の厚さは算術だけで決まるため、
+    形状ライブラリの無い環境でも**成立条件まで**評価できる。
     """
     import json
 
+    params = load_params()
     result = _run_blocked(_PROBE_BODY, _nocad_stub(tmp_path))
     assert result.returncode == 0, result.stderr
     report = json.loads(result.stdout.strip().splitlines()[-1])
 
     assert report["stub_blocked_the_shape_library"] is True
     assert report["shape_library_modules"] == []
-    assert report["part_names"] == [
+    assert report["part_names"] == list(part_names(params))
+    assert report["part_names"][-geometry.leg_count :] == [
         f"service_stand_{index}" for index in range(1, geometry.leg_count + 1)
     ]
     assert report["trough_floor_height_mm"] == geometry.trough_floor_height_mm
     assert report["socket_radius_mm"] == geometry.socket_radius_mm
     assert report["support_pad_height_mm"] == geometry.support_pad_height_mm
+    assert report["lap_length_mm"] == drive_base.lap_length_mm
+    assert report["bolt_count"] == drive_base.bolt_count
+    assert report["slot_length_mm"] == drive_base.slot_length_mm
+    assert report["slot_width_mm"] == drive_base.slot_width_mm
+    assert report["arm_thickness_mm"] == drive_base.arm_thickness_mm
+    assert report["boss_diameter_mm"] == drive_base.boss_diameter_mm
     assert report["build_failed"] is True
     assert report["error_type"] == "CadUnavailableError"
     assert "cad" in report["message"]
@@ -596,11 +618,17 @@ def test_geometry_is_available_and_building_fails_loudly_without_the_shape_libra
 def test_build_parts_returns_one_independent_solid_per_leg(
     shipped: tuple[object, object], geometry: StandGeometry
 ) -> None:
-    """脚は輪ごとに独立した1個の立体である（決定 5「3脚独立。1体の枠にしない」）。"""
+    """脚は輪ごとに独立した1個の立体である（決定 5「3脚独立。1体の枠にしない」）。
+
+    ⚠️ タスク 3.2 で駆動ベースが加わったため、`build_parts` の戻り値は脚だけでは
+    ない。脚が**輪の数ちょうど**であることと、そのどれもが単一の立体であることが
+    決定 5 の主張であり、そこは変わっていない。
+    """
     params, layout = shipped
     parts = build_parts(params, layout)  # type: ignore[arg-type]
-    assert len(parts) == geometry.leg_count
     assert [part.name for part in parts] == list(part_names(params))  # type: ignore[arg-type]
+    legs = [part for part in parts if part.name.startswith("service_stand_")]
+    assert len(legs) == geometry.leg_count
     for part in parts:
         assert isinstance(part, BuiltPart)
         # ⚠️ 立体が1個であることが「1体の枠にしない」の形状側の主張である。
@@ -623,9 +651,13 @@ def test_metrics_are_identical_across_two_independent_builds(
 def test_the_measured_bounding_box_is_the_envelope_used_for_the_build_volume_check(
     shipped: tuple[object, object], geometry: StandGeometry
 ) -> None:
-    """実形状の外接箱が、造形可能寸法の検査へ渡した外接箱と一致する。"""
+    """実形状の外接箱が、造形可能寸法の検査へ渡した外接箱と一致する（脚）。"""
     params, layout = shipped
-    part = build_parts(params, layout)[0]  # type: ignore[arg-type]
+    part = next(
+        candidate
+        for candidate in build_parts(params, layout)  # type: ignore[arg-type]
+        if candidate.name.startswith("service_stand_")
+    )
     bbox = part.metrics.bbox_mm
     expected = (
         geometry.envelope.x_mm,
@@ -669,3 +701,287 @@ def test_cad_unavailable_error_is_not_raised_when_the_library_is_present(
         build_parts(params, layout)  # type: ignore[arg-type]
     except CadUnavailableError as exc:  # pragma: no cover - 導入済み環境では通らない
         pytest.fail(f"形状ライブラリが導入されているのに失敗した: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# 6. 駆動ベース: 中央部と3つのモータ取付部（タスク 3.2 / 要件 2.5, 2.6, 2.11,
+#    3.1, 3.7, 3.8, 3.10）
+#
+# ⚠️ **本節は形状ライブラリを要さない側である。** 実形状に対する不変条件
+# （当たり面の実測・長穴の実測・モータ胴体との非接触）は
+# `test_chassis_invariants.py` が持つ（design.md `#### Shapes`「不変条件」）。
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def drive_base(shipped: tuple[object, object]) -> DriveBaseGeometry:
+    params, layout = shipped
+    return drive_base_geometry(params, layout)  # type: ignore[arg-type]
+
+
+def _replace_base(params: object, **changes: object) -> object:
+    """`base` 群だけを差し替えた `ResolvedParams` を作る。"""
+    import dataclasses
+
+    chassis = params.chassis  # type: ignore[attr-defined]
+    return dataclasses.replace(
+        params,  # type: ignore[type-var]
+        chassis=dataclasses.replace(
+            chassis, base=dataclasses.replace(chassis.base, **changes)
+        ),
+    )
+
+
+def test_the_drive_base_is_a_central_plate_with_three_radial_arms(
+    shipped: tuple[object, object], drive_base: DriveBaseGeometry
+) -> None:
+    """中央部1つと、輪数ぶんの放射状アームからなる（要件 3.1, 3.2）。
+
+    ⚠️ **部品の点数は `joints.segment_counts()` が唯一の正である**（要件 2.1:
+    分割数は導出であって設定値ではない）。ここで別に数え直さない。
+    """
+    from chassis_mechanism.joints import segment_counts
+
+    params, layout = shipped
+    counts = segment_counts(params)  # type: ignore[arg-type]
+    assert counts["hub_plate"] == 1
+    assert counts["motor_arm"] == params.chassis.base.wheel_count  # type: ignore[attr-defined]
+    assert drive_base.wheel_angles_deg == layout.wheel_angles_deg  # type: ignore[attr-defined]
+    assert drive_base.wheel_count == counts["motor_arm"]
+    assert PART_NAMES == ("hub_plate", "motor_arm", "service_stand")
+    assert part_names(params) == (  # type: ignore[arg-type]
+        "hub_plate",
+        "motor_arm_1",
+        "motor_arm_2",
+        "motor_arm_3",
+        "service_stand_1",
+        "service_stand_2",
+        "service_stand_3",
+    )
+
+
+def test_the_arm_spans_from_the_plate_edge_to_the_wheel_centre_plane(
+    shipped: tuple[object, object], drive_base: DriveBaseGeometry
+) -> None:
+    """アームの半径方向の区間は `ARM_LENGTH_FORMULA` そのものである（要件 3.3）。"""
+    params, layout = shipped
+    base = params.chassis.base  # type: ignore[attr-defined]
+    assert drive_base.hub_radius_mm == pytest.approx(base.hub_outer_diameter_mm / 2.0)
+    assert drive_base.arm_outer_radius_mm == pytest.approx(layout.base_radius_mm)  # type: ignore[attr-defined]
+    assert (
+        drive_base.arm_outer_radius_mm - drive_base.hub_radius_mm
+    ) == pytest.approx(layout.arm_length_mm)  # type: ignore[attr-defined]
+    # ⚠️ 板の下面は取付面（鉛直スタック）である。ここで定数を置かない。
+    assert drive_base.underside_height_mm == pytest.approx(
+        layout.vertical.mount_face_height_mm  # type: ignore[attr-defined]
+    )
+
+
+def test_the_lap_joint_reads_the_bolt_count_from_the_joint_derivation(
+    shipped: tuple[object, object], drive_base: DriveBaseGeometry
+) -> None:
+    """⚠️ **座の本数と重ね代は `joints` が唯一の正である**（要件 2.6, 3.10）。
+
+    形の側が本数を数え直すと、下限を上げたときに座だけが増えて舌が伸びない、
+    といった食い違いが黙って残る。
+    """
+    from chassis_mechanism.joints import arm_joint_lap_length_mm, derive_joints
+
+    params, layout = shipped
+    arm_joint = next(
+        joint
+        for joint in derive_joints(layout, params)  # type: ignore[arg-type]
+        if joint.name == "hub_plate__motor_arm_1"
+    )
+    assert drive_base.bolt_count == arm_joint.bolt_count
+    assert len(drive_base.bolt_radii_mm) == arm_joint.bolt_count
+    assert drive_base.lap_length_mm == pytest.approx(
+        arm_joint_lap_length_mm(layout, params)  # type: ignore[arg-type]
+    )
+    # 座はすべて重ね代の内側にある。
+    for radius_mm in drive_base.bolt_radii_mm:
+        assert drive_base.hub_radius_mm < radius_mm
+        assert radius_mm < drive_base.hub_radius_mm + drive_base.lap_length_mm
+
+
+def test_a_joint_face_thinner_than_the_boss_is_rejected(
+    shipped: tuple[object, object]
+) -> None:
+    """⚠️ **座の外径を下回る接合面の厚さは形状不正である**（要件 2.5, 2.6, 2.9）。
+
+    中央部↔モータ取付部の接合面は接線方向を法線に持ち、面内2軸は
+    **アーム長と厚さ**である。`joints.BEARING_AREA_FORMULA` が数えるのは
+    座の**環まるごと**であるため、厚さが座の外径 `BOSS_DIAMETER_FACTOR ×
+    insert_outer_diameter_mm` を下回ると、⚠️ **記録された当たり面が面に載らない**
+    ——解析値だけが下限を満たし、実物は満たさない状態になる。
+
+    ⚠️ **これは CAD 非導入の環境でも観測できる**（`drive_base_geometry` は算術
+    のみである）。実形状との一致は `test_chassis_invariants.py` が別に検査する。
+    """
+    params, layout = shipped
+    boss_diameter_mm = 2.0 * params.joint.insert_outer_diameter_mm  # type: ignore[attr-defined]
+    thin = _replace_base(params, arm_thickness_mm=boss_diameter_mm - 0.1)
+    with pytest.raises(GeometryError) as excinfo:
+        drive_base_geometry(thin, layout)  # type: ignore[arg-type]
+    message = str(excinfo.value)
+    assert "arm_thickness_mm" in message
+    assert repr(boss_diameter_mm) in message
+
+
+def test_the_shipped_joint_face_is_thick_enough_for_the_whole_boss(
+    shipped: tuple[object, object], drive_base: DriveBaseGeometry
+) -> None:
+    """出荷値では接合面の厚さが座の外径以上である（要件 2.5 の「薄い当たり面」禁止）。"""
+    params, _ = shipped
+    assert drive_base.boss_diameter_mm == pytest.approx(
+        2.0 * params.joint.insert_outer_diameter_mm  # type: ignore[attr-defined]
+    )
+    assert drive_base.arm_thickness_mm >= drive_base.boss_diameter_mm
+
+
+def test_the_bracket_slot_travel_equals_the_dimension_parameter(
+    shipped: tuple[object, object], drive_base: DriveBaseGeometry
+) -> None:
+    """⚠️ 長穴の移動量が `base.slot_travel_mm` と一致する（要件 3.8 / タスク 3.2）。
+
+    移動量は「長穴の長さ − 長穴の幅」である（幅ぶんは締結要素そのものが占める）。
+    ⚠️ **穴の径は上流の貫通穴径であり、ブラケット側の呼び径ではない**
+    （要件 2.11: 切削で合わせる嵌合を設計に含めない）。
+    """
+    params, _ = shipped
+    base = params.chassis.base  # type: ignore[attr-defined]
+    bracket = params.chassis.bracket  # type: ignore[attr-defined]
+    assert drive_base.slot_width_mm == pytest.approx(
+        params.joint.through_hole_diameter_mm  # type: ignore[attr-defined]
+    )
+    assert drive_base.slot_length_mm - drive_base.slot_width_mm == pytest.approx(
+        base.slot_travel_mm
+    )
+    assert drive_base.slot_travel_mm == pytest.approx(base.slot_travel_mm)
+    assert len(drive_base.slot_offsets_mm) == bracket.mount_hole_count
+    assert drive_base.slot_offsets_mm == pytest.approx(
+        (-bracket.mount_hole_pitch_mm / 2.0, bracket.mount_hole_pitch_mm / 2.0)
+    )
+    # 長穴の中心は取付面の半径（本 Spec の唯一の設計変数）にある。
+    assert drive_base.slot_center_radius_mm == pytest.approx(
+        base.hub_center_to_mount_face_mm
+    )
+
+
+def test_the_slot_travel_follows_the_dimension_parameter(
+    shipped: tuple[object, object]
+) -> None:
+    """⚠️ 長穴の移動量を書き換えると長穴が 1:1 で伸びる（値を焼き込んでいない）。
+
+    ⚠️ `0.0`（差を吸収しない）も設定として成立する——そのとき長穴は丸穴になる。
+    """
+    params, layout = shipped
+    for travel_mm in (0.0, 2.5, 8.0):
+        moved = drive_base_geometry(
+            _replace_base(params, slot_travel_mm=travel_mm),  # type: ignore[arg-type]
+            layout,  # type: ignore[arg-type]
+        )
+        assert moved.slot_length_mm - moved.slot_width_mm == pytest.approx(travel_mm)
+
+
+def test_no_printed_bore_is_a_machined_fit_to_a_mating_part(
+    shipped: tuple[object, object], drive_base: DriveBaseGeometry
+) -> None:
+    """⚠️ **切削加工を前提とする嵌合を設計に含めない**（要件 2.11 / 決定 4）。
+
+    観測可能な形にするために2つを固定する。
+
+    - 造形する穴はどれも上流の**貫通穴径以上**である。貫通穴径は締結要素の呼びに
+      対してすでに隙間を持つ値であり（M3 に対し φ3.4）、それを下回る穴は
+      「あとで揉んで合わせる」ことを前提にしなければ成立しない
+    - 造形する穴の径が、相手部品の**呼び寸法そのもの**と一致しない。一致していれば
+      それは締まり嵌め——寸法差を切削で吸収する設計である。寸法差は長穴と隙間で
+      吸収する（決定 4）
+    """
+    params, _ = shipped
+    chassis = params.chassis  # type: ignore[attr-defined]
+    through_hole_mm = params.joint.through_hole_diameter_mm  # type: ignore[attr-defined]
+    assert drive_base.bore_diameters_mm, "造形する穴が1つも無い記述は検査にならない"
+    for diameter_mm in drive_base.bore_diameters_mm:
+        assert diameter_mm >= through_hole_mm, diameter_mm
+
+    # ⚠️ **一覧は「機械的に組み付ける相手」である。** 熱圧入インサートはここに
+    # 現れない——その下穴が呼び外径ちょうどであることは正しい（インサートは周囲の
+    # 樹脂を**溶かして**食い込むのであって、削って合わせるのではない。上流
+    # `catch_mechanism.shapes` も下穴を `insert_outer_diameter_mm` に採っている）。
+    mating_nominals_mm = (
+        chassis.bracket.mount_hole_diameter_mm,
+        chassis.motor.shaft_diameter_mm,
+        chassis.hub.boss_diameter_mm,
+        chassis.hub.bore_diameter_mm,
+        chassis.wheel.center_bore_diameter_mm,
+    )
+    for diameter_mm in drive_base.bore_diameters_mm:
+        for nominal_mm in mating_nominals_mm:
+            assert diameter_mm != pytest.approx(nominal_mm), (
+                f"造形穴 {diameter_mm}mm が相手部品の呼び {nominal_mm}mm と一致する"
+                "（切削で合わせる嵌合である）"
+            )
+    # ブラケットの取付穴は丸穴ではなく長穴である（要件 3.8）。
+    assert drive_base.slot_length_mm > drive_base.slot_width_mm
+
+
+def test_the_motor_body_hangs_below_the_drive_base(
+    shipped: tuple[object, object], drive_base: DriveBaseGeometry
+) -> None:
+    """⚠️ **造形部品でモータ本体をクランプしない**（要件 3.7）。
+
+    モータ胴体は付属金属ブラケットにぶら下がり、その最上点は駆動ベースの下面より
+    低い。⚠️ ここが崩れる寸法は「造形部品が胴体を掴む」設計であるため拒否する。
+    """
+    params, layout = shipped
+    motor = params.chassis.motor  # type: ignore[attr-defined]
+    assert drive_base.motor_axis_height_mm == pytest.approx(
+        layout.vertical.axle_center_height_mm  # type: ignore[attr-defined]
+    )
+    assert drive_base.motor_body_diameter_mm == pytest.approx(motor.body_diameter_mm)
+    assert (
+        drive_base.motor_outer_radius_mm - drive_base.motor_inner_radius_mm
+    ) == pytest.approx(motor.body_length_mm)
+    # ギヤボックス端面はホイール中心面からハブのフランジ厚と半幅ぶん内側にある。
+    assert drive_base.motor_outer_radius_mm == pytest.approx(
+        layout.base_radius_mm - layout.axial_stack_mm[1]  # type: ignore[attr-defined]
+    )
+    top_mm = drive_base.motor_axis_height_mm + motor.body_diameter_mm / 2.0
+    assert top_mm <= drive_base.underside_height_mm
+    # ⚠️ 半径方向では胴体が中央部ともアームとも重なる——高さだけが隔てている。
+    assert drive_base.motor_inner_radius_mm < drive_base.hub_radius_mm
+    assert drive_base.motor_outer_radius_mm > drive_base.hub_radius_mm
+
+
+def test_a_drive_base_that_would_clamp_the_motor_body_is_rejected(
+    shipped: tuple[object, object]
+) -> None:
+    """胴体の上端がベース下面へ届く寸法は拒否される（要件 3.7）。"""
+    import dataclasses
+
+    params, layout = shipped
+    chassis = params.chassis  # type: ignore[attr-defined]
+    clamping = dataclasses.replace(
+        params,  # type: ignore[type-var]
+        chassis=dataclasses.replace(
+            chassis,
+            motor=dataclasses.replace(chassis.motor, body_diameter_mm=90.0),
+        ),
+    )
+    with pytest.raises(GeometryError) as excinfo:
+        drive_base_geometry(clamping, layout)  # type: ignore[arg-type]
+    assert "body_diameter_mm" in str(excinfo.value)
+
+
+def test_the_drive_base_fragments_fit_the_build_volume(
+    shipped: tuple[object, object], drive_base: DriveBaseGeometry
+) -> None:
+    """中央部とアームの外接箱が造形可能寸法に収まる（要件 2.2）。"""
+    params, _ = shipped
+    for name, envelope in (
+        ("hub_plate", drive_base.hub_plate_envelope),
+        ("motor_arm", drive_base.motor_arm_envelope),
+    ):
+        assert isinstance(envelope, Envelope)
+        assert check_envelope(name, envelope, params.printing) == (), name  # type: ignore[attr-defined]

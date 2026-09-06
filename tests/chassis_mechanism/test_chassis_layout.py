@@ -156,7 +156,11 @@ def test_arm_that_cannot_hold_the_joint_bearing_area_is_rejected() -> None:
     """当たり面を確保できない配置半径は形状不正として拒否される（要件 3.10 の前提）。"""
     params = _params()
     layout = derive_layout(params)
-    required = layout.arm_length_mm * params.chassis.base.arm_width_mm
+    # ⚠️ **接合面は「アーム長 × アーム厚」である**（接線方向を法線に持つ面。
+    # 要件 2.8 が積層方向 `z` を法線に持つ面を禁じる）。⚠️ `arm_width_mm` を
+    # 掛けない——それはボルトの軸方向であり、その積は要件 2.8 が禁じる**水平面**
+    # の面積になる。
+    required = layout.arm_length_mm * params.chassis.base.arm_thickness_mm
     broken = _with_chassis(
         params,
         joint_local=replace(
@@ -170,17 +174,49 @@ def test_arm_that_cannot_hold_the_joint_bearing_area_is_rejected() -> None:
     assert "min_bearing_area_mm2" in message
 
 
-def test_arm_that_is_narrower_than_the_bearing_area_requires_is_rejected() -> None:
-    """アーム幅を細くして当たり面が足りなくなる入力も、同じ検査で拒否される。"""
+def test_arm_that_is_thinner_than_the_bearing_area_requires_is_rejected() -> None:
+    """アーム**厚**を薄くして当たり面が足りなくなる入力も、同じ検査で拒否される。
+
+    ⚠️ **接合面の面内2軸はアーム長と厚さである。** 中央部↔モータ取付部の接合面は
+    接線方向を法線に持ち（`joints` が `print_normal_axis="y"` として記録する。
+    要件 2.8 / A-5 が積層方向 `z` を法線に持つ面を禁じる）、幅 `arm_width_mm` は
+    **ボルトの軸そのもの**である。したがって当たり面を痩せさせるのは厚さであって
+    幅ではない。
+    """
     params = _params()
     layout = derive_layout(params)
-    width = params.chassis.joint_local.min_bearing_area_mm2 / layout.arm_length_mm
+    thickness = params.chassis.joint_local.min_bearing_area_mm2 / layout.arm_length_mm
     broken = _with_chassis(
-        params, base=replace(params.chassis.base, arm_width_mm=width / 2.0)
+        params, base=replace(params.chassis.base, arm_thickness_mm=thickness / 2.0)
     )
     with pytest.raises(GeometryError) as excinfo:
         derive_layout(broken)
-    assert "arm_width_mm" in str(excinfo.value)
+    assert "arm_thickness_mm" in str(excinfo.value)
+
+
+def test_the_arm_width_is_not_an_input_to_the_bearing_area_limit() -> None:
+    """⚠️ **アーム幅を痩せさせても当たり面の検査は動かない**（軸の取り違えの再発防止）。
+
+    かつてこの検査は `min_bearing_area_mm2 / arm_width_mm` を最小アーム長として
+    いた——それは `arm_length × arm_width` という**水平（`z` 法線）な当たり面**を
+    前提とする式であり、要件 2.8 と `joints` の `print_normal_axis="y"` の双方に
+    反する。⚠️ **幅は締結の軸方向であり、当たり面の面内の量ではない。**
+    幅をどれだけ細くしても幾何の導出が成立し続けることで、その取り違えが戻って
+    いないことを固定する。
+    """
+    params = _params()
+    before = derive_layout(params)
+    for factor in (0.5, 0.1, 0.01):
+        narrowed = derive_layout(
+            _with_chassis(
+                params,
+                base=replace(
+                    params.chassis.base,
+                    arm_width_mm=params.chassis.base.arm_width_mm * factor,
+                ),
+            )
+        )
+        assert narrowed.arm_length_mm == pytest.approx(before.arm_length_mm)
 
 
 def test_arm_length_grows_one_to_one_with_the_mount_face_distance() -> None:
@@ -234,7 +270,10 @@ def test_the_bearing_area_limit_bounds_the_mount_face_distance_from_below() -> N
     params = _params()
     chassis = params.chassis
     layout = derive_layout(params)
-    minimum_arm_mm = chassis.joint_local.min_bearing_area_mm2 / chassis.base.arm_width_mm
+    # ⚠️ 割るのはアーム**厚**である（接合面の面内2軸はアーム長と厚さ）。
+    minimum_arm_mm = (
+        chassis.joint_local.min_bearing_area_mm2 / chassis.base.arm_thickness_mm
+    )
     assert layout.arm_length_mm > minimum_arm_mm
     slack_mm = layout.arm_length_mm - minimum_arm_mm
 
