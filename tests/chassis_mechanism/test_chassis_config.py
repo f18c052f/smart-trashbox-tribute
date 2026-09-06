@@ -736,7 +736,7 @@ def test_digest_is_pinned_to_a_stable_literal() -> None:
     """
     assert (
         parameters_digest(load_params().chassis)
-        == "sha256:49894ea934f3c67b29ffba0a39a74f587aca23533a64e2705bd8c54b59467081"
+        == "sha256:dc22d313f847ecff9a53cb214ad912ff0b30905b26686ee36bf35381c841c194"
     )
 
 

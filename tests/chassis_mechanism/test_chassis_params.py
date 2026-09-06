@@ -230,7 +230,10 @@ def make_stand(**overrides: object) -> StandSpec:
 
 
 def make_joint_local(**overrides: object) -> LocalJointLimits:
-    values: dict[str, object] = {"min_bearing_area_mm2": 120.0}
+    values: dict[str, object] = {
+        "min_bearing_area_mm2": 120.0,
+        "fastener_length_margin_mm": 3.0,
+    }
     values.update(overrides)
     return LocalJointLimits(**values)  # type: ignore[arg-type]
 
@@ -616,6 +619,7 @@ def test_non_positive_values_are_rejected_with_name_and_value(
         (make_clearance, "fastener_protrusion_mm"),
         (make_board, "cooling_gap_mm"),
         (make_stand, "wheel_rotation_clearance_mm"),
+        (make_joint_local, "fastener_length_margin_mm"),
     ],
 )
 def test_zero_is_allowed_where_zero_is_a_decision(
@@ -632,6 +636,7 @@ def test_zero_is_allowed_where_zero_is_a_decision(
         (make_adapter, "seat_clearance_mm"),
         (make_clearance, "cable_lowest_offset_mm"),
         (make_board, "cooling_gap_mm"),
+        (make_joint_local, "fastener_length_margin_mm"),
     ],
 )
 @pytest.mark.parametrize("bad", [-0.1, math.nan, math.inf])

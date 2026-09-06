@@ -837,16 +837,29 @@ class LocalJointLimits:
     Attributes:
         min_bearing_area_mm2: 当たり面の下限（mm^2）。上流の下限以上でなければ
             ならない。⚠️ ダボは位置決め専用であり、この面積に算入しない。
+        fastener_length_margin_mm: ボルト長を「積み上がり厚さ ＋ インサート長」
+            から切り上げるための余裕（mm）。⚠️ **これは締結の向きに沿った量で
+            あり、`clearance.fastener_protrusion_mm`（締結部品の**下方**への
+            突出量）とは別の物理量である**——後者は床との隙間（要件 4.2, 4.3）
+            の入力であり、皿頭を選べば `0.0` が正当な値になる。両者を1つの項目
+            で兼ねると、床についての判断が調達するボルトの長さを黙って縮める。
+            ⚠️ **0 を許す**——「余裕を取らない」（＝呼び長さちょうどで発注する）
+            は設定として意味を持つ。
 
     Raises:
-        ParameterError: 下限が正の有限値でない場合。
+        ParameterError: 下限が正の有限値でない場合、または余裕が負もしくは
+            非有限の場合。
     """
 
     min_bearing_area_mm2: float
+    fastener_length_margin_mm: float
 
     def __post_init__(self) -> None:
         """全不変条件を検証し、違反時は違反項目名と値を添えて拒否する。"""
         _require_positive_finite(self.min_bearing_area_mm2, "min_bearing_area_mm2")
+        _require_nonneg_finite(
+            self.fastener_length_margin_mm, "fastener_length_margin_mm"
+        )
 
     def validate_against_upstream(self, joint_policy: JointPolicy) -> None:
         """上流の下限以上であることを検証する（要件 2.9）。

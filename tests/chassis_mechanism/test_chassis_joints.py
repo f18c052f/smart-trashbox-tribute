@@ -1,0 +1,903 @@
+"""`chassis_mechanism.joints` の検査（design.md `#### Joints` / 要件 2.1, 2.2,
+2.6, 2.7, 2.8, 2.9, 2.10, 3.10, 5.6, 6.8）。
+
+固定するのは次の8点である。
+
+1. **接合部の一覧は幾何と寸法から導出される**（tasks.md タスク 2.3
+   「⚠️ **手書きの一覧を設定ファイルに持たない**」）。⚠️ 輪数・脚数・上流の
+   ゴミ箱の採寸値・造形可能寸法を動かすと一覧の件数が追随する。記録
+   （`joint-schedule.json`）は導出の**写し**であり入力ではない。
+2. **積層方向（`z`）と一致する接合面は形状不正として拒否される**（要件 2.8 /
+   design.md `#### Joints` Validation「`print_normal_axis == "z"` の接合部は
+   `GeometryError` で拒否する」）。⚠️ メッセージは**接合部の名と軸**を持つ。
+3. **位置決め要素（ダボ）は締結部品一覧に現れず、当たり面にも算入されない**
+   （要件 2.7 / design.md Invariants「⚠️ **ダボは `lines` に現れない**」）。
+4. **締結部品の長さは「積み上がり厚さ ＋ 上流のインサート長 ＋ 余裕」から導出
+   される**（要件 2.10 / tasks.md タスク 2.3「⚠️ **上流 `JointPolicy.
+   insert_length_mm` を使い、数値を書き写さない**」）。⚠️ **板厚を変えると
+   ボルト長が追随する**（観測可能な完了状態）。
+5. **当たり面は上流の下限と本 Spec のより厳しい下限の両方を満たす**
+   （要件 2.9 / design.md Postconditions）。⚠️ 上流の `check_joint` を実際に
+   通す。⚠️ ダボの径を変えても当たり面は動かない。
+6. **分割数の導出は部品の種類で分かれる**（要件 2.1 / research.md「Decision:
+   分割の導出を部品の種類で分ける」）。⚠️ **円環でない部品を円環として近似
+   しない**——造形可能寸法を動かしても位相従属の部品の分割数は動かない。
+7. **断片の外接箱は上流の検査（`check_envelope`）を関門とする**（要件 2.2,
+   2.3）。⚠️ 超過する軸と超過量がメッセージに現れる。
+8. **記録は導出の写しであり、独立に編集してよい自由記述ではない**——未知キー・
+   欠損・joints と食い違う lines を拒否し、出荷されている記録が現在の寸法から
+   再導出したものと一致する。
+"""
+
+from __future__ import annotations
+
+import ast
+import json
+import math
+import re
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
+from catch_mechanism import GeometryError as UpstreamGeometryError
+from catch_mechanism import check_joint, required_segment_count
+
+from chassis_mechanism import joints as joints_module
+from chassis_mechanism.config import (
+    DEFAULT_DIMENSIONS_PATH,
+    SCHEMA_VERSION,
+    ResolvedParams,
+    load_params,
+    parameters_digest,
+)
+from chassis_mechanism.errors import ConsistencyError, GeometryError, ParameterError
+from chassis_mechanism.joints import (
+    DEFAULT_JOINT_SCHEDULE_PATH,
+    FASTENER_KINDS,
+    FastenerLine,
+    FastenerSchedule,
+    JointSpec,
+    derive_fastener_schedule,
+    derive_joints,
+    dump_fastener_schedule,
+    load_fastener_schedule,
+    segment_counts,
+)
+from chassis_mechanism.layout import derive_layout
+
+_JOINTS_SOURCE: str = Path(joints_module.__file__).read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# 補助
+# ---------------------------------------------------------------------------
+
+
+def _params() -> ResolvedParams:
+    """出荷されている寸法設定（本 Spec ＋ 上流）を読む。"""
+    return load_params(DEFAULT_DIMENSIONS_PATH)
+
+
+def _with_base(params: ResolvedParams, **changes: object) -> ResolvedParams:
+    """`base` 群だけを差し替えた `ResolvedParams` を作る。"""
+    return replace(
+        params, chassis=replace(params.chassis, base=replace(params.chassis.base, **changes))
+    )
+
+
+def _with_clearance(params: ResolvedParams, **changes: object) -> ResolvedParams:
+    """`clearance` 群だけを差し替えた `ResolvedParams` を作る。"""
+    return replace(
+        params,
+        chassis=replace(
+            params.chassis, clearance=replace(params.chassis.clearance, **changes)
+        ),
+    )
+
+
+def _with_joint_local(params: ResolvedParams, **changes: object) -> ResolvedParams:
+    """`joint_local` 群だけを差し替えた `ResolvedParams` を作る。"""
+    return replace(
+        params,
+        chassis=replace(
+            params.chassis, joint_local=replace(params.chassis.joint_local, **changes)
+        ),
+    )
+
+
+def _with_wheel_count(params: ResolvedParams, count: int) -> ResolvedParams:
+    """輪数と脚数を同時に差し替える（`ChassisParams` は両者の一致を要求する）。"""
+    chassis = params.chassis
+    return replace(
+        params,
+        chassis=replace(
+            chassis,
+            base=replace(chassis.base, wheel_count=count),
+            stand=replace(chassis.stand, leg_count=count),
+        ),
+    )
+
+
+def _derived(params: ResolvedParams) -> tuple[JointSpec, ...]:
+    """出荷寸法から接合部を導出する。"""
+    return derive_joints(derive_layout(params), params)
+
+
+def _named(specs: tuple[JointSpec, ...], name: str) -> JointSpec:
+    """名前で1件を取り出す。"""
+    return next(spec for spec in specs if spec.name == name)
+
+
+def _pad_area_mm2(params: ResolvedParams) -> float:
+    """ボルト1本あたりの当たり面（インサート座の環）。上流の継手方針だけから決まる。"""
+    joint = params.joint
+    boss_diameter_mm = joints_module.BOSS_DIAMETER_FACTOR * joint.insert_outer_diameter_mm
+    return (
+        math.pi
+        / 4
+        * (boss_diameter_mm**2 - joint.through_hole_diameter_mm**2)
+    )
+
+
+# ---------------------------------------------------------------------------
+# 1. 接合部の一覧は導出される（手書きの一覧を持たない）
+# ---------------------------------------------------------------------------
+
+
+def test_joint_names_are_derived_from_the_geometry_and_the_dimensions() -> None:
+    """出荷寸法からの一覧が、輪数・分割数・保持箇所から一意に決まる。"""
+    params = _params()
+    specs = _derived(params)
+    counts = segment_counts(params)
+    expected_names = (
+        tuple(f"hub_plate__motor_arm_{index}" for index in range(1, params.chassis.base.wheel_count + 1))
+        + tuple(
+            f"hub_plate__adapter_segment_{index}"
+            for index in range(1, counts["adapter_segment"] + 1)
+        )
+        + ("adapter__trash_can",)
+        + tuple(
+            f"service_stand_{index}__wheel_{index}"
+            for index in range(1, params.chassis.stand.leg_count + 1)
+        )
+    )
+    assert tuple(spec.name for spec in specs) == expected_names
+
+
+def test_joint_count_follows_the_wheel_count() -> None:
+    """⚠️ 輪数を増やすと中央部↔アームの接合部とスタンドの拘束が追随する。"""
+    four = _with_wheel_count(_params(), 4)
+    specs = _derived(four)
+    arms = [spec for spec in specs if spec.members[1].startswith("motor_arm_")]
+    stands = [spec for spec in specs if spec.members[0].startswith("service_stand_")]
+    assert len(arms) == 4
+    assert len(stands) == 4
+
+
+def test_joint_count_follows_the_upstream_trash_can_measurement() -> None:
+    """⚠️ 上流のゴミ箱の底の外径を広げるとアダプタ断片の接合部が増える。"""
+    params = _params()
+    wider = replace(
+        params, trash_can=replace(params.trash_can, bottom_outer_diameter_mm=200.0)
+    )
+    before = len([spec for spec in _derived(params) if "adapter_segment" in spec.name])
+    after = len([spec for spec in _derived(wider) if "adapter_segment" in spec.name])
+    assert after > before
+
+
+def test_every_derived_joint_names_two_distinct_members() -> None:
+    """接合部は必ず2部材を結ぶ（要件 3.10 の中央部↔モータ取付部を含む）。"""
+    for spec in _derived(_params()):
+        assert len(spec.members) == 2
+        assert spec.members[0] != spec.members[1]
+        assert all(member.strip() for member in spec.members)
+
+
+def test_the_stand_retention_and_the_adapter_retention_are_present() -> None:
+    """⚠️ 要件 5.6（台上の拘束）と要件 6.8（ゴミ箱の締結箇所）が一覧に現れる。"""
+    names = {spec.name for spec in _derived(_params())}
+    assert "adapter__trash_can" in names
+    assert "service_stand_1__wheel_1" in names
+
+
+# ---------------------------------------------------------------------------
+# 2. 積層方向と一致する接合面は拒否される（要件 2.8）
+# ---------------------------------------------------------------------------
+
+
+def test_a_joint_whose_face_normal_is_the_layer_axis_is_rejected() -> None:
+    """⚠️ `print_normal_axis == "z"` は `GeometryError`。名と軸がメッセージに出る。"""
+    with pytest.raises(GeometryError) as excinfo:
+        JointSpec(
+            name="hub_plate__motor_arm_1",
+            members=("hub_plate", "motor_arm_1"),
+            bolt_count=2,
+            bolt_length_mm=20.0,
+            insert_count=2,
+            dowel_count=2,
+            bearing_area_mm2=200.0,
+            print_normal_axis="z",
+            min_bearing_area_mm2=90.0,
+        )
+    message = str(excinfo.value)
+    assert "hub_plate__motor_arm_1" in message
+    assert "z" in message
+
+
+def test_an_axis_that_is_not_an_axis_at_all_is_rejected() -> None:
+    """軸名でない造形姿勢を受け付けない（空文字・別名とも）。"""
+    for axis in ("", "Z", "vertical"):
+        with pytest.raises(GeometryError):
+            JointSpec(
+                name="joint",
+                members=("a", "b"),
+                bolt_count=2,
+                bolt_length_mm=20.0,
+                insert_count=2,
+                dowel_count=0,
+                bearing_area_mm2=200.0,
+                print_normal_axis=axis,
+                min_bearing_area_mm2=90.0,
+            )
+
+
+def test_no_derived_joint_uses_the_layer_axis() -> None:
+    """導出された全接合部の造形姿勢が積層方向を避けている（design.md Postconditions）。"""
+    for spec in _derived(_params()):
+        assert spec.print_normal_axis != joints_module.LAYER_NORMAL_AXIS
+        assert spec.print_normal_axis in joints_module.ALLOWED_PRINT_NORMAL_AXES
+
+
+# ---------------------------------------------------------------------------
+# 3. ダボは締結部品一覧に現れず、当たり面にも算入されない（要件 2.7）
+# ---------------------------------------------------------------------------
+
+
+def test_load_bearing_joints_carry_locating_dowels() -> None:
+    """造形部品どうしの接合部は位置決めダボを持つ（型の上での区別）。"""
+    specs = _derived(_params())
+    arm_joint = _named(specs, "hub_plate__motor_arm_1")
+    assert arm_joint.dowel_count > 0
+    assert arm_joint.insert_count == arm_joint.bolt_count
+
+
+def test_dowels_never_appear_in_the_fastener_lines() -> None:
+    """⚠️ ダボは造形で作る位置決め要素であり、購入する締結部品ではない。"""
+    schedule = derive_fastener_schedule(derive_layout(_params()), _params())
+    assert {line.kind for line in schedule.lines} <= set(FASTENER_KINDS)
+    assert "dowel" not in FASTENER_KINDS
+    total_dowels = sum(spec.dowel_count for spec in schedule.joints)
+    assert total_dowels > 0
+    assert all("dowel" not in line.designation for line in schedule.lines)
+
+
+def test_the_line_totals_are_determined_by_the_joints_alone() -> None:
+    """`lines` の総数は `joints` から一意に決まる（design.md Invariants）。"""
+    schedule = derive_fastener_schedule(derive_layout(_params()), _params())
+    bolts = sum(line.count for line in schedule.lines if line.kind == "bolt")
+    inserts = sum(line.count for line in schedule.lines if line.kind == "insert")
+    nuts = sum(line.count for line in schedule.lines if line.kind == "nut")
+    assert bolts == sum(spec.bolt_count for spec in schedule.joints)
+    assert inserts == sum(spec.insert_count for spec in schedule.joints)
+    assert nuts == sum(spec.bolt_count - spec.insert_count for spec in schedule.joints)
+
+
+def test_changing_the_dowel_diameter_does_not_move_any_bearing_area() -> None:
+    """⚠️ 位置決め要素は当たり面の面積に算入されない（上流 `check_joint` の契約）。"""
+    params = _params()
+    thicker_dowel = replace(params, joint=replace(params.joint, dowel_diameter_mm=8.0))
+    before = [spec.bearing_area_mm2 for spec in _derived(params)]
+    after = [spec.bearing_area_mm2 for spec in _derived(thicker_dowel)]
+    assert before == after
+
+
+def test_a_record_with_more_dowels_keeps_the_same_lines(tmp_path: Path) -> None:
+    """ダボを増やした記録でも `lines` は変わらない（＝ダボは数え上げに入らない）。"""
+    schedule = derive_fastener_schedule(derive_layout(_params()), _params())
+    doubled = FastenerSchedule(
+        schema_version=schedule.schema_version,
+        parameters_digest=schedule.parameters_digest,
+        joints=tuple(
+            replace(spec, dowel_count=spec.dowel_count * 2) for spec in schedule.joints
+        ),
+        lines=schedule.lines,
+    )
+    path = tmp_path / "joint-schedule.json"
+    dump_fastener_schedule(doubled, path)
+    assert load_fastener_schedule(path).lines == schedule.lines
+
+
+# ---------------------------------------------------------------------------
+# 4. 締結部品の長さの導出（要件 2.10）
+# ---------------------------------------------------------------------------
+
+
+def test_bolt_length_is_the_stack_plus_the_upstream_insert_length_plus_margin() -> None:
+    """積み上がり厚さ ＋ 上流のインサート長 ＋ 余裕。数値を書き写さない。
+
+    ⚠️ 「余裕」は `joint_local.fastener_length_margin_mm` である——床との隙間の
+    ための `clearance.fastener_protrusion_mm` ではない（両者が同じ値のときでも
+    参照先を取り違えれば、片方を動かしたときに黙って壊れる）。
+    """
+    params = _params()
+    chassis = params.chassis
+    margin_mm = chassis.joint_local.fastener_length_margin_mm
+    arm_joint = _named(_derived(params), "hub_plate__motor_arm_1")
+    assert arm_joint.bolt_length_mm == pytest.approx(
+        chassis.base.arm_thickness_mm
+        + chassis.base.plate_thickness_mm
+        + params.joint.insert_length_mm
+        + margin_mm
+    )
+    adapter_joint = _named(_derived(params), "hub_plate__adapter_segment_1")
+    assert adapter_joint.bolt_length_mm == pytest.approx(
+        chassis.adapter.wall_thickness_mm + params.joint.insert_length_mm + margin_mm
+    )
+    retention = _named(_derived(params), "adapter__trash_can")
+    assert retention.bolt_length_mm == pytest.approx(
+        chassis.adapter.wall_thickness_mm
+        + params.trash_can.bottom_thickness_mm
+        + params.joint.insert_length_mm
+        + margin_mm
+    )
+
+
+def test_the_ground_clearance_protrusion_does_not_move_any_bolt_length() -> None:
+    """⚠️ **床との隙間の量でボルト長が動いてはならない**（別の物理量である）。
+
+    `clearance.fastener_protrusion_mm` の意味は締結部品の**下方**への突出量だけ
+    であり（`params.ClearanceLimits` の docstring）、その唯一の消費者は
+    `layout` の床との隙間（要件 4.2, 4.3）である。⚠️ 導出されるボルトは
+    すべて半径方向 `x` か接線方向 `y` を向いており、**下方を向くものは1本も
+    無い**。
+
+    ⚠️ **`0.0` は「皿頭で突出が無い」を表す正当な値である**——これを設定した
+    だけで全ボルトの余裕が消えるなら、床についての判断が調達するボルトの長さを
+    黙って縮めていることになる（タスク 5.5 の調達数量が壊れる）。
+    """
+    params = _params()
+    before = [(spec.name, spec.bolt_length_mm) for spec in _derived(params)]
+    for protrusion_mm in (0.0, 1.0, 2.5):
+        moved = _with_clearance(params, fastener_protrusion_mm=protrusion_mm)
+        after = [(spec.name, spec.bolt_length_mm) for spec in _derived(moved)]
+        assert after == before, (
+            f"clearance.fastener_protrusion_mm={protrusion_mm} でボルト長が動いた: "
+            f"{before!r} -> {after!r}"
+        )
+
+
+def test_the_fastener_length_margin_moves_every_bolt_length_one_for_one() -> None:
+    """締結長の余裕は `joint_local.fastener_length_margin_mm` が唯一の入口である。
+
+    ⚠️ **この量を動かしたら全ボルトが 1:1 で追随しなければならない**——追随
+    しなければ、余裕がどこか別の場所（書き写した数値や別の趣旨の量）から来て
+    いることになる。⚠️ `0.0`（余裕を取らない）も設定として成立する。
+    """
+    params = _params()
+    base_margin_mm = params.chassis.joint_local.fastener_length_margin_mm
+    before = [spec.bolt_length_mm for spec in _derived(params) if spec.bolt_count > 0]
+    for margin_mm in (0.0, base_margin_mm + 2.5):
+        moved = _with_joint_local(params, fastener_length_margin_mm=margin_mm)
+        after = [spec.bolt_length_mm for spec in _derived(moved) if spec.bolt_count > 0]
+        delta_mm = margin_mm - base_margin_mm
+        assert after == [pytest.approx(length + delta_mm) for length in before]
+
+
+def test_changing_the_plate_thickness_moves_the_bolt_length() -> None:
+    """⚠️ 板厚を変えると締結部品の長さが追随する（観測可能な完了状態）。"""
+    params = _params()
+    thicker = _with_base(params, plate_thickness_mm=params.chassis.base.plate_thickness_mm + 4.0)
+    before = _named(_derived(params), "hub_plate__motor_arm_1").bolt_length_mm
+    after = _named(_derived(thicker), "hub_plate__motor_arm_1").bolt_length_mm
+    assert after == pytest.approx(before + 4.0)
+
+
+def test_changing_the_upstream_insert_length_moves_every_bolt_length() -> None:
+    """⚠️ インサート長は上流が定める。数値を書き写していれば追随しない。"""
+    params = _params()
+    longer = replace(params, joint=replace(params.joint, insert_length_mm=9.7))
+    before = [spec.bolt_length_mm for spec in _derived(params) if spec.bolt_count > 0]
+    after = [spec.bolt_length_mm for spec in _derived(longer) if spec.bolt_count > 0]
+    assert all(
+        later == pytest.approx(earlier + 4.0) for earlier, later in zip(before, after)
+    )
+
+
+def test_the_schedule_lines_are_procurable_rows() -> None:
+    """種別・呼び・長さ・数量の一覧である（要件 2.10）。"""
+    params = _params()
+    schedule = derive_fastener_schedule(derive_layout(params), params)
+    assert schedule.lines
+    for line in schedule.lines:
+        assert line.designation == params.joint.bolt_designation
+        assert line.kind in FASTENER_KINDS
+        assert line.count > 0
+        if line.kind == "nut":
+            assert line.length_mm is None
+        else:
+            assert line.length_mm is not None and line.length_mm > 0.0
+    insert_line = next(line for line in schedule.lines if line.kind == "insert")
+    assert insert_line.length_mm == pytest.approx(params.joint.insert_length_mm)
+
+
+def test_a_fastener_free_joint_has_no_bolt_length() -> None:
+    """⚠️ 締結部品を持たない拘束（台上の保持）は長さ 0 であり、一覧へ何も足さない。"""
+    stand = _named(_derived(_params()), "service_stand_1__wheel_1")
+    assert stand.bolt_count == 0
+    assert stand.insert_count == 0
+    assert stand.bolt_length_mm == 0.0
+
+
+def test_a_bolt_count_without_a_length_is_rejected() -> None:
+    """ボルトを持つ接合部の長さは正でなければならない。"""
+    with pytest.raises(GeometryError):
+        JointSpec(
+            name="joint",
+            members=("a", "b"),
+            bolt_count=2,
+            bolt_length_mm=0.0,
+            insert_count=2,
+            dowel_count=0,
+            bearing_area_mm2=200.0,
+            print_normal_axis="x",
+            min_bearing_area_mm2=90.0,
+        )
+
+
+def test_more_inserts_than_bolts_is_rejected() -> None:
+    """インサートはボルトを受ける要素であり、ボルトより多くは現れない。"""
+    with pytest.raises(GeometryError):
+        JointSpec(
+            name="joint",
+            members=("a", "b"),
+            bolt_count=1,
+            bolt_length_mm=20.0,
+            insert_count=2,
+            dowel_count=0,
+            bearing_area_mm2=200.0,
+            print_normal_axis="x",
+            min_bearing_area_mm2=90.0,
+        )
+
+
+# ---------------------------------------------------------------------------
+# 5. 当たり面は上流の下限と本 Spec の下限の両方を満たす（要件 2.9）
+# ---------------------------------------------------------------------------
+
+
+def test_every_joint_passes_the_upstream_check_and_the_local_floor() -> None:
+    """⚠️ 上流の `check_joint` と本 Spec のより厳しい下限の**両方**を満たす。"""
+    params = _params()
+    local_floor_mm2 = params.chassis.joint_local.min_bearing_area_mm2
+    for spec in _derived(params):
+        check_joint(params.joint, spec.bearing_area_mm2)  # 上流の検査を実際に通す
+        assert spec.bearing_area_mm2 >= spec.min_bearing_area_mm2
+        assert spec.min_bearing_area_mm2 >= params.joint.min_bearing_area_mm2
+        if spec.name.startswith(("hub_plate__motor_arm", "service_stand")):
+            assert spec.min_bearing_area_mm2 == local_floor_mm2
+
+
+def test_the_bearing_area_of_a_bolted_joint_is_the_analytic_boss_area() -> None:
+    """当たり面は寸法パラメータから解析的に算出する（design.md Risks）。"""
+    params = _params()
+    pad_mm2 = _pad_area_mm2(params)
+    arm_joint = _named(_derived(params), "hub_plate__motor_arm_1")
+    assert arm_joint.bearing_area_mm2 == pytest.approx(arm_joint.bolt_count * pad_mm2)
+
+
+def test_raising_the_local_floor_adds_bolts() -> None:
+    """⚠️ 本 Spec の下限を上げると、下限を満たすまでボルト本数が増える。"""
+    params = _params()
+    stricter = replace(
+        params,
+        chassis=replace(
+            params.chassis,
+            joint_local=replace(
+                params.chassis.joint_local, min_bearing_area_mm2=200.0
+            ),
+        ),
+    )
+    before = _named(_derived(params), "hub_plate__motor_arm_1")
+    after = _named(_derived(stricter), "hub_plate__motor_arm_1")
+    assert after.bolt_count > before.bolt_count
+    assert after.bearing_area_mm2 >= 200.0
+
+
+def test_a_floor_that_no_joint_face_can_carry_is_rejected() -> None:
+    """⚠️ 当たり面が接合面に収まらない下限は形状不正である（接合部の名が出る）。
+
+    ⚠️ アーム長そのものが足りなくなる値は `derive_layout` が先に拒否する
+    （要件 3.10）。ここで見たいのは**接合面の幅にボルト座が並ばない**という
+    `joints` 側の関門であるため、アーム長の下限は満たす値を選ぶ。
+    """
+    params = _params()
+    impossible = replace(
+        params,
+        chassis=replace(
+            params.chassis,
+            joint_local=replace(
+                params.chassis.joint_local, min_bearing_area_mm2=1000.0
+            ),
+        ),
+    )
+    with pytest.raises(GeometryError) as excinfo:
+        _derived(impossible)
+    assert "hub_plate__motor_arm_1" in str(excinfo.value)
+
+
+def test_a_joint_below_its_own_floor_cannot_be_constructed() -> None:
+    """下限を下回る当たり面を持つ接合部は構築できない（Postconditions）。"""
+    with pytest.raises(GeometryError):
+        JointSpec(
+            name="joint",
+            members=("a", "b"),
+            bolt_count=2,
+            bolt_length_mm=20.0,
+            insert_count=2,
+            dowel_count=0,
+            bearing_area_mm2=10.0,
+            print_normal_axis="x",
+            min_bearing_area_mm2=90.0,
+        )
+
+
+# ---------------------------------------------------------------------------
+# 6. 分割数の導出は部品の種類で分かれる（要件 2.1）
+# ---------------------------------------------------------------------------
+
+
+def test_the_annular_part_uses_the_upstream_segment_derivation() -> None:
+    """円環部品（アダプタ）は上流 `required_segment_count` を用いる。"""
+    params = _params()
+    counts = segment_counts(params)
+    adapter = params.chassis.adapter
+    outer_diameter_mm = params.trash_can.bottom_outer_diameter_mm + 2.0 * (
+        adapter.seat_clearance_mm + adapter.wall_thickness_mm
+    )
+    assert counts["adapter_segment"] == required_segment_count(
+        outer_diameter_mm, params.printing
+    )
+
+
+def test_the_phase_determined_parts_follow_the_wheel_count() -> None:
+    """位相が決まっている部品は輪数から従属する（円環の等分に載せない）。"""
+    counts = segment_counts(_with_wheel_count(_params(), 4))
+    assert counts["motor_arm"] == 4
+    assert counts["cable_guide"] == 4
+    assert counts["service_stand"] == 4
+    assert counts["hub_plate"] == 1
+
+
+def test_a_non_annular_part_is_not_approximated_as_an_annulus() -> None:
+    """⚠️ 造形可能寸法を動かしても位相従属の部品の分割数は動かない。
+
+    円環として近似していれば、造形面を狭めた瞬間に**過大な分割数**が
+    「正しい導出」の顔をして返る（research.md「Decision: 分割の導出を部品の
+    種類で分ける」の Rationale）。
+    """
+    params = _params()
+    narrow = replace(
+        params, printing=replace(params.printing, build_x_mm=120.0, build_y_mm=120.0)
+    )
+    assert segment_counts(narrow)["motor_arm"] == params.chassis.base.wheel_count
+    assert segment_counts(narrow)["adapter_segment"] > segment_counts(params)["adapter_segment"]
+
+
+def test_a_diameter_no_split_can_solve_propagates_the_upstream_failure() -> None:
+    """⚠️ 収まる分割数が存在しない径は、上流の失敗がそのまま伝播する。
+
+    半径方向の広がりは分割数を増やしても縮まないため、造形面が座の半径より
+    狭ければどの分割数でも収まらない（上流 `required_segment_count` の
+    Invariants）。⚠️ **上流の失敗を包み直さない**（design.md「Error Strategy」）。
+    """
+    params = _params()
+    tiny_printer = replace(
+        params, printing=replace(params.printing, build_x_mm=20.0, build_y_mm=20.0)
+    )
+    with pytest.raises(UpstreamGeometryError):
+        segment_counts(tiny_printer)
+
+
+# ---------------------------------------------------------------------------
+# 7. 断片の外接箱は上流の検査を関門とする（要件 2.2, 2.3）
+# ---------------------------------------------------------------------------
+
+
+def test_a_fragment_that_exceeds_the_build_volume_is_rejected() -> None:
+    """超過する軸と超過量を示して拒否する（アームが造形面を超える配置半径）。"""
+    params = _with_base(_params(), hub_center_to_mount_face_mm=300.0)
+    with pytest.raises(GeometryError) as excinfo:
+        _derived(params)
+    message = str(excinfo.value)
+    assert "motor_arm" in message
+    assert "x" in message
+
+
+def test_a_central_plate_that_exceeds_the_build_volume_is_rejected() -> None:
+    """中央部は分割しないため、外接箱が関門になる（design.md Shapes 部品表）。"""
+    params = _with_base(_params(), hub_outer_diameter_mm=200.0)
+    with pytest.raises(GeometryError) as excinfo:
+        _derived(params)
+    assert "hub_plate" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# 8. 記録は導出の写しである
+# ---------------------------------------------------------------------------
+
+
+def test_dump_writes_lf_sorted_keys_and_a_trailing_newline(tmp_path: Path) -> None:
+    """整形は `config.dump_params` に揃える（LF・インデント2・キー整列・末尾改行）。"""
+    path = tmp_path / "joint-schedule.json"
+    dump_fastener_schedule(derive_fastener_schedule(derive_layout(_params()), _params()), path)
+    raw = path.read_bytes()
+    assert b"\r\n" not in raw
+    assert raw.endswith(b"\n")
+    document = json.loads(raw.decode("utf-8"))
+    assert list(document) == sorted(document)
+    assert document["schema_version"] == SCHEMA_VERSION
+
+
+def test_the_record_carries_the_parameters_digest() -> None:
+    """記録は寸法パラメータの識別子を持つ（design.md「Data Models」）。"""
+    params = _params()
+    schedule = derive_fastener_schedule(derive_layout(params), params)
+    assert schedule.parameters_digest == parameters_digest(params.chassis)
+
+
+def test_load_round_trips_dump(tmp_path: Path) -> None:
+    """書き出して読み戻し、再度書き出すと同じバイト列になる（記録は写しである）。
+
+    ⚠️ 記録は `_ROUND_DIGITS` で丸めた値を持つため、読み戻した値は導出値と
+    ビット単位では一致しない（`layout` と同じ扱い）。往復で保たれるのは
+    **記録そのもの**である。
+    """
+    params = _params()
+    original = derive_fastener_schedule(derive_layout(params), params)
+    path = tmp_path / "joint-schedule.json"
+    dump_fastener_schedule(original, path)
+    restored = load_fastener_schedule(path)
+    assert [spec.name for spec in restored.joints] == [
+        spec.name for spec in original.joints
+    ]
+    assert restored.parameters_digest == original.parameters_digest
+    assert [line.count for line in restored.lines] == [
+        line.count for line in original.lines
+    ]
+    again = tmp_path / "again.json"
+    dump_fastener_schedule(restored, again)
+    assert again.read_bytes() == path.read_bytes()
+
+
+def test_load_rejects_an_unknown_key(tmp_path: Path) -> None:
+    """あらゆる階層で未知キーを拒否する（項目名を示す）。"""
+    params = _params()
+    path = tmp_path / "joint-schedule.json"
+    dump_fastener_schedule(derive_fastener_schedule(derive_layout(params), params), path)
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["note"] = "手で足した項目"
+    path.write_text(json.dumps(document), encoding="utf-8", newline="\n")
+    with pytest.raises(ParameterError) as excinfo:
+        load_fastener_schedule(path)
+    assert "note" in str(excinfo.value)
+
+
+def test_load_rejects_a_missing_key(tmp_path: Path) -> None:
+    """欠けている項目を既定値で埋めない。"""
+    params = _params()
+    path = tmp_path / "joint-schedule.json"
+    dump_fastener_schedule(derive_fastener_schedule(derive_layout(params), params), path)
+    document = json.loads(path.read_text(encoding="utf-8"))
+    del document["lines"]
+    path.write_text(json.dumps(document), encoding="utf-8", newline="\n")
+    with pytest.raises(ParameterError) as excinfo:
+        load_fastener_schedule(path)
+    assert "lines" in str(excinfo.value)
+
+
+def test_load_rejects_lines_that_contradict_the_joints(tmp_path: Path) -> None:
+    """⚠️ `lines` は `joints` から一意に決まる。食い違う記録を受け付けない。"""
+    params = _params()
+    path = tmp_path / "joint-schedule.json"
+    dump_fastener_schedule(derive_fastener_schedule(derive_layout(params), params), path)
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["lines"][0]["count"] += 1
+    path.write_text(json.dumps(document), encoding="utf-8", newline="\n")
+    with pytest.raises(ConsistencyError):
+        load_fastener_schedule(path)
+
+
+def test_load_rejects_a_dowel_line(tmp_path: Path) -> None:
+    """⚠️ ダボは購入する締結部品ではない。種別として受け付けない。"""
+    params = _params()
+    path = tmp_path / "joint-schedule.json"
+    dump_fastener_schedule(derive_fastener_schedule(derive_layout(params), params), path)
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["lines"].append(
+        {"designation": "M3", "kind": "dowel", "length_mm": 12.0, "count": 6}
+    )
+    path.write_text(json.dumps(document), encoding="utf-8", newline="\n")
+    with pytest.raises((ParameterError, ConsistencyError)):
+        load_fastener_schedule(path)
+
+
+def test_the_shipped_record_matches_the_current_derivation(tmp_path: Path) -> None:
+    """出荷されている記録が、現在の寸法からの導出と**バイト単位で**一致する。
+
+    ⚠️ 記録は手で編集する対象ではない。寸法を変えたら書き出し直す。
+    """
+    params = _params()
+    expected = tmp_path / "joint-schedule.json"
+    dump_fastener_schedule(derive_fastener_schedule(derive_layout(params), params), expected)
+    assert DEFAULT_JOINT_SCHEDULE_PATH.exists()
+    assert DEFAULT_JOINT_SCHEDULE_PATH.read_bytes() == expected.read_bytes()
+    assert load_fastener_schedule().parameters_digest == parameters_digest(params.chassis)
+
+
+def test_a_fastener_line_is_an_immutable_value() -> None:
+    """`FastenerLine` は凍結された値である。"""
+    line = FastenerLine(designation="M3", kind="bolt", length_mm=20.0, count=6)
+    with pytest.raises(Exception):
+        line.count = 7  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# 静的検査（数値リテラル・形状ライブラリ・上流の内部モジュール）
+# ---------------------------------------------------------------------------
+
+
+#: 文言のなかに紛れ込んだ寸法を捕まえる正規表現（`"12.5mm"` / `"1.5 mm"` /
+#: `"90mm^2"`）。⚠️ **数値リテラルだけを見る検査では文字列に書いた寸法が素通り
+#: する**——docstring や `ASSUMPTIONS` の根拠文は、上流の値を書き写すと上流が
+#: 測り直したときに黙って偽の数を述べ続ける（要件 6.3）。
+#: ⚠️ 数字が **mm の直前にある**ことを要求するため、`要件 2.10` のような条項番号や
+#: `insert_length_mm` / `bearing_area_mm2` のような項目名（mm の前が英字）には
+#: 一致しない。
+_DIMENSION_IN_TEXT = re.compile(r"\d(?:[\d,]*\.?\d*)\s*mm")
+
+#: 整数リテラルのうち、寸法ではありえないものとして無条件に許す値。
+#: ⚠️ **narrow に保つこと。** 0 / 1 / 2 は本モジュールでは個数・添字・
+#: 「2部材」「両側」「べき乗の2」としてのみ現れる構造的な値であり、
+#: ミリメートルの寸法をこの3値で表す箇所は無い（寸法はすべて設定ファイルと
+#: 上流の継手方針から来る）。3 以上の整数は下の文脈判定を通らなければ違反である。
+_STRUCTURAL_INTS = frozenset({0, 1, 2})
+
+#: 値だけでは許せないが、**現れる文脈**で寸法でないと判定できる整数。
+#: - `math.pi / 4`: 円の面積式の定数（直径から面積を出す `/4`）。
+#: - `_ROUND_DIGITS = 9`: 記録の丸め桁数であって長さではない。
+#: ⚠️ どちらも「その1箇所に現れたときだけ」許す。同じ 4 や 9 を別の場所へ書けば
+#: 違反として現れる。
+_ROUND_DIGITS_NAME = "_ROUND_DIGITS"
+
+
+def _contextually_allowed_int_nodes(tree: ast.AST) -> set[int]:
+    """寸法でないと文脈から言い切れる整数リテラルの `id()` を集める。"""
+    allowed: set[int] = set()
+    for node in ast.walk(tree):
+        # `math.pi / 4` の 4（円の面積式の定数）。
+        if (
+            isinstance(node, ast.BinOp)
+            and isinstance(node.op, ast.Div)
+            and isinstance(node.left, ast.Attribute)
+            and node.left.attr == "pi"
+            and isinstance(node.right, ast.Constant)
+        ):
+            allowed.add(id(node.right))
+        # `_ROUND_DIGITS: Final[int] = 9`（丸め桁数であって長さではない）。
+        if (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == _ROUND_DIGITS_NAME
+            and isinstance(node.value, ast.Constant)
+        ):
+            allowed.add(id(node.value))
+    return allowed
+
+
+def test_module_embeds_no_dimensional_literal() -> None:
+    """⚠️ 寸法・長さ・面積の数値をコードへ埋め込まない（0.0 を除く）。
+
+    当たり面も下限もインサート長も、寸法パラメータと上流の継手方針が正である。
+    数を1つでも書けば、設定ファイルを書き換えても導出が動かない箇所が生まれる。
+
+    ⚠️ **`float` のリテラルだけを見ても足りない。** 寸法は `int`（`_X = 12`）
+    としても、文字列のなか（`"12.5mm"`）としても書ける。前者は型が違うだけで
+    同じ埋め込みであり、後者は根拠の文言が上流の値を写したまま古びる経路である。
+    本検査は3つとも捕まえる。
+    """
+    tree = ast.parse(_JOINTS_SOURCE)
+    contextually_allowed = _contextually_allowed_int_nodes(tree)
+    float_literals: list[float] = []
+    int_literals: list[tuple[int, int]] = []
+    text_dimensions: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Constant):
+            continue
+        value = node.value
+        if isinstance(value, bool):
+            # ⚠️ `bool` は `int` の派生である。真偽値は寸法ではない。
+            continue
+        if isinstance(value, float):
+            if value != 0.0:
+                float_literals.append(value)
+        elif isinstance(value, int):
+            if value not in _STRUCTURAL_INTS and id(node) not in contextually_allowed:
+                int_literals.append((node.lineno, value))
+        elif isinstance(value, str):
+            found = _DIMENSION_IN_TEXT.search(value)
+            if found is not None:
+                text_dimensions.append((node.lineno, found.group(0)))
+    assert float_literals == [], f"寸法の数値リテラルが埋め込まれている: {float_literals}"
+    assert int_literals == [], f"寸法の整数リテラルが埋め込まれている: {int_literals}"
+    assert text_dimensions == [], (
+        f"文言のなかに寸法が書き写されている: {text_dimensions}"
+        "（上流が測り直したときに黙って偽の数になる。項目名で指すこと）"
+    )
+
+
+@pytest.mark.parametrize(
+    "injected",
+    [
+        "_X: Final[float] = 12.5\n",
+        "_X: Final[int] = 12\n",
+        "_X: Final[int] = 4\n",
+        '_X: Final[str] = "底の肉厚は 1.5mm 相当である"\n',
+        '_X: Final[str] = "座の面積は 90mm^2 である"\n',
+        '_X: Final[str] = "ボルト長は 20.7 mm である"\n',
+    ],
+    ids=["float", "int", "int-that-is-allowed-elsewhere", "text-mm", "text-mm2", "text-spaced-mm"],
+)
+def test_the_literal_guard_catches_an_injected_dimension(injected: str) -> None:
+    """⚠️ **検査そのものが効いていることを確かめる。**
+
+    数値リテラルだけを見る検査は `int` と文字列を素通りさせた（実際に素通り
+    した）。⚠️ 文脈で許した 4（`math.pi / 4`）も、**別の場所へ書けば違反**で
+    なければならない——許可は値ではなく現れ方に付いている。
+    """
+    tree = ast.parse(_JOINTS_SOURCE + injected)
+    contextually_allowed = _contextually_allowed_int_nodes(tree)
+    violations = [
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and not isinstance(node.value, bool)
+        and (
+            (isinstance(node.value, float) and node.value != 0.0)
+            or (
+                isinstance(node.value, int)
+                and node.value not in _STRUCTURAL_INTS
+                and id(node) not in contextually_allowed
+            )
+            or (
+                isinstance(node.value, str)
+                and _DIMENSION_IN_TEXT.search(node.value) is not None
+            )
+        )
+    ]
+    assert violations, f"注入した寸法 {injected!r} を検査が見逃した"
+
+
+def test_module_does_not_import_the_shape_library() -> None:
+    """⚠️ `joints` は build123d を import しない（当たり面は解析的に算出する）。
+
+    design.md `#### Joints` Risks が述べるとおり、当たり面は本来なら形状から
+    採る量である。⚠️ **それができない層であることが、解析的な算出と
+    `test_chassis_invariants.py`（`cad` extra）での突き合わせの理由である。**
+    """
+    imported: set[str] = set()
+    for node in ast.walk(ast.parse(_JOINTS_SOURCE)):
+        if isinstance(node, ast.Import):
+            imported |= {alias.name.split(".")[0] for alias in node.names}
+        elif isinstance(node, ast.ImportFrom):
+            imported.add((node.module or "").split(".")[0])
+    assert "build123d" not in imported
+
+
+def test_module_imports_the_upstream_only_through_its_public_entry() -> None:
+    """上流の内部モジュールへ直接 import しない（design.md Allowed Dependencies）。"""
+    tree = ast.parse(_JOINTS_SOURCE)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
+            "catch_mechanism"
+        ):
+            assert node.module == "catch_mechanism"
