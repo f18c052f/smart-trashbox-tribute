@@ -61,6 +61,13 @@ from chassis_mechanism.layout import (
 
 _LAYOUT_SOURCE: str = Path(layout_module.__file__).read_text(encoding="utf-8")
 
+_COMPRESSION_MM: float = 0.75
+"""荷重で転がり半径が縮む量（mm）の例。
+
+research.md「最低地上高は何から決まるか」の「公称 30mm に対し荷重下で 29.25mm」
+——その差である。⚠️ **設計値ではない。** 実測は要件 10.3（タスク 6.7）が持つ。
+"""
+
 
 # ---------------------------------------------------------------------------
 # 補助
@@ -659,6 +666,68 @@ def test_changing_the_vertical_mount_face_distance_moves_the_whole_stack() -> No
     assert after.fastener_bottom_height_mm - before.fastener_bottom_height_mm == (
         pytest.approx(7.0)
     )
+
+
+def test_the_mount_face_is_the_measured_distance_while_nothing_is_compressed() -> None:
+    """実効転がり半径が公称値と一致する間、取付面高さは**ちょうど**実測距離である。
+
+    要件 4.1（「駆動ベースの下面高さを、モータ取付面から接地点までの実測距離から
+    導出する」）が定めるのは高さの**出所**であって、荷重下でも動かないことでは
+    ない（動かないことまで求めていると読むと要件 4.7 と両立しない）。補正項は
+    「公称の転がり半径 − 実効転がり半径」であり、観測記録が入るまでは 0 である
+    ため、実測距離がそのまま取付面高さになる。⚠️ **この等式が崩れたら、それは
+    出所が変わったということである。**
+    """
+    params = _params()
+    vertical = derive_layout(params).vertical
+    assert vertical.effective_rolling_radius_mm == pytest.approx(
+        params.chassis.wheel.nominal_diameter_mm / 2.0
+    )
+    assert (
+        vertical.mount_face_height_mm
+        == params.chassis.bracket.mount_face_to_contact_mm
+    )
+
+
+def test_a_compressed_rolling_radius_lowers_every_height_in_the_stack(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """実効転がり半径が δ 縮むと、鉛直スタックの高さが**すべて** δ 下がる（要件 4.7）。
+
+    ⚠️ **`bracket.mount_face_to_contact_mm` は「取付面の高さ」という定数ではない。**
+    これはホイールを付けた状態で測った「取付面 → 接地点」であり、公称の転がり半径を
+    **すでに含んでいる**（`docs/bom.md §B`:「垂直方向では 60.0 − 30 ＝ 30.0mm が
+    取付面から車軸までの高さになり整合する」）。荷重で転がり半径が δ 縮めば機体
+    全体が δ 低く座るため、取付面も締結の下端も δ 下がる（要件 10.3 /
+    research.md「公称 30mm に対し荷重下で 29.25mm なら、モータ胴体下面は 10.75mm
+    へ下がる」）。⚠️ ここを実測距離そのままの定数にすると、床との隙間の5部位の
+    うち3部位が実効転がり半径に追随せず、「隙間は足りている」という誤った判定が
+    残る（design.md `#### Clearance`「隙間はすべて `VerticalStack` から算出される
+    ため、実効転がり半径が変われば自動で追随する」が成り立たなくなる）。
+
+    ⚠️ **差し替えるのは実効転がり半径の1点だけである。** 寸法パラメータは一切
+    動かしていない——`wheel.nominal_diameter_mm` を書き換えると公称値と実効値が
+    同時に動いてしまい、「荷重で縮んだ」状態を表せない（公称値と実測距離は同じ
+    現物を同時に測った対である）。
+    """
+    params = _params()
+    before = derive_layout(params).vertical
+    monkeypatch.setattr(
+        layout_module,
+        "_effective_rolling_radius_mm",
+        lambda nominal_mm: nominal_mm - _COMPRESSION_MM,
+    )
+    after = derive_layout(params).vertical
+    for name in (
+        "effective_rolling_radius_mm",
+        "axle_center_height_mm",
+        "motor_body_bottom_height_mm",
+        "fastener_bottom_height_mm",
+        "mount_face_height_mm",
+    ):
+        assert getattr(after, name) - getattr(before, name) == pytest.approx(
+            -_COMPRESSION_MM
+        ), f"{name} が実効転がり半径に追随していない"
 
 
 # ---------------------------------------------------------------------------

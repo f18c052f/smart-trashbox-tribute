@@ -29,6 +29,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import math
 from dataclasses import replace
 from pathlib import Path
@@ -36,6 +37,7 @@ from pathlib import Path
 import pytest
 
 from chassis_mechanism import clearance as clearance_module
+from chassis_mechanism import layout as layout_module
 from chassis_mechanism.clearance import (
     CLEARANCE_ITEM_NAMES,
     ClearanceItem,
@@ -255,6 +257,55 @@ def test_every_height_follows_the_vertical_stack() -> None:
     assert set(after) == set(CLEARANCE_ITEM_NAMES)
     for name in CLEARANCE_ITEM_NAMES:
         assert after[name] == pytest.approx(before[name] - delta_mm), name
+
+
+def test_derivation_from_a_config_file_lowers_all_five_heights_together(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """⚠️ **導出そのもの**を通して、5部位の高さが実効転がり半径に追随する。
+
+    直前の `test_every_height_follows_the_vertical_stack` は鉛直スタックを手で
+    下げた入力を与えるため、`clearance` が高さをスタックから読んでいることしか
+    確かめられない——⚠️ **`layout` が取付面高さを定数として組み立てていても
+    通ってしまう**。ここは設定ファイル → `load_params` → `derive_layout` →
+    `clearance_items` の通しで確かめ、design.md `#### Clearance` の
+    「隙間はすべて `VerticalStack` から算出されるため、実効転がり半径が変われば
+    自動で追随する（要件 4.7）」を実際に固定する。tasks.md タスク 7.3 の
+    「実効転がり半径を変更したとき、5部位の隙間がすべて再算出されること」が
+    要求する検査でもある。
+
+    ⚠️ 設定ファイルは出荷値の写しではなく `wheel.nominal_diameter_mm` を
+    小さくした写しを使う——導出が出荷値（60.0mm / 30.0mm）に固有の関係へ
+    寄りかかっていないことを併せて確かめるためである。
+    """
+    document = json.loads(DEFAULT_DIMENSIONS_PATH.read_text(encoding="utf-8"))
+    document["wheel"]["nominal_diameter_mm"] = 58.5
+    dimensions_path = tmp_path / "dimensions.json"
+    dimensions_path.write_text(
+        json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    params = load_params(dimensions_path)
+
+    before = {
+        item.name: item.height_mm
+        for item in clearance_items(derive_layout(params), params.chassis)
+    }
+    compression_mm = 0.75
+    monkeypatch.setattr(
+        layout_module,
+        "_effective_rolling_radius_mm",
+        lambda nominal_mm: nominal_mm - compression_mm,
+    )
+    after = {
+        item.name: item.height_mm
+        for item in clearance_items(derive_layout(params), params.chassis)
+    }
+
+    assert set(after) == set(CLEARANCE_ITEM_NAMES)
+    for name in CLEARANCE_ITEM_NAMES:
+        assert after[name] == pytest.approx(before[name] - compression_mm), (
+            f"{name} が実効転がり半径に追随していない"
+        )
 
 
 def test_lowering_the_stack_alone_turns_a_clean_design_into_violations() -> None:

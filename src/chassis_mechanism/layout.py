@@ -38,6 +38,22 @@ effective_rolling_radius_mm < fastener_bottom_height_mm <= mount_face_height_mm`
 逆転する入力は `GeometryError` で拒否し、**逆転した対と量**をメッセージに載せる
 （`errors.py`: 依存を持たない層であるため違反は例外メッセージが運ぶ）。
 
+**⚠️ 取付面の高さは実測距離そのままの定数ではない**（要件 4.7, 10.3）。
+`bracket.mount_face_to_contact_mm`（60.0mm）は**ホイールを付けた状態で**測った
+「取付面 → 接地点」であり、⚠️ **公称の転がり半径をすでに含んでいる**
+（`docs/bom.md §B`:「垂直方向では 60.0 − 30 ＝ 30.0mm が取付面から車軸までの
+高さになり整合する」）。したがって荷重で転がり半径が δ 縮めば機体全体が δ 低く
+座り、取付面の高さも締結の下端も δ 下がる。⚠️ **ここを定数にすると、床との隙間の
+5部位のうち3部位が実効転がり半径に追随しない**——`clearance` 側は高さをすべて
+`VerticalStack` から読んでいるため、追随しない原因は本モジュールにしか無く、
+「隙間は足りている」という誤った判定だけが残る（design.md `#### Clearance`
+Responsibilities「隙間はすべて `VerticalStack` から算出されるため、実効転がり半径が
+変われば自動で追随する（要件 4.7）」）。補正項は「公称 − 実効」であり、観測記録が
+入るまでは 0 であるため、⚠️ **要件 4.1（「モータ取付面から接地点までの実測距離
+から導出する」）が定める出所はそのまま保たれる**——4.1 が固定するのは高さの
+**出所**であって、荷重下でも高さが動かないことではない（動かないことまで求めて
+いると読むと要件 4.7 と両立しない）。
+
 **転倒余裕は合否条件ではない**（要件 3.5, 7.9 / `tech.md` 開発標準1）。
 `TippingEstimate.is_pass_criterion` は常に `False` であり、⚠️ **`True` を持つ推定は
 構築できない**。加えて本モジュールには `accel_limit_mm_s2` を何かと比較する箇所が
@@ -50,7 +66,10 @@ effective_rolling_radius_mm < fastener_bottom_height_mm <= mount_face_height_mm`
 格上げしない。実効転がり半径も、観測記録（`measurements.json`、タスク 2.4）が
 まだ存在しないため**公称値の半分**を用い、その出所（`wheel.nominal_diameter_mm`）
 を継承する。⚠️ 観測の読み手をここへ先取りで置かない——`assembly` は本モジュールの
-右側の層であり、依存方向が逆になる。
+右側の層であり、依存方向が逆になる。⚠️ **観測値を差し込む点は
+`_effective_rolling_radius_mm` の1箇所だけである**（タスク 2.4）——鉛直スタックの
+全高さはその戻り値と公称値との差から組み上がるため、差し替えても積み上げ自体を
+組み替える必要がない。
 
 読み書きの規律は `config.py` に揃える（**あらゆる階層で未知キーを拒否する**、
 項目名を示す、欠損を既定値で埋めない、LF・インデント2・キー整列・末尾改行）。
@@ -390,7 +409,11 @@ class VerticalStack:
             ——ホイールが床に接している以上、これは定義であって独立な値ではない。
         motor_body_bottom_height_mm: モータ胴体下面の高さ（mm）。全部位で最も低い。
         mount_face_height_mm: 取付面（＝ベース板下面）の高さ（mm）。全部位で最も高い。
+            ⚠️ **`bracket.mount_face_to_contact_mm` そのままの定数ではない**——
+            あの実測距離はホイールを付けた状態で測られており公称の転がり半径を
+            含むため、実効転がり半径が縮んだ分だけ低くなる（要件 4.7, 10.3）。
         fastener_bottom_height_mm: 締結部品（ボルト頭・ナット）の下端の高さ（mm）。
+            取付面から `clearance.fastener_protrusion_mm` だけ下がる。
 
     Raises:
         GeometryError: 数が有限でない場合、モータ胴体下面が床以下の場合、
@@ -678,6 +701,22 @@ def _cog_height_mm(chassis: ChassisParams) -> float:
     return height
 
 
+def _effective_rolling_radius_mm(nominal_rolling_radius_mm: float) -> float:
+    """実効転がり半径を返す（要件 10.3 / design.md `#### Layout` Implementation Notes）。
+
+    ⚠️ **観測値を差し込む点はここ1箇所だけである。** design.md は「観測があれば
+    `measurements.json` の代表値、無ければ公称値の半分」と定めるが、観測記録は
+    タスク 2.4 まで存在しないため、現時点では公称値の半分をそのまま返す。
+
+    ⚠️ **観測の読み手をここへ置かない**——`assembly` は本モジュールの右側の層で
+    あり、import すれば依存方向が逆になる（モジュール docstring）。タスク 2.4 は
+    代表値を**引数として**受け取る形へこの関数を広げるだけでよく、`derive_layout`
+    の積み上げそのものを組み替える必要はない——鉛直スタックの全高さは、この戻り値
+    と公称値との差（荷重による縮み）から組み上がっているためである。
+    """
+    return nominal_rolling_radius_mm
+
+
 def derive_layout(params: ResolvedParams) -> ChassisLayout:
     """寸法パラメータから幾何を導出する（要件 3.1-3.6, 3.9, 4.1, 7.8）。
 
@@ -736,16 +775,35 @@ def derive_layout(params: ResolvedParams) -> ChassisLayout:
         for index in range(base.wheel_count)
     )
 
-    effective_rolling_radius_mm = chassis.wheel.nominal_diameter_mm / 2.0
+    nominal_rolling_radius_mm = chassis.wheel.nominal_diameter_mm / 2.0
+    effective_rolling_radius_mm = _effective_rolling_radius_mm(nominal_rolling_radius_mm)
+
+    # ⚠️ **取付面の高さは定数ではない。** `bracket.mount_face_to_contact_mm` は
+    # ホイールを付けた状態で測った「取付面 → 接地点」であり、⚠️ **公称の転がり
+    # 半径をすでに含んでいる**（docs/bom.md §B:「垂直方向では 60.0 − 30 ＝ 30.0mm
+    # が取付面から車軸までの高さになり整合する」）。したがって荷重で転がり半径が
+    # δ 縮めば機体全体が δ 低く座り、取付面も締結の下端も δ 下がる（要件 4.7,
+    # 10.3）。ここを実測距離そのままの定数にすると、床との隙間の5部位のうち
+    # **3部位が実効転がり半径に追随せず**、「隙間は足りている」という誤った判定が
+    # 残る（design.md `#### Clearance`「隙間はすべて VerticalStack から算出される
+    # ため、実効転がり半径が変われば自動で追随する」が偽になる）。
+    # ⚠️ 補正項は「公称 − 実効」であるため、観測記録が入るまでは 0 であり、
+    # 取付面高さはちょうど実測距離に等しい——要件 4.1（「モータ取付面から接地点
+    # までの実測距離から導出する」）が定める**出所**はそのまま保たれる
+    # （4.1 が固定するのは出所であって、荷重下でも高さが動かないことではない）。
+    load_compression_mm = nominal_rolling_radius_mm - effective_rolling_radius_mm
+    mount_face_height_mm = bracket.mount_face_to_contact_mm - load_compression_mm
     vertical = VerticalStack(
         effective_rolling_radius_mm=effective_rolling_radius_mm,
         axle_center_height_mm=effective_rolling_radius_mm,
         motor_body_bottom_height_mm=(
             effective_rolling_radius_mm - chassis.motor.body_diameter_mm / 2.0
         ),
-        mount_face_height_mm=bracket.mount_face_to_contact_mm,
+        mount_face_height_mm=mount_face_height_mm,
+        # ⚠️ 締結の下端は取付面から突出量だけ下がった位置である。取付面が実効
+        # 転がり半径へ追随する以上、ここも自動で追随する（同じ補正を2度書かない）。
         fastener_bottom_height_mm=(
-            bracket.mount_face_to_contact_mm - chassis.clearance.fastener_protrusion_mm
+            mount_face_height_mm - chassis.clearance.fastener_protrusion_mm
         ),
     )
 
