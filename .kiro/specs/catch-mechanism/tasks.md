@@ -286,7 +286,7 @@
 
 - [ ] 6. 統合: 下流契約と通し検証
 
-- [ ] 6.1 下流が消費する公開契約を確定し、契約テストを追加する
+- [x] 6.1 下流が消費する公開契約を確定し、契約テストを追加する
   - パッケージ入口の公開シンボルを確定し、形状ライブラリを import しない状態に保つ
   - ゴミ箱の底の外径・底の平面部径・テーパー角・高さ・実測重量、造形制約、継手方針を
     出所つきで取得できることを検証する
@@ -1019,6 +1019,47 @@
   将来 `parameters` を持つ設定が増えれば自動的に検査対象になる（レビュアーが仮の第3設定を足して実証）。
   ⚠️ ただし該当キーを欠く設定に対して変異ヘルパが素の `KeyError` を投げるため、
   設定追加時のトレースバックが読みにくい（主検査は正しいメッセージで落ちるので信号は失われない）。
+- **タスク6.1 / 完了。⚠️ `/kiro-validate-impl` への申し送り**: (a) **公開シンボルを 49 名で確定した**
+  （design.md `#### PublicApi` の **42名**＋追加7名、削除ゼロ）。⚠️ **design.md の実数は 42 名である**
+  （親が実装者へ「44名」と誤って伝えたが、実装者とレビュアーが独立に AST で数え直して 42 を確認）。
+  追加の裁定基準は「**既に公開されている名前を、パッケージの外で値を再定義せずに呼ぶ・読むために要るか**」
+  で統一した。追加7名: `SelectionResult` / `load_selection_result` / `CRITERIA_ITEMS`（Note 5.1(f)）、
+  `DEFAULT_DERIVATION_PATH`（⚠️ `load_derivation(path)` だけが `path` **必須**で、他5つのローダは
+  `path=None` を持つ。既定パス非公開だと利用側が出荷記録の場所を書き写すことになる）、
+  `PRESENCE_FIELD` / `PRESENT` / `ABSENT`（`compare_metrics` が返す在／不在の符号化）。
+  (b) ⚠️ **Note 2.4(e) の `write_baseline` と Note 4.2(e) の `verify_baseline_digest` は
+  「公開しない」と裁定した。** 理由: どちらも本 Spec 自身の記録を**書き換える／鮮度を検査する**操作で、
+  `python -m catch_mechanism build/check` 側の道具である。下流は記録を消費するだけで再生成しない
+  （要件 10.6 の裏返し）。⚠️ **`#### Metrics` の Service Interface は「モジュールの」公開面、
+  `#### PublicApi` は「下流の」公開面であり、両者が一致する必要は無い**という読みを採った。
+  ⚠️ **この裁定はテスト定数 `DELIBERATELY_UNPUBLISHED` と専用テストがピン留めしており、
+  黙って翻意できない**（`write_baseline` を公開へ足すと2件落ちる。レビューで実証）。
+  (c) ⚠️ **`tests/catch_mechanism/test_catch_downstream_contract.py:344` の
+  `assert len(design_names) == 42` は意図的なトリップワイヤである。** `/kiro-validate-impl` が
+  design.md `#### PublicApi` を訂正した瞬間に赤くなる。⚠️ **その修正時は 42 と `RECORDED_ADDITIONS` を
+  同一変更で更新すること。**
+  (d) ⚠️ **要件 10.6（下流部品を扱わない）は語彙検出器で表現してある。** design.md `### Out of Boundary` の
+  4部品（駆動ベース／固定アダプタ／トレイ類／整備スタンド）に対応する語彙表を持ち、識別子を語
+  （snake/Camel/UPPER）へ分解して**語単位で**照合する。⚠️ 部分文字列照合ではないことを
+  `GeometryBaseline` が `base` に当たらず `Baseline_Drive` は当たる対で固定している。
+  `DriveBasePlate` を公開すると発火することをレビューが実証済み。
+  ⚠️ **design.md の `### Out of Boundary` の一覧が変わったら語彙表も追随させること**
+  （当該節を読む検査があるので、書き換えれば落ちる）。
+  (e) `tests/catch_mechanism/test_catch_packaging.py` の1関数を編集した
+  （`test_public_entry_point_exposes_nothing_yet` → `..._declares_an_explicit_public_surface`）。
+  当該テストの docstring 自身が所有権を 6.1 へ渡していたためで、Note 1.4(a) が 4.2 → 5.2 へ義務を送った
+  構図と同じ。⚠️ **変更は1関数のみ**（アサーション・docstring・関数名）で、同ファイルの他の主張
+  （`dependencies == []`、`cad` extra、許可リスト2箇所の同期）は無傷。
+  (f) **design.md の非対称（`/kiro-validate-impl` 候補）**: `dump_params`（書き出し）は公開されている
+  一方 `write_baseline` / `dump_derivation` は非公開であり、「下流は消費するだけ」という裁定と緊張する。
+  design.md の42名が強制する非対称であり本タスクの瑕疵ではない。
+  (g) ⚠️ **要件 10.1 は「実測重量」を求めるが `trash_can.mass_g` の出所は `assumed`**
+  （Note 5.2(g) のユーザ承認済み残余）。契約テストは実測を偽称せず正しく振る舞っている。
+  重量を実測できれば `dimensions.json` の1行昇格で閉じる。
+  (h) ⚠️ **公開入口は `build123d` を一切引き込まない**（親が build123d 導入環境で実測、`sys.modules` に
+  `build123d` / `shapes` / `export` / `trajectory_sim` / `prediction_core` が現れないことを確認）。
+  `shapes` / `export` から1名も再エクスポートしていない。⚠️ **CAD 層の名前を公開してはならない**
+  （公開すると `__init__` がモジュール直下で CAD 層を import することになり要件 10.3 に反する）。
 - **環境（全タスク共通）**: Python 環境は **WSL2 側にのみ存在する**。Windows 側に `python` / `uv` は無い。
   検証は必ず `wsl -e bash -lc 'cd /mnt/c/Users/user/repos/stb-hardware && uv run pytest -q'` の形で実行する。
   ⚠️ Windows から `uv sync` して `.venv/` を上書きしないこと（Linux venv が壊れる）。

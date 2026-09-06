@@ -98,16 +98,21 @@ def test_importing_the_package_does_not_pull_in_the_shape_library() -> None:
     assert completed.stdout.strip() == "False"
 
 
-def test_public_entry_point_exposes_nothing_yet() -> None:
-    """公開入口は再エクスポート専用であり、この時点では何も公開していない。
+def test_public_entry_point_declares_an_explicit_public_surface() -> None:
+    """公開入口は再エクスポート専用であり、`__all__` を明示的に宣言する。
 
-    `__all__` が存在すること自体が契約である（公開契約を決めるのは後続
-    タスク 6.1 であり、空であることは「まだ何も公開していない」という
-    現状の正確な表明である）。
+    `__all__` が存在すること自体が契約である。⚠️ **中身の正は本ファイルでは
+    なくタスク 6.1 の契約テスト**
+    （`tests/catch_mechanism/test_catch_downstream_contract.py` の
+    `PUBLIC_CONTRACT`）が持つ。ここで固定するのは骨組みの側——「入口が
+    暗黙の公開面（`__all__` 不在）に退化していない」ことだけである
+    （1.1 の当初の主張 `__all__ == []` は「まだ何も公開していない」という
+    当時の事実の表明であり、その決着は docstring のとおり 6.1 の所有物である）。
     """
     import catch_mechanism
 
-    assert catch_mechanism.__all__ == []
+    assert isinstance(catch_mechanism.__all__, list)
+    assert all(isinstance(name, str) for name in catch_mechanism.__all__)
 
 
 def test_base_dependencies_remain_empty() -> None:
