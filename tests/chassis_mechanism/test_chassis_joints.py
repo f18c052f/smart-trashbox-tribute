@@ -318,6 +318,11 @@ def test_bolt_length_is_the_stack_plus_the_upstream_insert_length_plus_margin() 
     ⚠️ 「余裕」は `joint_local.fastener_length_margin_mm` である——床との隙間の
     ための `clearance.fastener_protrusion_mm` ではない（両者が同じ値のときでも
     参照先を取り違えれば、片方を動かしたときに黙って壊れる）。
+
+    ⚠️ **ナットで受ける `adapter__trash_can` も同じ式である。** 噛み合い代に
+    上流のインサート長を使うのは、⚠️ **ナットの高さを持つ寸法パラメータが
+    上流にも本 Spec にも無い**ためであり、数値を発明しない（`ASSUMPTIONS`）。
+    ナットはインサートより薄いため、この長さは保守側に倒れている。
     """
     params = _params()
     chassis = params.chassis
@@ -1030,3 +1035,73 @@ def test_module_imports_the_upstream_only_through_its_public_entry() -> None:
             "catch_mechanism"
         ):
             assert node.module == "catch_mechanism"
+
+
+# ---------------------------------------------------------------------------
+# 9. ⚠️ 購入部品を挟む接合部はナットで受ける（要件 2.6 / A-5 の適用範囲）
+# ---------------------------------------------------------------------------
+
+
+def test_the_trash_can_retention_is_backed_by_nuts_not_inserts() -> None:
+    """⚠️ **`adapter__trash_can` はインサートを持たない**（要件 2.6 / A-5）。
+
+    要件 2.6 と A-5 が「貫通ボルト＋金属インサート＋広い当たり面」を課している
+    のは⚠️ **モータ反力を受ける接合部**であり、インサートが解いている問題は
+    「樹脂へねじを立てると層間で抜ける」ことである。この家族が挟むのは購入部品
+    （ゴミ箱）であり、⚠️ **相手側は樹脂ではないためインサートの居場所が無い**
+    ——貫通ボルトとナットで挟むのが正しい受け方である。
+    """
+    specs = _derived(_params())
+    retention = _named(specs, "adapter__trash_can")
+    assert retention.bolt_count > 0
+    assert retention.insert_count == 0
+
+    # ⚠️ 樹脂どうしの接合部は従来どおりインサートで受ける（適用範囲の区別）。
+    assert _named(specs, "hub_plate__motor_arm_1").insert_count == 2
+    assert _named(specs, "hub_plate__adapter_segment_1").insert_count == 2
+
+
+def test_the_schedule_carries_nut_rows_for_the_insert_free_joint() -> None:
+    """⚠️ **インサートで受けないボルトはナットの行として現れる**（要件 2.10）。
+
+    「調達できる形の一覧」であるため、⚠️ **受け方の違いが一覧に出ないと、
+    ナットを買い忘れて組立が止まる**。行の数量は接合部から一意に決まる。
+    """
+    params = _params()
+    schedule = derive_fastener_schedule(derive_layout(params), params)
+    retention = _named(schedule.joints, "adapter__trash_can")
+
+    nut_lines = [line for line in schedule.lines if line.kind == "nut"]
+    assert len(nut_lines) == 1
+    assert nut_lines[0].count == retention.bolt_count
+    assert nut_lines[0].length_mm is None
+    assert nut_lines[0].designation == params.joint.bolt_designation
+
+    insert_lines = [line for line in schedule.lines if line.kind == "insert"]
+    assert len(insert_lines) == 1
+    assert insert_lines[0].count == sum(spec.insert_count for spec in schedule.joints)
+    # ⚠️ 保持の3本はインサートの合計に含まれない。
+    assert insert_lines[0].count == sum(
+        spec.bolt_count for spec in schedule.joints
+    ) - retention.bolt_count
+
+
+def test_more_retention_points_move_both_the_bolts_and_the_nuts() -> None:
+    """保持箇所を増やすと、ボルトとナットが**同じだけ**増える（要件 2.10）。"""
+    params = _params()
+    chassis = params.chassis
+    more = replace(
+        params,
+        chassis=replace(
+            chassis, adapter=replace(chassis.adapter, retention_point_count=5)
+        ),
+    )
+    before = derive_fastener_schedule(derive_layout(params), params)
+    after = derive_fastener_schedule(derive_layout(more), more)
+
+    def _nuts(schedule: object) -> int:
+        return sum(line.count for line in schedule.lines if line.kind == "nut")  # type: ignore[attr-defined]
+
+    assert _named(after.joints, "adapter__trash_can").bolt_count == 5
+    assert _nuts(after) - _nuts(before) == 2
+    assert _named(after.joints, "adapter__trash_can").insert_count == 0

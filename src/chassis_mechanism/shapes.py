@@ -1,11 +1,12 @@
 """部品の形状構築と指標の抽出（design.md `#### Shapes` / 要件 1.11, 1.12, 2.2,
-2.5, 2.6, 2.11, 3.1, 3.2, 3.7, 3.8, 3.10, 5.1-5.6, 5.8）。
+2.5, 2.6, 2.11, 3.1, 3.2, 3.7, 3.8, 3.10, 5.1-5.6, 5.8, 6.1, 6.2, 6.5, 6.7, 6.9）。
 
-⚠️ **現在構築するのは整備スタンドと駆動ベースである。** 要件 5.1 は整備スタンドを
-他のどの造形物よりも先に設計・造形・検証することを求めており（タスク 3.1）、
-駆動ベース（`hub_plate` / `motor_arm_*`、タスク 3.2）がそれに続く。design.md
-`#### Shapes` の部品表の残り（`adapter_segment_*` / `battery_tray` /
-`board_tray` / `cable_guide_*`）はタスク 3.3〜3.5 が本モジュールへ足す。
+⚠️ **現在構築するのは整備スタンドと駆動ベースとゴミ箱固定アダプタである。**
+要件 5.1 は整備スタンドを他のどの造形物よりも先に設計・造形・検証することを
+求めており（タスク 3.1）、駆動ベース（`hub_plate` / `motor_arm_*`、タスク 3.2）と
+ゴミ箱固定アダプタ（`adapter_segment_*`、タスク 3.3）がそれに続く。design.md
+`#### Shapes` の部品表の残り（`battery_tray` / `board_tray` / `cable_guide_*`）は
+タスク 3.4〜3.5 が本モジュールへ足す。
 `PART_NAMES` と `build_parts` はその都度広がる。
 
 ## 常時荷重がかかる部位の断面の根拠（要件 2.5 / design.md「機構の決定」決定 3）
@@ -125,6 +126,7 @@ design.md は「⚠️ **PLA は Tg 以下でも常時荷重下でクリープ�
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 
@@ -141,6 +143,7 @@ from chassis_mechanism.errors import CadUnavailableError, GeometryError
 from chassis_mechanism.joints import (
     BOSS_DIAMETER_FACTOR,
     arm_joint_lap_length_mm,
+    derive_joints,
     segment_counts,
 )
 from chassis_mechanism.layout import ChassisLayout
@@ -148,13 +151,17 @@ from chassis_mechanism.layout import ChassisLayout
 __all__ = [
     "MIN_HAND_ACCESS_MM",
     "PART_NAMES",
+    "ADAPTER_SEGMENT_PART_NAME",
     "HUB_PLATE_PART_NAME",
     "MOTOR_ARM_PART_NAME",
     "SERVICE_STAND_PART_NAME",
+    "AdapterGeometry",
     "BuiltPart",
     "DriveBaseGeometry",
     "StandGeometry",
     "StandInputs",
+    "adapter_geometry",
+    "build_adapter_segments",
     "build_drive_base",
     "build_parts",
     "build_service_stand_legs",
@@ -168,11 +175,13 @@ __all__ = [
 
 HUB_PLATE_PART_NAME: Final[str] = "hub_plate"
 MOTOR_ARM_PART_NAME: Final[str] = "motor_arm"
+ADAPTER_SEGMENT_PART_NAME: Final[str] = "adapter_segment"
 SERVICE_STAND_PART_NAME: Final[str] = "service_stand"
 
 PART_NAMES: Final[tuple[str, ...]] = (
     HUB_PLATE_PART_NAME,
     MOTOR_ARM_PART_NAME,
+    ADAPTER_SEGMENT_PART_NAME,
     SERVICE_STAND_PART_NAME,
 )
 """本モジュールが構築する部品の**種類**（design.md `#### Shapes` の部品表）。
@@ -234,13 +243,25 @@ _UNSPLIT_PART_COUNT: Final[int] = 1
 """分割しない部品の点数（⚠️ 番号を付けない部品を表す。`joints._UNSPLIT_SEGMENT_COUNT`）。"""
 
 _JOINT_FIT_CLEARANCE_MM: Final[float] = 0.4
-"""重ね継手の片側あたりの嵌め合い隙間（mm、要件 2.11 / 決定 4）。
+"""造形部品どうしが噛み合う箇所の、片側あたりの嵌め合い隙間（mm、要件 2.11 /
+決定 4）。⚠️ **重ね継手（舌と二股）だけでなく、アダプタの裾が中央部の外縁を
+掴む隙間・裾がアームを避ける逃げ・座ぐりの落とし込みの余裕にも同じ量を使う**
+——同じ物理（FDM の造形誤差をそのまま逃がすこと）に別の数を割り当てない。
 
 ⚠️ **切削加工を前提とする嵌合・面出しを設計に含めない。** ハブ板の舌は二股の溝
 より両側で本値ぶん薄く、舌の先端と溝の底の間にも同じ量を残す。0.4mm は 0.4mm
 ノズルの押出幅1本ぶんであり、FDM の造形誤差をそのまま逃がせる大きさである
 ——⚠️ **これを詰めると「削って合わせる」ことが前提の設計になる**（寸法差は長穴と
 隙間で吸収する、が決定 4 である）。
+"""
+
+_TOOL_OVERSHOOT_MM: Final[float] = 1.0
+"""切り取り工具を実体の面より外へ伸ばす余長（mm）。
+
+⚠️ **形を決める量ではない。** 面とぴったり同じ長さの工具で切ると、同一面での
+ブール演算の結果に形が委ねられる。⚠️ **この値を変えても部品の寸法は1つも
+変わらない**——変わるのは工具の長さだけである（`_build_hub_plate` が舌の穴で
+使っている 1.0 と同じ趣旨であり、同じ値を名前付きで置く）。
 """
 
 _SUPPORT_PAD_DEPTH_MULTIPLE: Final[float] = 1.0
@@ -883,9 +904,9 @@ def build_parts(
 ) -> tuple[BuiltPart, ...]:
     """全部品を構築し、それぞれの形状指標を添えて返す（design.md `#### Shapes`）。
 
-    ⚠️ **現在返るのは駆動ベースと整備スタンドの脚である**（タスク 3.3〜3.5 が
-    アダプタ・トレイ・配線ガイドを足す）。並びと名前は `part_names(params)` に
-    一致する。
+    ⚠️ **現在返るのは駆動ベースとゴミ箱固定アダプタと整備スタンドの脚である**
+    （タスク 3.4〜3.5 がトレイ・配線ガイドを足す）。並びと名前は
+    `part_names(params)` に一致する。
 
     ⚠️ **設計入力の絞り込みは `stand_inputs` が行う。** 本関数がスタンドの構築へ
     `ResolvedParams` を渡すことはない（要件 5.2）——駆動ベースにはその限定が無い
@@ -909,8 +930,10 @@ def build_parts(
         ParameterError: 材料が上流の許可一覧に無い場合。
         CadUnavailableError: 形状ライブラリが導入されていない場合。
     """
-    return build_drive_base(params, layout) + build_service_stand_legs(
-        stand_inputs(params, layout), params.printing
+    return (
+        build_drive_base(params, layout)
+        + build_adapter_segments(params, layout)
+        + build_service_stand_legs(stand_inputs(params, layout), params.printing)
     )
 
 
@@ -1382,8 +1405,16 @@ def _build_motor_arm(geometry: DriveBaseGeometry) -> Any:
     return body
 
 
-def _build_hub_plate(geometry: DriveBaseGeometry) -> Any:
-    """中央部のソリッドを組み立てる（機体座標。3方向の舌を持つ）。"""
+def _build_hub_plate(geometry: DriveBaseGeometry, adapter: AdapterGeometry) -> Any:
+    """中央部のソリッドを組み立てる（機体座標。3方向の舌を持つ）。
+
+    ⚠️ **アダプタの締結の相手側もここに開ける。** `joints.derive_joints` は
+    `hub_plate__adapter_segment_i` に「断片の裾を貫くボルト ＋ 中央部側の
+    インサート」を記録している（`stack_thickness_mm` はアダプタの肉厚だけで
+    あり、ボルトはそこを貫いて相手のインサートへ入る）。⚠️ **相手側に座が
+    無ければ、記録されたインサートはどこにも入らない**——外縁に上流
+    `JointPolicy.insert_length_mm` ぶんの袋穴を置く。
+    """
     build123d = _require_shape_library()
     align = (build123d.Align.CENTER, build123d.Align.CENTER, build123d.Align.CENTER)
     z_bottom_mm = geometry.underside_height_mm
@@ -1415,6 +1446,20 @@ def _build_hub_plate(geometry: DriveBaseGeometry) -> Any:
         )
     for angle_deg in geometry.wheel_angles_deg:
         body += build123d.Rotation(0, 0, angle_deg) * tongue
+
+    # アダプタ断片の裾を留めるインサートの座（⚠️ **袋穴**。外縁から内側へ）。
+    for angles_deg in adapter.mount_bolt_angles_deg:
+        for angle_deg in angles_deg:
+            body -= _radial_bore(
+                build123d,
+                angle_deg=angle_deg,
+                height_mm=adapter.mount_bolt_height_mm,
+                radius_range_mm=(
+                    geometry.hub_radius_mm - adapter.insert_bore_depth_mm,
+                    geometry.hub_radius_mm + _TOOL_OVERSHOOT_MM,
+                ),
+                diameter_mm=adapter.insert_bore_diameter_mm,
+            )
     return body
 
 
@@ -1464,7 +1509,7 @@ def build_drive_base(
             "中央部の外径かホイール配置半径を見直すこと。"
         )
 
-    plate = _build_hub_plate(geometry)
+    plate = _build_hub_plate(geometry, adapter_geometry(params, layout))
     parts = [
         BuiltPart(
             name=HUB_PLATE_PART_NAME,
@@ -1482,3 +1527,720 @@ def build_drive_base(
         for index in range(1, geometry.wheel_count + 1)
     )
     return tuple(parts)
+
+
+# ---------------------------------------------------------------------------
+# ゴミ箱固定アダプタ（タスク 3.3 / 要件 2.2, 6.1, 6.2, 6.5, 6.7, 6.9）
+#
+# ## 座はゴミ箱の底の**外**を抱える環である（決定 1）
+#
+# ゴミ箱の底（上流 `bottom_outer_diameter_mm` ＝ φ180）は造形可能寸法を超える
+# ため中央部では受けられない。⚠️ **底を受けるのはハブではなくアダプタ断片で
+# あり**、断片は中央部とアームの上に載って外側へ張り出す。この構造上の帰結が
+# 「アダプタが円環部品である」ことの理由であり、分割数を上流の円環の導出
+# （`joints.segment_counts()`）から採る理由でもある（要件 2.1）。
+#
+# 断面（半径方向の断面。z は接地面からの高さ）:
+#
+#     立ち上がり  ┃ ← 受け面は円錐台の側面に沿う（要件 6.2）
+#      (rise)     ┃╲
+#     ────────────┫ ╲───────── 底の平面部が載る面（floor_top_height_mm）
+#       床 (floor)┃  逃げ      ⚠️ 角の丸みは逃がす（bottom_flat_diameter_mm）
+#     ────────────┻──────────  中央部とアームの上面
+#       裾 (skirt)┃            ⚠️ 中央部の外縁を掴み、半径方向のボルトで留める
+#
+# ## ⚠️ 受け面を円筒にしない（要件 6.2）
+#
+# 底は円錐台であり、上流 `taper_deg` の勾配で上へ広がる。⚠️ **円筒の座は底の
+# 角だけで当たり、荷重が線に集まる。** 受け面は同じ勾配の円錐とし、隙間
+# （`adapter.seat_clearance_mm`）はどの高さでも同じ量になる。
+#
+# ## ⚠️ 上方向の拘束はテーパーが与える（要件 6.5）
+#
+# 保持の締結は**半径方向**である（`joints` の `print_normal_axis == "x"`。
+# 座面（水平面）へ鉛直に留めると接合面の法線が積層方向と一致する。要件 2.8）。
+# ⚠️ **半径方向の締結が上方向の拘束になるのは、受け面が円錐だからである**
+# ——ゴミ箱が持ち上がるにはクランプの位置で径が太くなる側へ動く必要があり、
+# くさびとして効く。円筒の座ではこれが成立しない。
+#
+# ## ⚠️ 開口を狭めない（要件 6.7）
+#
+# アダプタは底の外周を**外から**抱えるため、ゴミ箱が提供する通過
+# （底の内面から上へ広がる円錐）の内側には材料が1つも無い。
+# 受け口（ワイドリム）はゴミ箱の上端へ被さる部品であり、座はそこまで登らない。
+# ⚠️ **`opening_inner_diameter_mm` は座の内径の下限にならない**（design.md
+# `#### Shapes` の不変条件がそう明記している）。座はφ180 の底を受けるもので
+# あり、外径（φ188）ですら開口（φ210）より小さい。
+#
+# ## ⚠️ 保持の締結にインサートの座を作らない
+#
+# `joints` は `adapter__trash_can` を**ナットで受ける接合部**として導出する
+# （`insert_count == 0`）。金属インサートは「モータ反力を樹脂へ渡す接合部で、
+# 樹脂にねじを立てない」ための要素であり（要件 2.6 / A-5）、相手が購入部品で
+# あるこの家族には居場所が無い——締結の軸（半径方向）に沿ってアダプタが持つ肉は
+# 立ち上がりの肉厚（`wall_thickness_mm`）だけであり、上流 `insert_length_mm` に
+# 足りない。⚠️ **足りない座を黙って浅く作らない**——貫通穴＋座ぐり（当たり面）
+# として作り、ボルトはナットで受ける。
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class AdapterGeometry:
+    """ゴミ箱固定アダプタ（円環部品）の幾何。
+
+    ⚠️ **形状オブジェクトを持たない**（`StandGeometry` / `DriveBaseGeometry` と
+    同じ規律）。値はすべて**機体座標**であり、原点は機体中心、`z` は接地面
+    （床）からの高さである。⚠️ **断片は据え付けの角度のまま構築する**
+    ——組み上がり状態の干渉（要件 9.1）を実形状で見るためであり、
+    `segment_start_angles_deg` がその角度を持つ。
+
+    Attributes:
+        segment_count: 断片の数（⚠️ `joints.segment_counts()` が正）。
+        segment_span_deg: 断片1つが占める角度（度）。
+        segment_start_angles_deg: 各断片の始まりの角度（度）。
+        outer_radius_mm: 外周の半径（⚠️ `joints` の外径の式が正）。
+        seat_bottom_radius_mm: 受け面の下端の半径（底の外半径 ＋ 隙間）。
+        seat_top_radius_mm: 受け面の上端の半径。⚠️ 下端と等しくない。
+        seat_slope: 受け面の勾配（＝ `tan(taper_deg)`）。
+        taper_deg: 上流のテーパー角（度）。
+        contact_radius_mm: 底の平面部の半径（ここまでが接触する範囲）。
+        relief_depth_mm: 角の丸みの逃げの深さ（＝ `seat_clearance_mm`）。
+        relief_bottom_height_mm: 逃げの底の高さ（mm）。
+        floor_bottom_height_mm: 床の下面（＝中央部とアームの上面）。
+        floor_top_height_mm: 床の上面（＝ゴミ箱の底が載る高さ）。
+        floor_thickness_mm: 床の厚さ（＝ `wall_thickness_mm`）。
+        rise_height_mm: 立ち上がりの高さ（mm）。
+        rise_top_height_mm: 立ち上がりの上端の高さ（mm）。
+        skirt_inner_radius_mm: 裾の内側の半径（⚠️ **内側最小径**の半分）。
+        skirt_outer_radius_mm: 裾の外側の半径（座ぐりが載る面）。
+        skirt_bottom_height_mm: 裾の下端の高さ（＝駆動ベース下面）。
+        boss_diameter_mm: ボルト座の外径（mm、⚠️ `joints` が正）。
+        through_hole_diameter_mm: 貫通穴の径（mm、上流 `JointPolicy`）。
+        insert_bore_diameter_mm: インサート座の下穴径（mm、上流）。
+        insert_bore_depth_mm: インサート座の深さ（mm、上流のインサート長）。
+        mount_bolt_count: 断片1つあたりの取付ボルト本数（⚠️ `joints` が正）。
+        mount_bolt_height_mm: 取付ボルトの軸の高さ（＝中央部の厚さの中央）。
+        mount_spotface_depth_mm: 取付の座ぐりの深さ（mm）。
+        mount_bolt_angles_deg: 断片ごとの取付ボルトの角度（度）。
+        retention_bolt_count: 保持の締結の本数（⚠️ `joints` が正）。
+        retention_bolt_height_mm: 保持の締結の軸の高さ（mm）。
+        retention_spotface_depth_mm: 保持の座ぐりの深さ（mm）。
+        retention_bolt_angles_deg: 保持の締結の角度（度）。円周へ等配置する。
+        can_clear_radius_mm: ゴミ箱が底で提供する通過の半径（要件 6.7）。
+        can_height_mm: ゴミ箱の全高（mm、上流）。
+        arm_angles_deg: アームの角度（度）。⚠️ 裾はこれを避ける。
+        arm_void_half_width_mm: 裾がアームへ空ける逃げの半幅（mm）。
+        bore_diameters_mm: ⚠️ **造形する穴の径の一覧**（要件 2.11 の検査対象）。
+        segment_envelopes: 断片ごとの軸並行外接箱（⚠️ 据え付けの角度で変わる）。
+    """
+
+    segment_count: int
+    segment_span_deg: float
+    segment_start_angles_deg: tuple[float, ...]
+    outer_radius_mm: float
+    seat_bottom_radius_mm: float
+    seat_top_radius_mm: float
+    seat_slope: float
+    taper_deg: float
+    contact_radius_mm: float
+    relief_depth_mm: float
+    relief_bottom_height_mm: float
+    floor_bottom_height_mm: float
+    floor_top_height_mm: float
+    floor_thickness_mm: float
+    rise_height_mm: float
+    rise_top_height_mm: float
+    skirt_inner_radius_mm: float
+    skirt_outer_radius_mm: float
+    skirt_bottom_height_mm: float
+    boss_diameter_mm: float
+    through_hole_diameter_mm: float
+    insert_bore_diameter_mm: float
+    insert_bore_depth_mm: float
+    mount_bolt_count: int
+    mount_bolt_height_mm: float
+    mount_spotface_depth_mm: float
+    mount_bolt_angles_deg: tuple[tuple[float, ...], ...]
+    retention_bolt_count: int
+    retention_bolt_height_mm: float
+    retention_spotface_depth_mm: float
+    retention_bolt_angles_deg: tuple[float, ...]
+    can_clear_radius_mm: float
+    can_height_mm: float
+    arm_angles_deg: tuple[float, ...]
+    arm_void_half_width_mm: float
+    bore_diameters_mm: tuple[float, ...]
+    segment_envelopes: tuple[Envelope, ...]
+
+
+def _spotface_depth_mm(face_radius_mm: float, boss_diameter_mm: float) -> float:
+    """円筒面へ平らな座を落とし込む深さ（mm）。
+
+    ⚠️ **手で決めた深さを持たない。** 座の環（直径 `boss_diameter_mm`）が円筒面
+    からはみ出す量（サジッタ）が「平らにするために最低限要る深さ」であり、そこへ
+    造形誤差の逃げ（`_JOINT_FIT_CLEARANCE_MM`）を足す。⚠️ サジッタちょうどでは
+    座の縁が円筒面へ接するだけになり、⚠️ **平面として実現しているかどうかが
+    造形誤差で決まる**——それは「削って合わせる」設計である（決定 4）。
+
+    Raises:
+        GeometryError: 座の環が円筒面の半径を超える場合（面が丸ごと消える）。
+    """
+    boss_radius_mm = boss_diameter_mm / 2.0
+    if boss_radius_mm >= face_radius_mm:
+        raise GeometryError(
+            f"ボルト座の半径 {boss_radius_mm!r}mm が座を落とし込む面の半径 "
+            f"{face_radius_mm!r}mm 以上であり、平らな座が取れない。"
+        )
+    sagitta_mm = face_radius_mm - math.sqrt(face_radius_mm**2 - boss_radius_mm**2)
+    return sagitta_mm + _JOINT_FIT_CLEARANCE_MM
+
+
+def _sector_extent_mm(
+    start_deg: float, span_deg: float, inner_radius_mm: float, outer_radius_mm: float
+) -> tuple[float, float]:
+    """円環を切り出した扇形の、軸並行外接箱の x/y の広がりを返す（mm）。
+
+    ⚠️ **上流 `sector_envelope` の置き換えではない。** 上流は分割数の導出の
+    ために「中心を含む扇形」という最悪値を採る（内径を受け取らない）。ここが
+    返すのは**据え付けの角度のまま構築した断片の実際の広がり**であり、
+    実形状の外接箱と一致しなければならない量である（`check_envelope` は
+    こちらで通す。要件 2.2）。
+    """
+    xs: list[float] = []
+    ys: list[float] = []
+    for angle_deg in (start_deg, start_deg + span_deg):
+        radians = math.radians(angle_deg)
+        for radius_mm in (inner_radius_mm, outer_radius_mm):
+            xs.append(radius_mm * math.cos(radians))
+            ys.append(radius_mm * math.sin(radians))
+    for quarter_deg in (0.0, 90.0, 180.0, 270.0):
+        if (quarter_deg - start_deg) % 360.0 > span_deg:
+            continue
+        radians = math.radians(quarter_deg)
+        xs.append(outer_radius_mm * math.cos(radians))
+        ys.append(outer_radius_mm * math.sin(radians))
+    return max(xs) - min(xs), max(ys) - min(ys)
+
+
+def _free_arcs_deg(
+    span_deg: float, blocked_offsets_deg: Sequence[float], blocked_half_deg: float
+) -> tuple[tuple[float, float], ...]:
+    """区間 `[0, span_deg]` から塞がれた弧を除いた、空きの弧を返す。"""
+    blocked: list[tuple[float, float]] = []
+    for offset_deg in blocked_offsets_deg:
+        for shift_deg in (-360.0, 0.0, 360.0):
+            low_deg = offset_deg + shift_deg - blocked_half_deg
+            high_deg = offset_deg + shift_deg + blocked_half_deg
+            if high_deg <= 0.0 or low_deg >= span_deg:
+                continue
+            blocked.append((max(low_deg, 0.0), min(high_deg, span_deg)))
+    free: list[tuple[float, float]] = []
+    cursor_deg = 0.0
+    for low_deg, high_deg in sorted(blocked):
+        if low_deg > cursor_deg:
+            free.append((cursor_deg, low_deg))
+        cursor_deg = max(cursor_deg, high_deg)
+    if cursor_deg < span_deg:
+        free.append((cursor_deg, span_deg))
+    return tuple(free)
+
+
+def adapter_geometry(
+    params: ResolvedParams, layout: ChassisLayout
+) -> AdapterGeometry:
+    """上流の採寸値と幾何の導出結果からアダプタの形を決める（タスク 3.3）。
+
+    ⚠️ **形状を構築しない。** 本関数は算術のみで完結し、形状ライブラリの無い
+    環境でも**全数値と成立条件**を評価できる（`stand_geometry` /
+    `drive_base_geometry` と同じ規律）。
+
+    ⚠️ **底の外径・底の平面部径・テーパー角・底の肉厚は上流が正である**
+    （要件 1.3, 6.1）。本 Spec 側が持つのは受けるための量（隙間・肉厚・
+    立ち上がり・保持箇所の数）だけであり、⚠️ **上流の値を書き写さない**
+    ——タスク 5.3 が底の平面部径を実測へ置き換えたとき、座は実装コードを
+    変えずに追随する（要件 6.9）。
+
+    ⚠️ **分割数と締結の本数は `joints` が正である**（要件 2.1, 2.9）。形の側で
+    数え直すと、下限を上げたときに座だけが増えて断片が増えない、という
+    食い違いが黙って残る。
+
+    Args:
+        params: `config.load_params()` の戻り値。
+        layout: `layout.derive_layout()` の戻り値。
+
+    Returns:
+        アダプタの幾何。
+
+    Raises:
+        GeometryError: 座の環が立ち上がり／裾に載らない場合、床が底の平面部へ
+            届かない場合、座ぐりが立ち上がりを貫く場合、保持の締結がゴミ箱の
+            底の載る面より下へ来る場合、または取付の座がアームを避けた空きの
+            弧へ並ばない場合。⚠️ メッセージには**項目名と値**を載せる。
+        catch_mechanism.GeometryError: 円環の分割数が求まらない場合
+            （⚠️ **包み直さない**）。
+        catch_mechanism.ParameterError: 上流の `check_joint` が当たり面を
+            拒否した場合（`derive_joints` からの伝播）。
+    """
+    chassis = params.chassis
+    adapter = chassis.adapter
+    can = params.trash_can
+    joint = params.joint
+    base = chassis.base
+
+    drive_base = drive_base_geometry(params, layout)
+    joints = {spec.name: spec for spec in derive_joints(layout, params)}
+
+    segment_count = segment_counts(params)[ADAPTER_SEGMENT_PART_NAME]
+    segment_span_deg = 360.0 / segment_count
+    first_angle_deg = layout.wheel_angles_deg[0]
+    segment_start_angles_deg = tuple(
+        first_angle_deg + index * segment_span_deg for index in range(segment_count)
+    )
+
+    boss_diameter_mm = BOSS_DIAMETER_FACTOR * joint.insert_outer_diameter_mm
+    seat_slope = math.tan(math.radians(can.taper_deg))
+    seat_bottom_radius_mm = can.bottom_outer_diameter_mm / 2.0 + adapter.seat_clearance_mm
+    seat_top_radius_mm = seat_bottom_radius_mm + adapter.rise_height_mm * seat_slope
+    outer_radius_mm = seat_bottom_radius_mm + adapter.wall_thickness_mm
+
+    floor_bottom_height_mm = (
+        drive_base.underside_height_mm + drive_base.plate_thickness_mm
+    )
+    floor_top_height_mm = floor_bottom_height_mm + adapter.wall_thickness_mm
+    rise_top_height_mm = floor_top_height_mm + adapter.rise_height_mm
+
+    skirt_inner_radius_mm = drive_base.hub_radius_mm + _JOINT_FIT_CLEARANCE_MM
+    skirt_outer_radius_mm = skirt_inner_radius_mm + adapter.wall_thickness_mm
+    skirt_bottom_height_mm = drive_base.underside_height_mm
+
+    contact_radius_mm = can.bottom_flat_diameter_mm / 2.0
+    if contact_radius_mm <= skirt_outer_radius_mm:
+        raise GeometryError(
+            f"ゴミ箱の底の平面部の半径 {contact_radius_mm!r}mm が裾の外側 "
+            f"{skirt_outer_radius_mm!r}mm 以下であり、床が平面部へ届かない"
+            f"（bottom_flat_diameter_mm={can.bottom_flat_diameter_mm!r}、"
+            f"hub_outer_diameter_mm={base.hub_outer_diameter_mm!r}）。"
+        )
+    if seat_bottom_radius_mm <= contact_radius_mm:
+        raise GeometryError(
+            f"受け面の下端の半径 {seat_bottom_radius_mm!r}mm が底の平面部の半径 "
+            f"{contact_radius_mm!r}mm 以下であり、角の丸みの逃げが取れない"
+            f"（bottom_outer_diameter_mm={can.bottom_outer_diameter_mm!r}、"
+            f"bottom_flat_diameter_mm={can.bottom_flat_diameter_mm!r}）。"
+        )
+
+    # ⚠️ 座の環が立ち上がり／裾に載りきることが、記録された当たり面が実形状で
+    # 実現するための条件である（駆動ベースが `arm_thickness_mm` へ課したのと
+    # 同じ成立条件。要件 2.5, 2.9）。
+    retention_bolt_height_mm = floor_top_height_mm + adapter.rise_height_mm / 2.0
+    if adapter.rise_height_mm < boss_diameter_mm:
+        raise GeometryError(
+            f"rise_height_mm={adapter.rise_height_mm!r} がボルト座の外径 "
+            f"{boss_diameter_mm!r}mm（BOSS_DIAMETER_FACTOR="
+            f"{BOSS_DIAMETER_FACTOR!r} × insert_outer_diameter_mm="
+            f"{joint.insert_outer_diameter_mm!r}）を下回る。⚠️ 座の環が"
+            "立ち上がりに載らず、保持の締結がゴミ箱の側面ではなく座の底を"
+            "押さえることになる（要件 6.5, 2.9）。"
+        )
+    mount_bolt_height_mm = (
+        drive_base.underside_height_mm + drive_base.plate_thickness_mm / 2.0
+    )
+    if base.plate_thickness_mm < boss_diameter_mm:
+        raise GeometryError(
+            f"plate_thickness_mm={base.plate_thickness_mm!r} がボルト座の外径 "
+            f"{boss_diameter_mm!r}mm を下回る。⚠️ 裾の座の環が中央部の外縁の"
+            "高さに載らないため、joints が記録する当たり面は実形状では"
+            "実現しない（要件 2.9）。"
+        )
+    if joint.insert_length_mm >= drive_base.hub_radius_mm:
+        raise GeometryError(
+            f"インサート長 insert_length_mm={joint.insert_length_mm!r} が中央部の"
+            f"半径 {drive_base.hub_radius_mm!r}mm 以上であり、座が中央部を"
+            "貫いてしまう。"
+        )
+
+    mount_spotface_depth_mm = _spotface_depth_mm(skirt_outer_radius_mm, boss_diameter_mm)
+    retention_spotface_depth_mm = _spotface_depth_mm(outer_radius_mm, boss_diameter_mm)
+    wall_at_bolt_mm = outer_radius_mm - (
+        seat_bottom_radius_mm
+        + (retention_bolt_height_mm - floor_top_height_mm) * seat_slope
+    )
+    if wall_at_bolt_mm <= retention_spotface_depth_mm:
+        raise GeometryError(
+            f"保持の座ぐりの深さ {retention_spotface_depth_mm!r}mm が、その高さの"
+            f"立ち上がりの肉 {wall_at_bolt_mm!r}mm 以上である"
+            f"（wall_thickness_mm={adapter.wall_thickness_mm!r}、"
+            f"taper_deg={can.taper_deg!r}）——⚠️ 座ぐりが壁を貫く。"
+        )
+
+    # 保持の締結は円周へ等配置する（要件 6.5）。⚠️ **分割の継ぎ目に置かない**
+    # ——継ぎ目に掛かる座は2つの断片に割れて座として成立しない。
+    retention_bolt_count = joints["adapter__trash_can"].bolt_count
+    retention_half_deg = math.degrees(
+        math.asin(boss_diameter_mm / 2.0 / outer_radius_mm)
+    )
+    retention_bolt_angles_deg = tuple(
+        first_angle_deg + segment_span_deg / 2.0 + index * 360.0 / retention_bolt_count
+        for index in range(retention_bolt_count)
+    )
+    for angle_deg in retention_bolt_angles_deg:
+        for start_deg in segment_start_angles_deg:
+            gap_deg = abs((angle_deg - start_deg + 180.0) % 360.0 - 180.0)
+            if gap_deg < retention_half_deg:
+                raise GeometryError(
+                    f"保持の締結の角度 {angle_deg!r} 度が分割の継ぎ目 "
+                    f"{start_deg!r} 度に掛かる（座の半角 {retention_half_deg!r} 度、"
+                    f"retention_point_count={adapter.retention_point_count!r}、"
+                    f"断片 {segment_count!r} 個）。"
+                )
+
+    # 取付の座はアームを避けた空きの弧へ並べる。⚠️ **裾はアームと同じ高さの帯を
+    # 通る**ため、アームの角度には座も穴も置けない。
+    mount_bolt_count = joints[
+        f"hub_plate__adapter_segment_{_UNSPLIT_PART_COUNT}"
+    ].bolt_count
+    arm_void_half_width_mm = drive_base.arm_half_width_mm + _JOINT_FIT_CLEARANCE_MM
+    if arm_void_half_width_mm >= skirt_inner_radius_mm:
+        raise GeometryError(
+            f"アームの逃げの半幅 {arm_void_half_width_mm!r}mm が裾の内側の半径 "
+            f"{skirt_inner_radius_mm!r}mm 以上であり、裾が残らない"
+            f"（arm_width_mm={base.arm_width_mm!r}）。"
+        )
+    arm_half_deg = math.degrees(
+        math.asin(arm_void_half_width_mm / skirt_inner_radius_mm)
+    )
+    mount_half_deg = math.degrees(
+        math.asin(boss_diameter_mm / 2.0 / skirt_outer_radius_mm)
+    )
+    mount_bolt_angles_deg: list[tuple[float, ...]] = []
+    for start_deg in segment_start_angles_deg:
+        offsets_deg = [
+            (angle_deg - start_deg) % 360.0 for angle_deg in layout.wheel_angles_deg
+        ]
+        arcs = _free_arcs_deg(segment_span_deg, offsets_deg, arm_half_deg)
+        widest = max(arcs, key=lambda arc: arc[1] - arc[0], default=(0.0, 0.0))
+        width_deg = widest[1] - widest[0]
+        required_deg = _BOTH_SIDES * mount_half_deg * mount_bolt_count
+        if width_deg < required_deg:
+            raise GeometryError(
+                f"adapter_segment（始まり {start_deg!r} 度）: 取付ボルト "
+                f"{mount_bolt_count!r} 本の座を並べるにはアームを避けた弧が "
+                f"{required_deg!r} 度必要だが、空きは {width_deg!r} 度しかない"
+                f"（アームの半角 {arm_half_deg!r} 度、"
+                f"arm_width_mm={base.arm_width_mm!r}）。"
+            )
+        mount_bolt_angles_deg.append(
+            tuple(
+                start_deg
+                + widest[0]
+                + width_deg * (index + 0.5) / mount_bolt_count
+                for index in range(mount_bolt_count)
+            )
+        )
+
+    envelopes: list[Envelope] = []
+    for start_deg in segment_start_angles_deg:
+        x_mm, y_mm = _sector_extent_mm(
+            start_deg, segment_span_deg, skirt_inner_radius_mm, outer_radius_mm
+        )
+        envelopes.append(
+            Envelope(
+                x_mm=x_mm,
+                y_mm=y_mm,
+                z_mm=rise_top_height_mm - skirt_bottom_height_mm,
+            )
+        )
+
+    return AdapterGeometry(
+        segment_count=segment_count,
+        segment_span_deg=segment_span_deg,
+        segment_start_angles_deg=segment_start_angles_deg,
+        outer_radius_mm=outer_radius_mm,
+        seat_bottom_radius_mm=seat_bottom_radius_mm,
+        seat_top_radius_mm=seat_top_radius_mm,
+        seat_slope=seat_slope,
+        taper_deg=can.taper_deg,
+        contact_radius_mm=contact_radius_mm,
+        relief_depth_mm=adapter.seat_clearance_mm,
+        relief_bottom_height_mm=floor_top_height_mm - adapter.seat_clearance_mm,
+        floor_bottom_height_mm=floor_bottom_height_mm,
+        floor_top_height_mm=floor_top_height_mm,
+        floor_thickness_mm=adapter.wall_thickness_mm,
+        rise_height_mm=adapter.rise_height_mm,
+        rise_top_height_mm=rise_top_height_mm,
+        skirt_inner_radius_mm=skirt_inner_radius_mm,
+        skirt_outer_radius_mm=skirt_outer_radius_mm,
+        skirt_bottom_height_mm=skirt_bottom_height_mm,
+        boss_diameter_mm=boss_diameter_mm,
+        through_hole_diameter_mm=joint.through_hole_diameter_mm,
+        insert_bore_diameter_mm=joint.insert_outer_diameter_mm,
+        insert_bore_depth_mm=joint.insert_length_mm,
+        mount_bolt_count=mount_bolt_count,
+        mount_bolt_height_mm=mount_bolt_height_mm,
+        mount_spotface_depth_mm=mount_spotface_depth_mm,
+        mount_bolt_angles_deg=tuple(mount_bolt_angles_deg),
+        retention_bolt_count=retention_bolt_count,
+        retention_bolt_height_mm=retention_bolt_height_mm,
+        retention_spotface_depth_mm=retention_spotface_depth_mm,
+        retention_bolt_angles_deg=retention_bolt_angles_deg,
+        can_clear_radius_mm=(
+            can.bottom_outer_diameter_mm / 2.0 - can.bottom_thickness_mm
+        ),
+        can_height_mm=can.height_mm,
+        arm_angles_deg=layout.wheel_angles_deg,
+        arm_void_half_width_mm=arm_void_half_width_mm,
+        # ⚠️ 座ぐりは相手部品と嵌まる穴ではないが、造形する穴として一覧に出す
+        # （要件 2.11 の検査対象は「造形する穴」である）。
+        bore_diameters_mm=tuple(
+            sorted(
+                {
+                    joint.through_hole_diameter_mm,
+                    joint.insert_outer_diameter_mm,
+                    boss_diameter_mm,
+                }
+            )
+        ),
+        segment_envelopes=tuple(envelopes),
+    )
+
+
+def _radial_bore(
+    build123d: Any,
+    *,
+    angle_deg: float,
+    height_mm: float,
+    radius_range_mm: tuple[float, float],
+    diameter_mm: float,
+) -> Any:
+    """半径方向（角度 `angle_deg`）に開ける穴。範囲は機体中心からの半径である。"""
+    near_mm, far_mm = radius_range_mm
+    align = (build123d.Align.CENTER, build123d.Align.CENTER, build123d.Align.CENTER)
+    return (
+        build123d.Rotation(0, 0, angle_deg)
+        * build123d.Location(((near_mm + far_mm) / 2.0, 0.0, height_mm))
+        * build123d.Rotation(0, 90, 0)
+        * build123d.Cylinder(diameter_mm / 2.0, abs(far_mm - near_mm), align=align)
+    )
+
+
+def _build_adapter_segment(geometry: AdapterGeometry, index: int) -> Any:
+    """アダプタ断片1つのソリッドを組み立てる（機体座標、据え付けの角度のまま）。
+
+    参照は**幾何セレクタ**（座標と範囲）で明示的に組み立てる。⚠️ 生成名を一切
+    使わない（`_build_leg` / `_build_motor_arm` と同じ規律）。
+
+    ⚠️ **足す形だけが扇形であり、抜く形はすべて全周である。** 扇形どうしの
+    ブール演算は側面が同一平面で重なり、結果が演算の順序に左右される。
+    """
+    build123d = _require_shape_library()
+    start_deg = geometry.segment_start_angles_deg[index]
+    overshoot_mm = _TOOL_OVERSHOOT_MM
+
+    def sector(radius_mm: float, z_range: tuple[float, float]) -> Any:
+        """据え付けの角度に置いた扇形。
+
+        ⚠️ `align=None` は軸を機体中心に置き、**下端を原点に置く**（中央では
+        ない）。位置は `z_range[0]` である。
+        """
+        z_min, z_max = z_range
+        return (
+            build123d.Rotation(0, 0, start_deg)
+            * build123d.Location((0.0, 0.0, z_min))
+            * build123d.Cylinder(
+                radius_mm,
+                z_max - z_min,
+                arc_size=geometry.segment_span_deg,
+                align=None,
+            )
+        )
+
+    def ring_tool(radius_mm: float, z_range: tuple[float, float]) -> Any:
+        """全周の円筒（抜く側にだけ使う）。"""
+        z_min, z_max = z_range
+        return build123d.Location((0.0, 0.0, z_min)) * build123d.Cylinder(
+            radius_mm, z_max - z_min, align=None
+        )
+
+    # 床（ゴミ箱の底の平面部を受ける面）と、その内側を抜いた環。
+    body = sector(
+        geometry.outer_radius_mm,
+        (geometry.floor_bottom_height_mm, geometry.floor_top_height_mm),
+    ) - ring_tool(
+        geometry.skirt_inner_radius_mm,
+        (
+            geometry.floor_bottom_height_mm - overshoot_mm,
+            geometry.floor_top_height_mm + overshoot_mm,
+        ),
+    )
+
+    # 裾（中央部の外縁を掴む）。⚠️ アームと同じ高さの帯を通る。
+    body += sector(
+        geometry.skirt_outer_radius_mm,
+        (geometry.skirt_bottom_height_mm, geometry.floor_bottom_height_mm),
+    ) - ring_tool(
+        geometry.skirt_inner_radius_mm,
+        (
+            geometry.skirt_bottom_height_mm - overshoot_mm,
+            geometry.floor_bottom_height_mm + overshoot_mm,
+        ),
+    )
+
+    # 立ち上がり。⚠️ **受け面は円錐台の側面に沿う**（要件 6.2）——抜く形は
+    # 円筒ではなく、上流のテーパー角と同じ勾配の円錐である。
+    # ⚠️ **テーパー 0（円筒形のゴミ箱）だけは円筒で抜く。** 上流
+    # `TrashCanMeasurements` はテーパー 0 を許しており（円筒形のゴミ箱を
+    # 排除しないため）、そのとき円錐の上下の径は等しくなる——形状ライブラリは
+    # その入力を拒む。⚠️ **円筒を既定にしない**（要件 6.2 が禁じているのは
+    # 「円錐台の底に円筒の座を当てること」である）。
+    seat_height_mm = geometry.rise_top_height_mm - geometry.floor_top_height_mm + overshoot_mm
+    seat_range_mm = (
+        geometry.floor_top_height_mm,
+        geometry.floor_top_height_mm + seat_height_mm,
+    )
+    seat_tool = (
+        ring_tool(geometry.seat_bottom_radius_mm, seat_range_mm)
+        if geometry.seat_slope == 0.0
+        else build123d.Location((0.0, 0.0, geometry.floor_top_height_mm))
+        * build123d.Cone(
+            geometry.seat_bottom_radius_mm,
+            geometry.seat_bottom_radius_mm + seat_height_mm * geometry.seat_slope,
+            seat_height_mm,
+            align=None,
+        )
+    )
+    body += (
+        sector(
+            geometry.outer_radius_mm,
+            (geometry.floor_top_height_mm, geometry.rise_top_height_mm),
+        )
+        - seat_tool
+    )
+
+    # 角の丸みの逃げ（⚠️ **接触するのは底の平面部だけである**）。
+    body -= ring_tool(
+        geometry.seat_bottom_radius_mm,
+        (geometry.relief_bottom_height_mm, geometry.floor_top_height_mm),
+    ) - ring_tool(
+        geometry.contact_radius_mm,
+        (
+            geometry.relief_bottom_height_mm - overshoot_mm,
+            geometry.floor_top_height_mm + overshoot_mm,
+        ),
+    )
+
+    # アームの逃げ（⚠️ 裾だけを削る。床はアームの上に載る）。
+    for angle_deg in geometry.arm_angles_deg:
+        body -= build123d.Rotation(0, 0, angle_deg) * _box_between(
+            build123d,
+            (0.0, geometry.skirt_outer_radius_mm + overshoot_mm),
+            (-geometry.arm_void_half_width_mm, geometry.arm_void_half_width_mm),
+            (
+                geometry.skirt_bottom_height_mm - overshoot_mm,
+                geometry.floor_bottom_height_mm,
+            ),
+        )
+
+    # 取付の座ぐりと貫通穴（⚠️ 座ぐりが無ければ、ボルト頭は円筒面へ線で当たる）。
+    for angle_deg in geometry.mount_bolt_angles_deg[index]:
+        body -= _radial_bore(
+            build123d,
+            angle_deg=angle_deg,
+            height_mm=geometry.mount_bolt_height_mm,
+            radius_range_mm=(
+                geometry.skirt_outer_radius_mm - geometry.mount_spotface_depth_mm,
+                geometry.skirt_outer_radius_mm + overshoot_mm,
+            ),
+            diameter_mm=geometry.boss_diameter_mm,
+        )
+        body -= _radial_bore(
+            build123d,
+            angle_deg=angle_deg,
+            height_mm=geometry.mount_bolt_height_mm,
+            radius_range_mm=(
+                geometry.skirt_inner_radius_mm - overshoot_mm,
+                geometry.skirt_outer_radius_mm + overshoot_mm,
+            ),
+            diameter_mm=geometry.through_hole_diameter_mm,
+        )
+
+    # 保持の締結（⚠️ **貫通穴である**。ボルトはゴミ箱のテーパー面へ届く）。
+    for angle_deg in geometry.retention_bolt_angles_deg:
+        if (angle_deg - start_deg) % 360.0 > geometry.segment_span_deg:
+            continue
+        body -= _radial_bore(
+            build123d,
+            angle_deg=angle_deg,
+            height_mm=geometry.retention_bolt_height_mm,
+            radius_range_mm=(
+                geometry.outer_radius_mm - geometry.retention_spotface_depth_mm,
+                geometry.outer_radius_mm + overshoot_mm,
+            ),
+            diameter_mm=geometry.boss_diameter_mm,
+        )
+        body -= _radial_bore(
+            build123d,
+            angle_deg=angle_deg,
+            height_mm=geometry.retention_bolt_height_mm,
+            radius_range_mm=(
+                geometry.seat_bottom_radius_mm - overshoot_mm,
+                geometry.outer_radius_mm + overshoot_mm,
+            ),
+            diameter_mm=geometry.through_hole_diameter_mm,
+        )
+    return body
+
+
+def build_adapter_segments(
+    params: ResolvedParams, layout: ChassisLayout
+) -> tuple[BuiltPart, ...]:
+    """ゴミ箱固定アダプタの断片を全点構築する（要件 2.2, 6.1, 6.2, 6.5, 6.7）。
+
+    ⚠️ **検査が先である**（design.md `#### Shapes`）——材料と外接箱を通してから
+    ソリッドを作る。⚠️ **断片は据え付けの角度のまま構築する**（組み上がり状態の
+    干渉を実形状で見るため）。
+
+    Args:
+        params: `config.load_params()` の戻り値。
+        layout: `layout.derive_layout()` の戻り値。
+
+    Returns:
+        `("adapter_segment_1", …)` の順の構築済み部品。
+
+    Raises:
+        GeometryError: 幾何が成立しない場合、または外接箱が造形可能寸法に
+            収まらない場合（⚠️ **超過を全件**示す）。
+        ParameterError: 材料が上流の許可一覧に無い場合。
+        CadUnavailableError: 形状ライブラリが導入されていない場合。
+    """
+    geometry = adapter_geometry(params, layout)
+    check_material(params.printing)
+
+    violations = [
+        violation
+        for index, envelope in enumerate(geometry.segment_envelopes, start=1)
+        for violation in check_envelope(
+            f"{ADAPTER_SEGMENT_PART_NAME}_{index}", envelope, params.printing
+        )
+    ]
+    if violations:
+        detail = "、".join(
+            f"{violation.part_name} の 軸 {violation.axis} が "
+            f"{violation.envelope_mm}mm で上限 {violation.limit_mm}mm を "
+            f"{violation.excess_mm}mm 超過"
+            for violation in violations
+        )
+        raise GeometryError(
+            f"アダプタ断片の外接箱が造形可能寸法に収まらない（{detail}）。"
+            "⚠️ 分割数は上流の円環の導出（segment_counts）が決めており、"
+            "そこは中心を含む扇形という最悪値で判定している（要件 2.3）。"
+            "ゴミ箱の底の外径か座の肉厚を見直すこと。"
+        )
+
+    return tuple(
+        BuiltPart(
+            name=f"{ADAPTER_SEGMENT_PART_NAME}_{index + 1}",
+            solid=(solid := _build_adapter_segment(geometry, index)),
+            metrics=measure_part(f"{ADAPTER_SEGMENT_PART_NAME}_{index + 1}", solid),
+        )
+        for index in range(geometry.segment_count)
+    )

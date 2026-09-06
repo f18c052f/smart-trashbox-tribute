@@ -25,6 +25,7 @@ design.md `#### Shapes` は不変条件の検査を**本ファイル**に置く�
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import pytest
@@ -36,6 +37,7 @@ from chassis_mechanism.layout import derive_layout
 from chassis_mechanism.shapes import (
     MIN_HAND_ACCESS_MM,
     StandGeometry,
+    adapter_geometry,
     build_parts,
     drive_base_geometry,
     stand_geometry,
@@ -1132,3 +1134,649 @@ def test_each_drive_base_fragment_fits_the_build_volume(
         arm_bbox, (arm_declared.x_mm, arm_declared.y_mm, arm_declared.z_mm), strict=True
     ):
         assert measured == pytest.approx(expected, abs=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# 3. ゴミ箱固定アダプタ（タスク 3.3 / 要件 2.2, 6.1, 6.2, 6.5, 6.7）
+#
+# ⚠️ **本節の中心は3つである。**
+#   - 受け面が**円錐台に沿う**こと（要件 6.2）。⚠️ 円筒断面を持たない
+#   - ゴミ箱が提供する通過径を**狭めない**こと、受け口へ届かないこと（要件 6.7）
+#   - `joints` が記録した当たり面が、⚠️ **実形状の座で実現している**こと
+#     （design.md `#### Joints` Risks。アダプタの2家族は本タスクまで未計測だった）
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def adapter(shipped: tuple[Any, Any]) -> Any:
+    params, layout = shipped
+    return adapter_geometry(params, layout)
+
+
+@pytest.fixture(scope="module")
+def adapter_parts(adapter: Any, parts: dict[str, Any]) -> tuple[Any, ...]:
+    """構築済みのアダプタ断片（⚠️ 機体座標。据え付けの回転は要らない）。"""
+    return tuple(
+        parts[f"adapter_segment_{index}"].solid
+        for index in range(1, adapter.segment_count + 1)
+    )
+
+
+def _full_cylinder(radius_mm: float, z_range: tuple[float, float]) -> Any:
+    """機体の軸に同軸な円筒プローブ（`align=None` で軸を原点に置く）。"""
+    from build123d import Cylinder, Location
+
+    z_min, z_max = z_range
+    return Location((0.0, 0.0, (z_min + z_max) / 2.0)) * Cylinder(
+        radius_mm, z_max - z_min, align=None
+    )
+
+
+def _cone_probe(
+    bottom_radius_mm: float, slope: float, z_range: tuple[float, float]
+) -> Any:
+    """下端 `z_range[0]` で `bottom_radius_mm` の、勾配 `slope` の円錐プローブ。"""
+    from build123d import Cone, Location
+
+    z_min, z_max = z_range
+    height_mm = z_max - z_min
+    return Location((0.0, 0.0, z_min)) * Cone(
+        bottom_radius_mm, bottom_radius_mm + height_mm * slope, height_mm, align=None
+    )
+
+
+def _seat_radius_mm(adapter: Any, height_mm: float) -> float:
+    """受け面の半径（⚠️ **解析値**。実形状との突き合わせの相手として使う）。"""
+    return adapter.seat_bottom_radius_mm + (
+        height_mm - adapter.floor_top_height_mm
+    ) * adapter.seat_slope
+
+
+def _material_inside_radius_mm3(
+    solids: tuple[Any, ...], radius_mm: float, height_mm: float
+) -> float:
+    """高さ `height_mm` の薄い層で、半径 `radius_mm` の内側にある材料の体積。"""
+    slab = (height_mm - _SLAB_MM / 2.0, height_mm + _SLAB_MM / 2.0)
+    probe = _full_cylinder(radius_mm, slab)
+    return sum(_volume(solid & probe) for solid in solids)
+
+
+_SLAB_MM = 0.2
+"""半径を測るための薄い層の厚さ（mm）。
+
+⚠️ **層の中でも受け面の半径はテーパーぶん動く**（0.2mm の層で 0.02mm 弱）。
+`_EPS_MM`（0.05mm）はその変化より大きく、テーパーによる広がり（立ち上がりの
+全高で 1.7mm）よりはるかに小さい——両側からの判定が意味を持つ範囲である。
+"""
+
+
+def _radial_boss_region(
+    solid: Any, *, angle_deg: float, height_mm: float, radius_mm: float
+) -> Any:
+    """半径方向のボルトの軸に同軸な円筒で、座の範囲だけを切り出す。
+
+    ⚠️ **生成名を使わない**（`_boss_region` と同じ規律）。違いは軸の向きだけで
+    あり、アダプタの締結は半径方向（`print_normal_axis == "x"`）である。
+    """
+    from build123d import Align, Cylinder, Location, Rotation
+
+    return solid & (
+        Rotation(0, 0, angle_deg)
+        * Location((0.0, 0.0, height_mm))
+        * Rotation(0, 90, 0)
+        * Cylinder(radius_mm, _PROBE_MM, align=(Align.CENTER, Align.CENTER, Align.CENTER))
+    )
+
+
+def _measured_radial_seat_area_mm2(
+    solids: tuple[Any, ...],
+    *,
+    angles_deg: tuple[float, ...],
+    height_mm: float,
+    face_radius_mm: float,
+    boss_diameter_mm: float,
+) -> float:
+    """半径方向の締結の当たり面を、⚠️ **構築したソリッドから**測る。
+
+    ボルト頭が当たるのは座ぐりの底（平面）である。⚠️ **切り出す円筒の半径を座の
+    半径ぴったりにしない**——座の境界はその円筒そのものであり、同一面での
+    ブール演算に結果を委ねることになる。
+
+    ⚠️ **`joints.BEARING_AREA_FORMULA` を再計算した値を返さない。** 面積は
+    OCCT の面から採る。
+    """
+    total_mm2 = 0.0
+    for angle_deg in angles_deg:
+        radians = math.radians(angle_deg)
+        normal = (math.cos(radians), math.sin(radians), 0.0)
+        found = False
+        for solid in solids:
+            region = _radial_boss_region(
+                solid,
+                angle_deg=angle_deg,
+                height_mm=height_mm,
+                radius_mm=boss_diameter_mm / 2.0 + _EPS_MM,
+            )
+            if _volume(region) == 0.0:
+                continue
+            faces = _planar_faces_on_plane(region, normal, face_radius_mm)
+            total_mm2 += sum(float(face.area) for face in faces)
+            found = found or bool(faces)
+        assert found, f"角度 {angle_deg} の座に、ボルト頭が当たる平面が無い"
+    return total_mm2
+
+
+@requires_cad
+def test_the_adapter_seat_has_no_cylindrical_cross_section(
+    shipped: Any, adapter: Any, adapter_parts: tuple[Any, ...]
+) -> None:
+    """⚠️ **受け面は円錐台の側面に沿い、円筒断面を持たない**（要件 6.2）。
+
+    ⚠️ **面の型だけでは足りない**（型を見るだけでは、円錐が「どちらへ」開いて
+    いるかも、実際に受け面がそこにあるかも分からない）。実形状の受け面の半径を
+    **2つの高さで両側から**測り、テーパー角ぶん広がっていることを固定する
+    ——⚠️ 円筒であれば2つの高さで同じ半径になる。
+    """
+    from build123d import GeomType
+
+    low_mm = adapter.floor_top_height_mm + 1.0
+    high_mm = adapter.rise_top_height_mm - 1.0
+    for height_mm in (low_mm, high_mm):
+        expected_mm = _seat_radius_mm(adapter, height_mm)
+        assert (
+            _material_inside_radius_mm3(adapter_parts, expected_mm - _EPS_MM, height_mm)
+            == 0.0
+        ), height_mm
+        assert (
+            _material_inside_radius_mm3(adapter_parts, expected_mm + _EPS_MM, height_mm)
+            > 0.0
+        ), height_mm
+
+    # ⚠️ **円筒であればここが破れる**: 下端の半径は上端では受け面の内側に入る。
+    assert (
+        _material_inside_radius_mm3(
+            adapter_parts, adapter.seat_bottom_radius_mm + _EPS_MM, high_mm
+        )
+        == 0.0
+    )
+    assert _seat_radius_mm(adapter, high_mm) - _seat_radius_mm(
+        adapter, low_mm
+    ) == pytest.approx((high_mm - low_mm) * adapter.seat_slope)
+
+    # 面の型でも同じことを言う: 受け面は円錐であり、⚠️ **受け面の帯に軸対称の
+    # 円筒面が1つも無い**（外周面 φ188 と裾の面はこの帯の外にある）。
+    # ⚠️ **見るのはゴミ箱の底が載る高さより上だけである**——その下は角の丸みの
+    # 逃げ（ゴミ箱と触れない）であり、受け面ではない。
+    band = (adapter.seat_bottom_radius_mm - _EPS_MM, adapter.seat_top_radius_mm + _EPS_MM)
+    cones = 0
+    for solid in adapter_parts:
+        for face in solid.faces():
+            point = face.position_at(0.5, 0.5)
+            radius_mm = math.hypot(float(point.X), float(point.Y))
+            if float(point.Z) < adapter.floor_top_height_mm:
+                continue
+            if face.geom_type == GeomType.CONE and band[0] <= radius_mm <= band[1]:
+                cones += 1
+            if face.geom_type != GeomType.CYLINDER:
+                continue
+            unit = face.normal_at(point)
+            axis_is_z = abs(float(unit.Z)) < 1e-6 and abs(
+                float(unit.X) * float(point.Y) - float(unit.Y) * float(point.X)
+            ) < 1e-6
+            if not axis_is_z:
+                continue  # ボルト穴・座ぐり（軸は半径方向）は受け面ではない
+            assert not (band[0] <= radius_mm <= band[1]), (
+                f"受け面の帯に円筒面がある（半径 {radius_mm}mm）"
+            )
+    assert cones == len(adapter_parts), "断片ごとに受け面の円錐が1つある"
+
+
+@requires_cad
+def test_a_cylindrical_trash_can_still_builds_a_seat(shipped: tuple[Any, Any]) -> None:
+    """テーパー 0（円筒形のゴミ箱）でも断片が構築できる。
+
+    ⚠️ **上流はテーパー 0 を許している**（円筒形のゴミ箱を排除しないため）。
+    そのとき受け面は円筒になり、⚠️ **円錐としては作れない**（上下の径が等しい
+    円錐を形状ライブラリは拒む）。要件 6.2 が禁じているのは「円錐台の底に
+    円筒の座を当てること」であって、円筒の底に円筒の座を当てることではない。
+    """
+    import dataclasses
+
+    params, layout = shipped
+    straight = dataclasses.replace(
+        params, trash_can=dataclasses.replace(params.trash_can, taper_deg=0.0)
+    )
+    geometry = adapter_geometry(straight, layout)
+    assert geometry.seat_slope == 0.0
+    for index in range(geometry.segment_count):
+        solid = _build_adapter_segment_for_test(geometry, index)
+        assert len(solid.solids()) == 1
+        assert float(solid.volume) > 0.0
+
+
+def _build_adapter_segment_for_test(geometry: Any, index: int) -> Any:
+    from chassis_mechanism.shapes import _build_adapter_segment
+
+    return _build_adapter_segment(geometry, index)
+
+
+@requires_cad
+def test_the_seat_confines_the_trash_can_all_around_at_the_designed_clearance(
+    shipped: Any, adapter: Any, adapter_parts: tuple[Any, ...]
+) -> None:
+    """⚠️ **水平方向の拘束は「座が全周を囲んでいること」である**（要件 6.5）。
+
+    断片は円環を等分したものであり、組み上がると閉じた環になる。⚠️ **どこか
+    1箇所でも欠ければゴミ箱はそちらへ逃げる**——分割の継ぎ目を含む全周で
+    材料があることを見る。隙間は設計値（`adapter.seat_clearance_mm`）に一致する。
+    """
+    params, _ = shipped
+    clearance_mm = params.chassis.adapter.seat_clearance_mm
+    can_radius_mm = params.trash_can.bottom_outer_diameter_mm / 2.0
+    # ⚠️ 保持の締結の高さを避ける（そこには貫通穴が開いている）。
+    height_mm = (adapter.retention_bolt_height_mm + adapter.rise_top_height_mm) / 2.0
+    seat_mm = _seat_radius_mm(adapter, height_mm)
+    assert seat_mm - (
+        can_radius_mm + (height_mm - adapter.floor_top_height_mm) * adapter.seat_slope
+    ) == pytest.approx(clearance_mm)
+
+    wall_mid_mm = (seat_mm + adapter.outer_radius_mm) / 2.0
+    for step in range(36):
+        angle_deg = 5.0 + step * 10.0
+        radians = math.radians(angle_deg)
+        column = _box(
+            (
+                wall_mid_mm * math.cos(radians) - 0.2,
+                wall_mid_mm * math.cos(radians) + 0.2,
+            ),
+            (
+                wall_mid_mm * math.sin(radians) - 0.2,
+                wall_mid_mm * math.sin(radians) + 0.2,
+            ),
+            (height_mm - _SLAB_MM, height_mm + _SLAB_MM),
+        )
+        assert sum(_volume(solid & column) for solid in adapter_parts) > 0.0, angle_deg
+
+
+@requires_cad
+def test_the_adapter_never_narrows_the_passage_the_trash_can_offers(
+    shipped: Any, adapter: Any, adapter_parts: tuple[Any, ...]
+) -> None:
+    """⚠️ **アダプタはゴミ箱が提供する通過径を狭めない**（要件 6.7）。
+
+    ゴミ箱の内側の通過は、底の内面（`bottom_outer_diameter_mm / 2 -
+    bottom_thickness_mm`）から上へテーパーで広がる円錐である。⚠️ **その円錐の
+    内側にアダプタの材料が1mm^3 も無い**ことが、開口を狭めないことの形の側の
+    意味である——アダプタは底の外周を外から抱えるのであって、内側へは入らない。
+
+    ⚠️ **`trash_can.opening_inner_diameter_mm` は座の内径の下限ではない**
+    （design.md `#### Shapes` の不変条件がそう明記している。本ファイル末尾の
+    `test_the_opening_inner_diameter_is_not_a_bound_on_the_seat_bore` を参照）。
+    座は底（φ180）を受けるものであり、開口（φ210）はゴミ箱の上端にある。
+    """
+    params, _ = shipped
+    can = params.trash_can
+    interior_floor_mm = adapter.floor_top_height_mm + can.bottom_thickness_mm
+    passage = _cone_probe(
+        adapter.can_clear_radius_mm,
+        adapter.seat_slope,
+        (interior_floor_mm, adapter.rise_top_height_mm + _PROBE_MM),
+    )
+    for index, solid in enumerate(adapter_parts, start=1):
+        assert _volume(solid & passage) == 0.0, index
+
+    # ⚠️ 空振りでないこと: 通過の円錐は座の帯のすぐ内側にあり、受け面を
+    # わずかに内側へ寄せれば必ず当たる。
+    intruding = _cone_probe(
+        _seat_radius_mm(adapter, interior_floor_mm) + _EPS_MM,
+        adapter.seat_slope,
+        (interior_floor_mm, adapter.rise_top_height_mm),
+    )
+    assert sum(_volume(solid & intruding) for solid in adapter_parts) > 0.0
+
+
+@requires_cad
+def test_the_adapter_stays_below_the_mouth_where_the_upstream_rim_mounts(
+    shipped: Any, adapter: Any, adapter_parts: tuple[Any, ...]
+) -> None:
+    """⚠️ **上流が設計した受け口と干渉しない**（要件 6.7）。
+
+    受け口（ワイドリム）はゴミ箱の**上端**へ被さる部品であり、上流
+    `RimParams.height_mm` がその被さる高さを持つ。アダプタは底を受ける座で
+    あり、⚠️ **ゴミ箱の側面をその高さまで登らない**。
+    """
+    from catch_mechanism import load_params as upstream_load_params
+
+    params, _ = shipped
+    can = params.trash_can
+    rim = upstream_load_params().rim
+
+    reach_mm = adapter.rise_top_height_mm - adapter.floor_top_height_mm
+    assert reach_mm < can.height_mm - rim.height_mm
+
+    # 実形状でも同じことを言う（宣言ではなく構築した断片の高さで見る）。
+    for solid in adapter_parts:
+        assert float(solid.bounding_box().max.Z) <= adapter.rise_top_height_mm + 1e-6
+    # 受け口はゴミ箱の上端の外径へ嵌まる。アダプタの外径はそれより小さい。
+    assert adapter.outer_radius_mm * 2.0 < can.top_outer_diameter_mm
+
+
+@requires_cad
+def test_the_measured_adapter_mount_seat_area_matches_the_bearing_area_recorded_by_joints(
+    shipped: Any, adapter: Any, adapter_parts: tuple[Any, ...]
+) -> None:
+    """⚠️ **`hub_plate__adapter_segment_i` の当たり面が実形状で実現している。**
+
+    `joints` は build123d を import できないため当たり面を解析式で持つ
+    （design.md `#### Joints` Risks）。⚠️ **この家族は本タスクまで一度も
+    実形状と突き合わされていない。** 突き合わせる片側は寸法から計算し直した
+    数ではなく、⚠️ **ソリッドから測った面積**である。
+    """
+    params, layout = shipped
+    joints = {spec.name: spec for spec in derive_joints(layout, params)}
+    for index in range(1, adapter.segment_count + 1):
+        spec = joints[f"hub_plate__adapter_segment_{index}"]
+        measured_mm2 = _measured_radial_seat_area_mm2(
+            (adapter_parts[index - 1],),
+            angles_deg=adapter.mount_bolt_angles_deg[index - 1],
+            height_mm=adapter.mount_bolt_height_mm,
+            face_radius_mm=adapter.skirt_outer_radius_mm - adapter.mount_spotface_depth_mm,
+            boss_diameter_mm=adapter.boss_diameter_mm,
+        )
+        assert measured_mm2 == pytest.approx(spec.bearing_area_mm2, rel=1e-9), index
+        assert measured_mm2 >= spec.min_bearing_area_mm2
+        assert measured_mm2 >= params.joint.min_bearing_area_mm2
+
+
+@requires_cad
+def test_the_measured_retention_seat_area_matches_the_bearing_area_recorded_by_joints(
+    shipped: Any, adapter: Any, adapter_parts: tuple[Any, ...]
+) -> None:
+    """⚠️ **`adapter__trash_can` の当たり面が実形状で実現している**（要件 6.5, 2.9）。
+
+    保持の締結は円周へ等配置され、断片をまたぐ。⚠️ **記録は1件の接合部として
+    全数のボルトを数えている**ため、突き合わせも全断片を合わせて測る。
+    """
+    params, layout = shipped
+    spec = next(
+        joint
+        for joint in derive_joints(layout, params)
+        if joint.name == "adapter__trash_can"
+    )
+    measured_mm2 = _measured_radial_seat_area_mm2(
+        adapter_parts,
+        angles_deg=adapter.retention_bolt_angles_deg,
+        height_mm=adapter.retention_bolt_height_mm,
+        face_radius_mm=adapter.outer_radius_mm - adapter.retention_spotface_depth_mm,
+        boss_diameter_mm=adapter.boss_diameter_mm,
+    )
+    assert measured_mm2 == pytest.approx(spec.bearing_area_mm2, rel=1e-9)
+    assert measured_mm2 >= spec.min_bearing_area_mm2
+    assert measured_mm2 >= params.joint.min_bearing_area_mm2
+
+
+@requires_cad
+def test_a_bolt_seat_left_on_the_raw_wall_realises_no_bearing_face(
+    shipped: Any, adapter: Any
+) -> None:
+    """⚠️ **座ぐりが無ければ当たり面は1mm^2 も実現しない**（検査が空振りでない）。
+
+    `joints.BEARING_AREA_FORMULA` が数えるのは**平らな座の環**である。円筒面へ
+    直接ボルトを当てれば、頭は2本の線で当たるだけであり、記録された環はどこにも
+    無い。⚠️ **測る側が「面の型」を見ているからこそ、この差が出る。**
+    """
+    import dataclasses
+
+    from chassis_mechanism.shapes import _build_adapter_segment
+
+    _, _ = shipped
+    raw = dataclasses.replace(
+        adapter, mount_spotface_depth_mm=0.0, retention_spotface_depth_mm=0.0
+    )
+    solids = tuple(
+        _build_adapter_segment(raw, index) for index in range(raw.segment_count)
+    )
+    for index in range(raw.segment_count):
+        region = _radial_boss_region(
+            solids[index],
+            angle_deg=raw.mount_bolt_angles_deg[index][0],
+            height_mm=raw.mount_bolt_height_mm,
+            radius_mm=raw.boss_diameter_mm / 2.0 + _EPS_MM,
+        )
+        normal_at = math.radians(raw.mount_bolt_angles_deg[index][0])
+        assert (
+            _planar_faces_on_plane(
+                region,
+                (math.cos(normal_at), math.sin(normal_at), 0.0),
+                raw.skirt_outer_radius_mm,
+            )
+            == []
+        )
+
+
+@requires_cad
+def test_a_skirt_shorter_than_the_boss_cannot_realise_the_mount_bearing_area(
+    shipped: Any, adapter: Any
+) -> None:
+    """⚠️ **裾が座の外径より低いと、記録された当たり面は実現しない**（要件 2.9）。
+
+    タスク 3.2 が `base.arm_thickness_mm` について実形状で示したのと同じ形で
+    ある。⚠️ 解析式は座の環をまるごと数えるため、⚠️ **面からはみ出しても
+    解析値は下がらない**——下限を満たすという判定だけが残る。
+
+    ⚠️ `adapter_geometry` はこの寸法を構築の前に拒否するため、ここでは幾何を
+    直接差し替えて**測るためだけに**構築する。
+    """
+    import dataclasses
+
+    from chassis_mechanism.shapes import _build_adapter_segment
+
+    params, layout = shipped
+    spec = next(
+        joint
+        for joint in derive_joints(layout, params)
+        if joint.name == "hub_plate__adapter_segment_1"
+    )
+    boss_radius_mm = adapter.boss_diameter_mm / 2.0
+    short_mm = 1.3 * boss_radius_mm  # 座の環（直径 2r）より低い裾
+    shallow = dataclasses.replace(
+        adapter,
+        skirt_bottom_height_mm=adapter.floor_bottom_height_mm - short_mm,
+        mount_bolt_height_mm=adapter.floor_bottom_height_mm - short_mm / 2.0,
+    )
+    measured_mm2 = _measured_radial_seat_area_mm2(
+        (_build_adapter_segment(shallow, 0),),
+        angles_deg=shallow.mount_bolt_angles_deg[0],
+        height_mm=shallow.mount_bolt_height_mm,
+        face_radius_mm=shallow.skirt_outer_radius_mm - shallow.mount_spotface_depth_mm,
+        boss_diameter_mm=shallow.boss_diameter_mm,
+    )
+
+    # ⚠️ 欠ける量を**形からではなく初等幾何から**独立に出す（弓形の面積）。
+    half_mm = short_mm / 2.0
+    cap_mm2 = boss_radius_mm**2 * math.acos(half_mm / boss_radius_mm) - half_mm * math.sqrt(
+        boss_radius_mm**2 - half_mm**2
+    )
+    hole_mm2 = math.pi / 4.0 * params.joint.through_hole_diameter_mm**2
+    expected_mm2 = shallow.mount_bolt_count * (
+        math.pi * boss_radius_mm**2 - cap_mm2 - hole_mm2
+    )
+    assert measured_mm2 == pytest.approx(expected_mm2, rel=1e-6)
+    assert measured_mm2 < spec.bearing_area_mm2
+    # ⚠️ **解析値は下限を満たすと述べるが、実物の座は小さい。**
+    assert spec.bearing_area_mm2 >= spec.min_bearing_area_mm2
+
+
+@requires_cad
+def test_the_retention_bolt_passes_through_the_wall_and_reaches_the_trash_can(
+    shipped: Any, adapter: Any, adapter_parts: tuple[Any, ...]
+) -> None:
+    """⚠️ **保持の締結は貫通穴であり、ゴミ箱のテーパー面へ届く**（要件 6.5）。
+
+    ⚠️ **袋穴では締結にならない。** 半径方向のボルトが受け面まで抜けていること
+    （＝穴の軸に材料が残っていないこと）と、その高さがゴミ箱の底の載る面より
+    上にあること（＝底ではなく側面を押さえること）の両方を実形状で見る。
+    """
+    from build123d import Align, Cylinder, Location, Rotation
+
+    seat_mm = _seat_radius_mm(adapter, adapter.retention_bolt_height_mm)
+    inner_mm = seat_mm - _EPS_MM
+    outer_mm = adapter.outer_radius_mm + _EPS_MM
+    for angle_deg in adapter.retention_bolt_angles_deg:
+        bore = (
+            Rotation(0, 0, angle_deg)
+            * Location((( inner_mm + outer_mm) / 2.0, 0.0, adapter.retention_bolt_height_mm))
+            * Rotation(0, 90, 0)
+            * Cylinder(
+                adapter.through_hole_diameter_mm / 2.0 - _EPS_MM,
+                outer_mm - inner_mm,
+                align=(Align.CENTER, Align.CENTER, Align.CENTER),
+            )
+        )
+        assert sum(_volume(solid & bore) for solid in adapter_parts) == 0.0, angle_deg
+    assert adapter.retention_bolt_height_mm > adapter.floor_top_height_mm
+
+
+@requires_cad
+def test_the_hub_plate_carries_the_insert_bores_the_adapter_bolts_into(
+    shipped: Any, adapter: Any, parts: dict[str, Any]
+) -> None:
+    """⚠️ **`hub_plate__adapter_segment_i` のインサートに座がある。**
+
+    記録は断片1つにつき `insert_count` 個のインサートを数える。⚠️ **相手側に
+    座が無ければ、そのインサートはどこにも入らない**——中央部の外縁に、
+    上流 `JointPolicy.insert_length_mm` ぶんの深さの座があることを実形状で見る。
+    """
+    from build123d import Align, Cylinder, Location, Rotation
+
+    params, _ = shipped
+    plate = parts["hub_plate"].solid
+    hub_radius_mm = params.chassis.base.hub_outer_diameter_mm / 2.0
+    depth_mm = params.joint.insert_length_mm
+
+    def _axis_probe(angle_deg: float, near_mm: float, far_mm: float, radius_mm: float) -> Any:
+        return (
+            Rotation(0, 0, angle_deg)
+            * Location(((near_mm + far_mm) / 2.0, 0.0, adapter.mount_bolt_height_mm))
+            * Rotation(0, 90, 0)
+            * Cylinder(
+                radius_mm,
+                abs(far_mm - near_mm),
+                align=(Align.CENTER, Align.CENTER, Align.CENTER),
+            )
+        )
+
+    for angles in adapter.mount_bolt_angles_deg:
+        for angle_deg in angles:
+            # 座の中は空である（深さ ＝ インサート長）。
+            empty = _axis_probe(
+                angle_deg,
+                hub_radius_mm - depth_mm + _EPS_MM,
+                hub_radius_mm - _EPS_MM,
+                adapter.insert_bore_diameter_mm / 2.0 - _EPS_MM,
+            )
+            assert _volume(plate & empty) == 0.0, angle_deg
+            # ⚠️ **袋穴である**（座の先には材料が残っている）。
+            beyond = _axis_probe(
+                angle_deg,
+                hub_radius_mm - depth_mm - 2.0,
+                hub_radius_mm - depth_mm - _EPS_MM,
+                adapter.insert_bore_diameter_mm / 2.0 - _EPS_MM,
+            )
+            assert _volume(plate & beyond) > 0.0, angle_deg
+
+
+@requires_cad
+def test_each_adapter_fragment_is_one_solid_that_fits_the_build_volume(
+    shipped: Any, adapter: Any, parts: dict[str, Any]
+) -> None:
+    """断片が生成され、⚠️ **実測の外接箱**が造形可能寸法に収まる（要件 2.2）。
+
+    ⚠️ **点数は `joints.segment_counts()` が正である**（要件 2.1）。宣言した
+    外接箱は実形状の外接箱と一致する——覆いでなければ「収まっている」という
+    判定が実物について述べたものにならない。
+    """
+    from catch_mechanism import Envelope
+
+    from chassis_mechanism.joints import segment_counts
+
+    params, _ = shipped
+    counts = segment_counts(params)
+    built = [name for name in parts if name.startswith("adapter_segment_")]
+    assert len(built) == counts["adapter_segment"] == adapter.segment_count
+
+    for index in range(1, adapter.segment_count + 1):
+        part = parts[f"adapter_segment_{index}"]
+        assert part.metrics.solid_count == 1, index
+        x_mm, y_mm, z_mm = part.metrics.bbox_mm
+        assert (
+            check_envelope(
+                part.name, Envelope(x_mm=x_mm, y_mm=y_mm, z_mm=z_mm), params.printing
+            )
+            == ()
+        ), index
+        declared = adapter.segment_envelopes[index - 1]
+        for measured, expected in zip(
+            (x_mm, y_mm, z_mm), (declared.x_mm, declared.y_mm, declared.z_mm), strict=True
+        ):
+            assert measured == pytest.approx(expected, abs=1e-6), index
+
+
+@requires_cad
+def test_the_adapter_does_not_interfere_with_the_drive_base(
+    shipped: Any, adapter: Any, parts: dict[str, Any]
+) -> None:
+    """組み上がり状態でアダプタが駆動ベースと干渉しない（要件 9.1）。
+
+    ⚠️ **裾はアームと同じ高さの帯を通る。** 逃げが無ければここが噛む。
+    """
+    placed = _placed_drive_base(shipped, parts)
+    for index in range(1, adapter.segment_count + 1):
+        segment = parts[f"adapter_segment_{index}"].solid
+        for name, solid in placed.items():
+            assert _volume(segment & solid) == 0.0, (index, name)
+        for other in range(index + 1, adapter.segment_count + 1):
+            assert _volume(
+                segment & parts[f"adapter_segment_{other}"].solid
+            ) == 0.0, (index, other)
+
+    # ⚠️ 空振りでないこと: 断片は中央部とアームの真上に載っている（高さだけが
+    # 隔てている）。
+    assert adapter.skirt_inner_radius_mm < adapter.outer_radius_mm
+    below = _box(
+        (-_PROBE_MM, _PROBE_MM),
+        (-_PROBE_MM, _PROBE_MM),
+        (adapter.floor_bottom_height_mm - 1.0, adapter.floor_bottom_height_mm),
+    )
+    assert _volume(placed["hub_plate"] & below) > 0.0
+
+
+@requires_cad
+def test_the_opening_inner_diameter_is_not_a_bound_on_the_seat_bore(
+    shipped: Any, adapter: Any, adapter_parts: tuple[Any, ...]
+) -> None:
+    """⚠️ **`opening_inner_diameter_mm` は座の内径の下限にならない。**
+
+    design.md `#### Shapes` の不変条件がそう明記している——⚠️ **底（φ180）を
+    受ける座の内径は、必ず底の外径の側にある**。
+    `joints.ADAPTER_OUTER_DIAMETER_FORMULA` が定める**外径**（φ188）ですら
+    開口（φ210）より小さく、内径がそれを上回る形は存在しない。
+
+    要件 6.7 の意味は「開口の**数値**より大きい穴を開けること」ではなく、
+    ⚠️ **ゴミ箱が提供する通過を狭めないこと**である（それは
+    `test_the_adapter_never_narrows_the_passage_the_trash_can_offers` が
+    実形状で固定している）。本テストは、⚠️ **開口の数値を下限として持ち込む
+    読み替えが再び入り込まないよう**、その関係を実形状の頂点から測って
+    固定する。
+    """
+    params, _ = shipped
+    opening_mm = params.trash_can.opening_inner_diameter_mm
+
+    inner_radius_mm = min(
+        math.hypot(float(vertex.X), float(vertex.Y))
+        for solid in adapter_parts
+        for vertex in solid.vertices()
+    )
+    assert inner_radius_mm == pytest.approx(adapter.skirt_inner_radius_mm, abs=1e-6)
+    assert 2.0 * adapter.outer_radius_mm < opening_mm
+    assert 2.0 * inner_radius_mm < opening_mm

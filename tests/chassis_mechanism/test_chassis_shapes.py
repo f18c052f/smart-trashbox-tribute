@@ -37,10 +37,12 @@ from chassis_mechanism.layout import derive_layout
 from chassis_mechanism.shapes import (
     MIN_HAND_ACCESS_MM,
     PART_NAMES,
+    AdapterGeometry,
     BuiltPart,
     DriveBaseGeometry,
     StandGeometry,
     StandInputs,
+    adapter_geometry,
     build_parts,
     build_service_stand_legs,
     drive_base_geometry,
@@ -497,6 +499,7 @@ from chassis_mechanism.config import load_params
 from chassis_mechanism.errors import CadUnavailableError
 from chassis_mechanism.layout import derive_layout
 from chassis_mechanism.shapes import (
+    adapter_geometry,
     build_parts,
     drive_base_geometry,
     part_names,
@@ -508,6 +511,7 @@ params = load_params()
 layout = derive_layout(params)
 geometry = stand_geometry(stand_inputs(params, layout))
 drive_base = drive_base_geometry(params, layout)
+adapter = adapter_geometry(params, layout)
 
 report = {
     "stub_blocked_the_shape_library": blocked,
@@ -521,6 +525,12 @@ report = {
     "slot_width_mm": drive_base.slot_width_mm,
     "arm_thickness_mm": drive_base.arm_thickness_mm,
     "boss_diameter_mm": drive_base.boss_diameter_mm,
+    "adapter_segment_count": adapter.segment_count,
+    "adapter_outer_radius_mm": adapter.outer_radius_mm,
+    "adapter_seat_bottom_radius_mm": adapter.seat_bottom_radius_mm,
+    "adapter_seat_top_radius_mm": adapter.seat_top_radius_mm,
+    "adapter_contact_radius_mm": adapter.contact_radius_mm,
+    "adapter_retention_bolt_count": adapter.retention_bolt_count,
     "build_failed": False,
     "error_type": "",
     "message": "",
@@ -573,7 +583,10 @@ def test_the_cad_blocking_stub_actually_blocks_the_shape_library(tmp_path: Path)
 
 
 def test_geometry_is_available_and_building_fails_loudly_without_the_shape_library(
-    tmp_path: Path, geometry: StandGeometry, drive_base: DriveBaseGeometry
+    tmp_path: Path,
+    geometry: StandGeometry,
+    drive_base: DriveBaseGeometry,
+    adapter: AdapterGeometry,
 ) -> None:
     """CAD 非導入の環境で、幾何は導けて**形状生成だけが専用の失敗になる**。
 
@@ -604,6 +617,13 @@ def test_geometry_is_available_and_building_fails_loudly_without_the_shape_libra
     assert report["slot_width_mm"] == drive_base.slot_width_mm
     assert report["arm_thickness_mm"] == drive_base.arm_thickness_mm
     assert report["boss_diameter_mm"] == drive_base.boss_diameter_mm
+    # ⚠️ アダプタの座も算術だけで決まる（上流の採寸値・テーパー角・分割数導出）。
+    assert report["adapter_segment_count"] == adapter.segment_count
+    assert report["adapter_outer_radius_mm"] == adapter.outer_radius_mm
+    assert report["adapter_seat_bottom_radius_mm"] == adapter.seat_bottom_radius_mm
+    assert report["adapter_seat_top_radius_mm"] == adapter.seat_top_radius_mm
+    assert report["adapter_contact_radius_mm"] == adapter.contact_radius_mm
+    assert report["adapter_retention_bolt_count"] == adapter.retention_bolt_count
     assert report["build_failed"] is True
     assert report["error_type"] == "CadUnavailableError"
     assert "cad" in report["message"]
@@ -748,12 +768,15 @@ def test_the_drive_base_is_a_central_plate_with_three_radial_arms(
     assert counts["motor_arm"] == params.chassis.base.wheel_count  # type: ignore[attr-defined]
     assert drive_base.wheel_angles_deg == layout.wheel_angles_deg  # type: ignore[attr-defined]
     assert drive_base.wheel_count == counts["motor_arm"]
-    assert PART_NAMES == ("hub_plate", "motor_arm", "service_stand")
+    assert PART_NAMES == ("hub_plate", "motor_arm", "adapter_segment", "service_stand")
     assert part_names(params) == (  # type: ignore[arg-type]
         "hub_plate",
         "motor_arm_1",
         "motor_arm_2",
         "motor_arm_3",
+        "adapter_segment_1",
+        "adapter_segment_2",
+        "adapter_segment_3",
         "service_stand_1",
         "service_stand_2",
         "service_stand_3",
@@ -985,3 +1008,444 @@ def test_the_drive_base_fragments_fit_the_build_volume(
     ):
         assert isinstance(envelope, Envelope)
         assert check_envelope(name, envelope, params.printing) == (), name  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# 7. ゴミ箱固定アダプタ（タスク 3.3 / 要件 2.2, 6.1, 6.2, 6.5, 6.7）
+#
+# ⚠️ **本節は形状ライブラリを要さない側である。** 座の径・テーパー・分割数・
+# 締結箇所は算術だけで決まり、実形状に対する不変条件（座が円筒断面を持たない、
+# 開口を狭めない、当たり面が実現している）は `test_chassis_invariants.py` が持つ。
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def adapter(shipped: tuple[object, object]) -> AdapterGeometry:
+    params, layout = shipped
+    return adapter_geometry(params, layout)  # type: ignore[arg-type]
+
+
+def _replace_can(params: object, **changes: object) -> object:
+    """上流のゴミ箱の採寸値だけを差し替えた `ResolvedParams` を作る。"""
+    import dataclasses
+
+    return dataclasses.replace(
+        params,  # type: ignore[type-var]
+        trash_can=dataclasses.replace(params.trash_can, **changes),  # type: ignore[attr-defined]
+    )
+
+
+def test_the_adapter_dimensions_come_from_the_upstream_trash_can_measurements(
+    shipped: tuple[object, object], adapter: AdapterGeometry
+) -> None:
+    """⚠️ アダプタの寸法は上流の採寸値から導かれる（要件 6.1 / 1.3）。
+
+    底の外径・底の平面部径・テーパー角・底の肉厚のすべてが形に現れる。
+    ⚠️ **本 Spec 側が持つのは受けるための量（隙間・肉厚・立ち上がり・保持箇所）
+    だけである**——同じ値を再定義しない。
+    """
+    from chassis_mechanism.joints import _adapter_outer_diameter_mm
+
+    params, _ = shipped
+    can = params.trash_can  # type: ignore[attr-defined]
+    spec = params.chassis.adapter  # type: ignore[attr-defined]
+
+    # 座の内側は「底の外半径 ＋ 隙間」から始まる。
+    assert adapter.seat_bottom_radius_mm == pytest.approx(
+        can.bottom_outer_diameter_mm / 2.0 + spec.seat_clearance_mm
+    )
+    # 外径の正は `joints` である（⚠️ 形の側で数え直さない）。
+    assert adapter.outer_radius_mm == pytest.approx(
+        _adapter_outer_diameter_mm(params) / 2.0  # type: ignore[arg-type]
+    )
+    # 接触するのは底の**平面部**だけである（角の丸みは逃がす）。
+    assert adapter.contact_radius_mm == pytest.approx(can.bottom_flat_diameter_mm / 2.0)
+    assert adapter.contact_radius_mm < adapter.seat_bottom_radius_mm
+    # 底の肉厚は「ゴミ箱が提供する通過径」を決める（要件 6.7 の判定に効く）。
+    assert adapter.can_clear_radius_mm == pytest.approx(
+        can.bottom_outer_diameter_mm / 2.0 - can.bottom_thickness_mm
+    )
+    assert adapter.taper_deg == can.taper_deg
+
+
+def test_the_seat_follows_the_frustum_and_is_not_a_cylinder(
+    shipped: tuple[object, object], adapter: AdapterGeometry
+) -> None:
+    """⚠️ **受け面は円錐台の側面に沿う**（要件 6.2）。
+
+    ⚠️ **円筒であれば上端と下端の径が等しい。** ここで固定するのは
+    「テーパー角ぶん広がっている」ことであり、実形状の側の検査
+    （円筒断面を持たないこと）は `test_chassis_invariants.py` が持つ。
+    """
+    import math
+
+    params, _ = shipped
+    can = params.trash_can  # type: ignore[attr-defined]
+
+    assert adapter.seat_slope == pytest.approx(math.tan(math.radians(can.taper_deg)))
+    assert adapter.seat_top_radius_mm > adapter.seat_bottom_radius_mm
+    assert adapter.seat_top_radius_mm - adapter.seat_bottom_radius_mm == pytest.approx(
+        adapter.rise_height_mm * adapter.seat_slope
+    )
+
+
+def test_a_cylindrical_bottom_still_yields_a_seat(shipped: tuple[object, object]) -> None:
+    """テーパー 0（円筒形のゴミ箱）でも座は成立する（上流が許す入力）。
+
+    ⚠️ **円錐台を前提にすることと、テーパーが 0 の入力を拒むことは別である。**
+    上流 `TrashCanMeasurements` はテーパー 0 を「円筒形のゴミ箱を排除しない」ために
+    許しており、本 Spec が導出でそれを弾いてはならない。
+    """
+    params, layout = shipped
+    straight = adapter_geometry(_replace_can(params, taper_deg=0.0), layout)  # type: ignore[arg-type]
+    assert straight.seat_slope == pytest.approx(0.0)
+    assert straight.seat_top_radius_mm == pytest.approx(straight.seat_bottom_radius_mm)
+
+
+def test_the_seat_is_re_derived_when_the_upstream_measurement_is_updated(
+    shipped: tuple[object, object], adapter: AdapterGeometry, tmp_path: Path
+) -> None:
+    """⚠️ **上流の採寸値を測り直すと座の寸法が追随する**（要件 6.9 / 1.5）。
+
+    タスク 5.3 が `trash_can.bottom_flat_diameter_mm` の仮値を実測へ置き換える。
+    そのとき**実装コードを変えずに**座が動くことをここで固定する。
+
+    ⚠️ **書き戻しは `tmp_path` の複製に対して行い、実物の
+    `configs/catch_mechanism/dimensions.json` へは触れない。** 値は上流の
+    書き出し形式を通して往復させる——メモリ上の差し替えだけでは
+    「設定ファイルを読み直したら追随する」ことを示せない。
+    """
+    from catch_mechanism import load_params as upstream_load_params
+
+    from chassis_mechanism.config import (
+        UPSTREAM_DIMENSIONS_PATH,
+        update_upstream_measurement,
+    )
+
+    original = UPSTREAM_DIMENSIONS_PATH.read_bytes()
+    target = tmp_path / "upstream-dimensions.json"
+    target.write_bytes(original.replace(b"\r\n", b"\n"))
+
+    params, layout = shipped
+    measured_flat_mm = params.trash_can.bottom_flat_diameter_mm - 4.6  # type: ignore[attr-defined]
+    update_upstream_measurement(
+        "trash_can.bottom_flat_diameter_mm", measured_flat_mm, path=target
+    )
+    reloaded = upstream_load_params(target).trash_can
+    remeasured = adapter_geometry(
+        _replace_can(params, bottom_flat_diameter_mm=reloaded.bottom_flat_diameter_mm),  # type: ignore[arg-type]
+        layout,
+    )
+
+    assert remeasured.contact_radius_mm == pytest.approx(measured_flat_mm / 2.0)
+    assert remeasured.contact_radius_mm < adapter.contact_radius_mm
+    # ⚠️ 実物は書き換わっていない。
+    assert UPSTREAM_DIMENSIONS_PATH.read_bytes() == original
+
+
+def test_the_seat_follows_a_changed_bottom_outer_diameter(
+    shipped: tuple[object, object], adapter: AdapterGeometry
+) -> None:
+    """底の外径が変われば座の内径と外径がまとめて動く（要件 6.9）。"""
+    params, layout = shipped
+    wider = adapter_geometry(
+        _replace_can(
+            params,
+            bottom_outer_diameter_mm=params.trash_can.bottom_outer_diameter_mm + 10.0,  # type: ignore[attr-defined]
+        ),
+        layout,
+    )
+    assert wider.seat_bottom_radius_mm == pytest.approx(
+        adapter.seat_bottom_radius_mm + 5.0
+    )
+    assert wider.outer_radius_mm == pytest.approx(adapter.outer_radius_mm + 5.0)
+
+
+def test_the_fragment_count_is_the_upstream_annular_derivation(
+    shipped: tuple[object, object], adapter: AdapterGeometry
+) -> None:
+    """⚠️ **分割数は上流の円環の導出が決める**（要件 2.1, 2.2 / research.md）。
+
+    アダプタは円環そのものであり、`required_segment_count` がそのまま使える
+    （駆動ベースのように輪数から従属させない）。⚠️ **形の側で数え直さない。**
+    """
+    from chassis_mechanism.joints import segment_counts
+
+    params, _ = shipped
+    counts = segment_counts(params)  # type: ignore[arg-type]
+    assert adapter.segment_count == counts["adapter_segment"]
+    assert adapter.segment_count > 1, "分割しないなら分割の導出を検査できない"
+    assert len(adapter.segment_start_angles_deg) == adapter.segment_count
+    assert adapter.segment_span_deg == pytest.approx(360.0 / adapter.segment_count)
+    assert len(adapter.segment_envelopes) == adapter.segment_count
+
+
+def test_a_bottom_no_split_can_solve_fails_with_the_upstream_error(
+    shipped: tuple[object, object],
+) -> None:
+    """⚠️ どの分割数でも収まらない外径は**上流の失敗のまま**伝播する。
+
+    ⚠️ **包み直さない**（design.md「Error Strategy」: どちらの設定が壊れて
+    いるかをメッセージから消さない）。半径方向の広がりは分割数を増やしても
+    縮まないため、分割では解決しない（上流 `required_segment_count`）。
+    """
+    from catch_mechanism import GeometryError as UpstreamGeometryError
+
+    params, layout = shipped
+    huge_mm = params.trash_can.opening_inner_diameter_mm * 4.0  # type: ignore[attr-defined]
+    huge = _replace_can(
+        params,
+        bottom_outer_diameter_mm=huge_mm,
+        bottom_flat_diameter_mm=huge_mm,
+        opening_inner_diameter_mm=huge_mm,
+    )
+    with pytest.raises(UpstreamGeometryError) as excinfo:
+        adapter_geometry(huge, layout)  # type: ignore[arg-type]
+    assert "分割" in str(excinfo.value)
+
+
+def test_the_retention_points_come_from_the_joint_derivation(
+    shipped: tuple[object, object], adapter: AdapterGeometry
+) -> None:
+    """⚠️ 締結箇所の数は `joints` が正である（要件 6.5 / 2.10）。
+
+    保持箇所の数（`adapter.retention_point_count`）は下限であり、当たり面の
+    下限を満たすためにそれ以上になりうる。⚠️ **形の側で数え直さない。**
+    """
+    from chassis_mechanism.joints import derive_joints
+
+    params, layout = shipped
+    joints = {spec.name: spec for spec in derive_joints(layout, params)}  # type: ignore[arg-type]
+    retention = joints["adapter__trash_can"]
+    assert adapter.retention_bolt_count == retention.bolt_count
+    assert adapter.retention_bolt_count >= params.chassis.adapter.retention_point_count  # type: ignore[attr-defined]
+    assert len(adapter.retention_bolt_angles_deg) == adapter.retention_bolt_count
+
+    for index in range(1, adapter.segment_count + 1):
+        mount = joints[f"hub_plate__adapter_segment_{index}"]
+        assert adapter.mount_bolt_count == mount.bolt_count
+        assert len(adapter.mount_bolt_angles_deg[index - 1]) == mount.bolt_count
+
+
+def test_the_retention_bolts_press_the_tapered_wall_not_the_floor(
+    adapter: AdapterGeometry,
+) -> None:
+    """⚠️ 保持の締結はゴミ箱の**側面（テーパー面）**を押さえる（要件 6.5）。
+
+    ⚠️ **底へ穴を開けて点で引かない**（`joints.ASSUMPTIONS` の要件 6.8 の根拠）。
+    ボルトの軸は底の載る高さより上にあり、座の環が丸ごと立ち上がりに載る
+    ——これは駆動ベースの「接合面が座の環を載せられる厚さ」と同じ成立条件である。
+    """
+    boss_radius_mm = adapter.boss_diameter_mm / 2.0
+    assert adapter.retention_bolt_height_mm - boss_radius_mm >= adapter.floor_top_height_mm
+    assert adapter.retention_bolt_height_mm + boss_radius_mm <= adapter.rise_top_height_mm
+    # 締結は水平（半径方向）である。テーパー面を半径方向に押さえることが、
+    # 上方向の拘束（くさび）にもなる。
+    assert adapter.seat_top_radius_mm > adapter.seat_bottom_radius_mm
+
+
+def test_a_rise_shorter_than_the_boss_is_rejected(
+    shipped: tuple[object, object], adapter: AdapterGeometry
+) -> None:
+    """⚠️ 立ち上がりが座の外径を下回る寸法を拒否する（要件 2.5, 2.9）。
+
+    ⚠️ **座の環が立ち上がりに載らなければ、締結はゴミ箱の側面ではなく座の底を
+    押さえることになる。** 駆動ベースが `arm_thickness_mm` に課したのと同じ
+    成立条件である。
+    """
+    import dataclasses
+
+    params, layout = shipped
+    chassis = params.chassis  # type: ignore[attr-defined]
+    thin = dataclasses.replace(
+        params,  # type: ignore[type-var]
+        chassis=dataclasses.replace(
+            chassis,
+            adapter=dataclasses.replace(
+                chassis.adapter, rise_height_mm=adapter.boss_diameter_mm / 2.0
+            ),
+        ),
+    )
+    with pytest.raises(GeometryError) as excinfo:
+        adapter_geometry(thin, layout)  # type: ignore[arg-type]
+    assert "rise_height_mm" in str(excinfo.value)
+
+
+def test_a_plate_thinner_than_the_boss_leaves_no_mount_seat(
+    shipped: tuple[object, object], adapter: AdapterGeometry
+) -> None:
+    """⚠️ 中央部の厚さが座の外径を下回ると、取付の座の環が裾に載らない。"""
+    import dataclasses
+
+    params, layout = shipped
+    chassis = params.chassis  # type: ignore[attr-defined]
+    thin = dataclasses.replace(
+        params,  # type: ignore[type-var]
+        chassis=dataclasses.replace(
+            chassis,
+            base=dataclasses.replace(
+                chassis.base, plate_thickness_mm=adapter.boss_diameter_mm / 2.0
+            ),
+        ),
+    )
+    with pytest.raises(GeometryError) as excinfo:
+        adapter_geometry(thin, layout)  # type: ignore[arg-type]
+    assert "plate_thickness_mm" in str(excinfo.value)
+
+
+def test_the_mount_bolts_clear_the_motor_arms_and_the_split_planes(
+    adapter: AdapterGeometry,
+) -> None:
+    """⚠️ 取付の座は**アームの間**に置く（アームは裾の高さを占めている）。
+
+    裾は中央部の外縁を掴むため、アームと同じ高さの帯を通る。⚠️ **座がアームに
+    重なる配置は締結できない**——導出はアームを避けた空きの弧へ座を並べ、
+    並ばない場合は失敗する。
+    """
+    import math
+
+    boss_half_deg = math.degrees(
+        math.asin(adapter.boss_diameter_mm / 2.0 / adapter.skirt_outer_radius_mm)
+    )
+    arm_half_deg = math.degrees(
+        math.asin(adapter.arm_void_half_width_mm / adapter.skirt_inner_radius_mm)
+    )
+    for index, angles in enumerate(adapter.mount_bolt_angles_deg):
+        start_deg = adapter.segment_start_angles_deg[index]
+        for angle_deg in angles:
+            local_deg = (angle_deg - start_deg) % 360.0
+            assert local_deg >= boss_half_deg
+            assert local_deg <= adapter.segment_span_deg - boss_half_deg
+            for arm_deg in adapter.arm_angles_deg:
+                gap_deg = abs((angle_deg - arm_deg + 180.0) % 360.0 - 180.0)
+                assert gap_deg > arm_half_deg + boss_half_deg, (angle_deg, arm_deg)
+
+
+def test_the_mount_bolts_cannot_be_placed_when_the_arms_take_the_whole_arc(
+    shipped: tuple[object, object],
+) -> None:
+    """⚠️ 空きの弧に座が並ばない配置は**黙って重ねずに**失敗する（要件 2.9）。"""
+    import dataclasses
+
+    params, layout = shipped
+    chassis = params.chassis  # type: ignore[attr-defined]
+    fat = dataclasses.replace(
+        params,  # type: ignore[type-var]
+        chassis=dataclasses.replace(
+            chassis, base=dataclasses.replace(chassis.base, arm_width_mm=118.0)
+        ),
+    )
+    with pytest.raises(GeometryError) as excinfo:
+        adapter_geometry(fat, layout)  # type: ignore[arg-type]
+    assert "adapter_segment" in str(excinfo.value)
+
+
+def test_the_adapter_fragments_fit_the_build_volume(
+    shipped: tuple[object, object], adapter: AdapterGeometry
+) -> None:
+    """各断片の外接箱が造形可能寸法に収まる（要件 2.2）。"""
+    params, _ = shipped
+    for index, envelope in enumerate(adapter.segment_envelopes, start=1):
+        assert isinstance(envelope, Envelope)
+        assert (
+            check_envelope(
+                f"adapter_segment_{index}",
+                envelope,
+                params.printing,  # type: ignore[attr-defined]
+            )
+            == ()
+        ), index
+
+
+def test_no_printed_adapter_bore_is_a_machined_fit_to_a_mating_part(
+    shipped: tuple[object, object], adapter: AdapterGeometry
+) -> None:
+    """⚠️ アダプタにも切削前提の嵌合を含めない（要件 2.11 / 決定 4）。"""
+    params, _ = shipped
+    chassis = params.chassis  # type: ignore[attr-defined]
+    through_hole_mm = params.joint.through_hole_diameter_mm  # type: ignore[attr-defined]
+    assert adapter.bore_diameters_mm
+    for diameter_mm in adapter.bore_diameters_mm:
+        assert diameter_mm >= through_hole_mm, diameter_mm
+    mating_nominals_mm = (
+        chassis.bracket.mount_hole_diameter_mm,
+        chassis.motor.shaft_diameter_mm,
+        chassis.hub.boss_diameter_mm,
+        chassis.hub.bore_diameter_mm,
+        chassis.wheel.center_bore_diameter_mm,
+    )
+    for diameter_mm in adapter.bore_diameters_mm:
+        for nominal_mm in mating_nominals_mm:
+            assert diameter_mm != pytest.approx(nominal_mm), diameter_mm
+
+
+def test_the_adapter_sits_on_the_drive_base_without_taking_its_place(
+    shipped: tuple[object, object],
+    adapter: AdapterGeometry,
+    drive_base: DriveBaseGeometry,
+) -> None:
+    """アダプタは中央部とアームの**上に載り**、外側へ張り出す（決定 1）。
+
+    ⚠️ **底を受けるのはハブではなくアダプタ断片である**——ゴミ箱の底 φ180 は
+    造形可能寸法を超えるため中央部では受けられない。
+    """
+    params, _ = shipped
+    can = params.trash_can  # type: ignore[attr-defined]
+    plate_top_mm = drive_base.underside_height_mm + drive_base.plate_thickness_mm
+    assert adapter.floor_bottom_height_mm == pytest.approx(plate_top_mm)
+    # 座は底の外半径まで届く（決定 1 の条件 (c)）。
+    assert adapter.outer_radius_mm >= can.bottom_outer_diameter_mm / 2.0
+    # 裾は中央部の外縁を掴む（⚠️ 掴まなければ半径方向の締結が成立しない）。
+    assert adapter.skirt_inner_radius_mm > drive_base.hub_radius_mm
+    assert (
+        adapter.skirt_inner_radius_mm
+        < drive_base.hub_radius_mm + adapter.boss_diameter_mm
+    )
+    # 長穴（ブラケット取付）へは掛からない。
+    assert (
+        adapter.outer_radius_mm
+        < drive_base.slot_center_radius_mm - drive_base.slot_length_mm / 2.0
+    )
+
+
+def test_the_retention_joint_needs_no_insert_in_the_seat_wall(
+    shipped: tuple[object, object], adapter: AdapterGeometry
+) -> None:
+    """⚠️ **保持の締結は貫通ボルトとナットで受ける**（インサートを要さない）。
+
+    金属インサートは「モータ反力を樹脂へ渡す接合部で、樹脂にねじを立てない」
+    ための要素である（要件 2.6 / A-5 / `joints.ASSUMPTIONS`）。この家族が挟むのは
+    **購入部品**（ゴミ箱）であり、⚠️ **相手側は樹脂ではないためインサートの
+    居場所が無い**。
+
+    ⚠️ **形の側がその通りになっていることを、寸法の関係として固定する。**
+    締結の軸（半径方向）に沿ってアダプタが持つ肉は立ち上がりの肉厚
+    `adapter.wall_thickness_mm` だけであり、それは上流
+    `JointPolicy.insert_length_mm` より薄い——インサートを要求する記録に戻れば、
+    ⚠️ **入るはずの座がどこにも作れない**。座ぐり（当たり面）はそのまま残る
+    （`test_chassis_invariants.py` が実面積を測っている）。
+    """
+    from chassis_mechanism.joints import derive_joints
+
+    params, layout = shipped
+    wall_mm = params.chassis.adapter.wall_thickness_mm  # type: ignore[attr-defined]
+    insert_mm = params.joint.insert_length_mm  # type: ignore[attr-defined]
+
+    # 締結の軸に沿った肉は立ち上がりの肉厚そのものである。
+    assert adapter.outer_radius_mm - adapter.seat_bottom_radius_mm == pytest.approx(
+        wall_mm
+    )
+    assert wall_mm < insert_mm, (
+        "肉厚がインサート長を超えたなら、この家族の受け方を見直してよい"
+        "（それでも相手は購入部品であり、インサートが要る理由は生じない）"
+    )
+    # 座ぐりは肉を貫かない（当たり面は実現し、インサートの座は無い）。
+    assert adapter.retention_spotface_depth_mm < wall_mm
+
+    retention = next(
+        spec
+        for spec in derive_joints(layout, params)  # type: ignore[arg-type]
+        if spec.name == "adapter__trash_can"
+    )
+    assert retention.insert_count == 0
+    assert retention.bolt_count == adapter.retention_bolt_count

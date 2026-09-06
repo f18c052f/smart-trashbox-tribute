@@ -89,7 +89,7 @@
       "bolt_count": 3,
       "bolt_length_mm": 13.2,
       "dowel_count": 0,
-      "insert_count": 3,
+      "insert_count": 0,
       "members": [
         "adapter",
         "trash_can"
@@ -161,7 +161,13 @@
       "length_mm": 38.7
     },
     {
-      "count": 15,
+      "count": 3,
+      "designation": "M3",
+      "kind": "nut",
+      "length_mm": null
+    },
+    {
+      "count": 12,
       "designation": "M3",
       "kind": "insert",
       "length_mm": 5.7

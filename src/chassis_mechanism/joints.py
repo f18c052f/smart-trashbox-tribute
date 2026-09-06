@@ -73,10 +73,10 @@ extra、タスク 4.4）が検査する**。
 ⚠️ `BracketMeasurements` に**取付フランジの厚さ**が無く、積み上がり厚さを
 組み立てられないためである（要件 1.6 が求める実測が済んでいない項目である）。
 ⚠️ **推定値で埋めない**——埋めればブラケットのボルト長が実測に追随しない。
-厚さが寸法パラメータへ入った時点で `_JOINT_FAMILIES` に1家族を足せばよく、
-そのとき初めて `nut` の行が現れる（金属ブラケット側にはインサートを入れられ
-ないため）。現在の導出では全ボルトがインサートで受けられているため、
-`nut` の合計は 0 であり行に現れない。
+厚さが寸法パラメータへ入った時点で `_JOINT_FAMILIES` に1家族を足せばよい
+（金属ブラケット側にはインサートを入れられないため、`nut` の数はそのとき
+**増える**）。⚠️ **現在も `nut` の行はある**——`adapter__trash_can` は購入部品を
+挟む接合部でありインサートで受けないためである（`ASSUMPTIONS` を参照）。
 
 読み書きの規律は `config.py` / `layout.py` に揃える（**あらゆる階層で未知キーを
 拒否する**、項目名を示す、欠損を既定値で埋めない、LF・インデント2・キー整列・
@@ -319,13 +319,26 @@ ASSUMPTIONS: Final[tuple[str, ...]] = (
     "adapter.retention_point_count に従い円周へ等配置し、水平方向と上方向の"
     "拘束を同時に与える（要件 6.5）。ボルトの積み上がりは「クランプの肉厚 ＋"
     "ゴミ箱の底の肉厚」である。",
+    "⚠️ adapter__trash_can だけは金属インサートで受けず、貫通ボルトとナットで"
+    "受ける（insert_count == 0）。要件 2.6 と A-5 が「貫通ボルト＋金属インサート＋"
+    "広い当たり面」を課しているのは⚠️ **モータ反力を受ける接合部**であり、"
+    "インサートが解いている問題は「樹脂へねじを立てると層間で抜ける」ことである。"
+    "この家族が受けるのは購入部品（ゴミ箱）を半径方向に挟む締結であり、"
+    "⚠️ **相手側は樹脂ではないためインサートの居場所が無い**——座の肉は"
+    "adapter.wall_thickness_mm だけであり、上流 JointPolicy.insert_length_mm より"
+    "薄い。⚠️ **座を薄く作って辻褄を合わせない**（それは入るはずのインサートが"
+    "入らないという差異を形の側へ隠す）。当たり面はどちらの受け方でも"
+    "BEARING_AREA_FORMULA のボルト座の環であり、値は変わらない。"
+    "⚠️ ボルト長は FASTENER_LENGTH_FORMULA のまま（噛み合い代に上流の"
+    "インサート長を使う）である——ナットの高さを持つ寸法パラメータは"
+    "上流にも本 Spec にも無く、⚠️ **数値を発明しない**。ナットはインサートより"
+    "薄いため、この長さは保守側に倒れている。",
     "要件 5.6（台上での保持）: 脚はホイールを両側から挟んで受ける（design.md"
     "決定 5）。⚠️ 締結部品を持たない拘束であり、締結部品一覧へ何も足さない——"
     "モータ反力は面で受け、載せ降ろしは工具なしで一人で行える（要件 5.9）。",
     "アーム↔付属金属ブラケットの接合部は、BracketMeasurements に取付フランジの"
     "厚さが無いため導出できない（要件 1.6 の実測が済んでいない）。⚠️ 推定値で"
-    "埋めず、実測が入った時点で1家族として足す。現在の導出では全ボルトが"
-    "インサートで受けられるため nut の合計は 0 であり、行に現れない。",
+    "埋めず、実測が入った時点で1家族として足す。",
     "当たり面は寸法パラメータから解析的に算出した値である（design.md #### Joints"
     "Risks）。⚠️ joints は build123d を import できないため形状から採れない。"
     "実形状との一致は test_chassis_invariants.py（cad extra、タスク 4.4）が検査する。",
@@ -1067,11 +1080,20 @@ def _fastened_joint(
     dowel_count: int,
     floor_count: int,
     params: ResolvedParams,
+    insert_backed: bool = True,
 ) -> JointSpec:
     """締結する接合部を1件導出する（要件 2.6, 2.9, 2.10）。
 
     ⚠️ **当たり面は上流の `check_joint` にも通す**（要件 2.9）——本 Spec の
     下限を満たしていても、上流の下限が引き上げられていれば失敗する。
+
+    Args:
+        insert_backed: ボルトを**金属インサートで受ける**か。既定は `True`
+            である。⚠️ **`False` はナットで受けることを表す**（インサートを
+            `0` 本にし、`_fastener_lines` がその差をナットの行として数える）。
+            要件 2.6 / A-5 が金属インサートを課しているのは「モータ反力を受ける
+            接合部」であり、⚠️ **相手が購入部品でこちらの樹脂へねじを立てない
+            接合部にはインサートの居場所が無い**（`ASSUMPTIONS` 参照）。
     """
     pad_area_mm2 = _bolt_bearing_area_mm2(params)
     bolt_count = _bolt_count(
@@ -1099,7 +1121,8 @@ def _fastened_joint(
             + params.chassis.joint_local.fastener_length_margin_mm
         ),
         # ⚠️ インサートは1本のボルトにつき1つである（樹脂側にねじを切らない。A-5）。
-        insert_count=bolt_count,
+        # ⚠️ **インサートで受けない接合部は 0 である**——差はナットの行になる。
+        insert_count=bolt_count if insert_backed else _NO_BOLTS,
         dowel_count=dowel_count,
         bearing_area_mm2=bearing_area_mm2,
         print_normal_axis=print_normal_axis,
@@ -1130,6 +1153,11 @@ def derive_joints(
     ⚠️ **整備スタンドの拘束は締結部品を持たない**（要件 5.6 / design.md 決定 5）。
     脚がホイールを両側から挟み、モータ反力を面で受ける。工具なしで載せ降ろし
     できることが要件 5.9 の前提である。
+
+    ⚠️ **アダプタ↔ゴミ箱だけがナットで受ける**（`insert_count == 0`）。金属
+    インサートは「モータ反力を樹脂へ渡す接合部で、樹脂にねじを立てない」ための
+    要素である（要件 2.6 / A-5）。相手が購入部品であるこの家族にはインサートの
+    居場所が無く、貫通ボルトとナットで挟むのが正しい受け方である（`ASSUMPTIONS`）。
 
     Args:
         layout: `layout.derive_layout` の戻り値（design.md Preconditions）。
@@ -1208,6 +1236,8 @@ def derive_joints(
     # ⚠️ 要件 6.8: ゴミ箱の底は薄く（上流 `bottom_thickness_mm`）変形しやすいため、
     # 底へ穴を開けて点で引かず、底の外周を半径方向のクランプで押さえる。
     # 保持箇所は `retention_point_count` に従い円周へ等配置する（要件 6.5）。
+    # ⚠️ **この家族だけはインサートで受けない**（`ASSUMPTIONS` 参照）——
+    # 貫通ボルトとナットで購入部品を挟む接合部であり、樹脂へねじを立てない。
     specs.append(
         _fastened_joint(
             name="adapter__trash_can",
@@ -1222,6 +1252,7 @@ def derive_joints(
             dowel_count=_NO_DOWELS,
             floor_count=adapter.retention_point_count,
             params=params,
+            insert_backed=False,
         )
     )
 
