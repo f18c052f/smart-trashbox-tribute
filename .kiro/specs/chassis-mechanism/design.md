@@ -660,7 +660,22 @@ class ChassisLayout:
     tipping: TippingEstimate
     provenance: Provenance             # 入力の最弱を継承
 
-def derive_layout(params: ResolvedParams) -> ChassisLayout: ...
+@dataclass(frozen=True, slots=True)
+class ObservedRollingRadius:
+    """観測された実効転がり半径。⚠️ **値と出所は必ず対で運ぶ。**
+
+    値だけを渡すと `provenance` の畳み込みが「使わなかった公称値」の出所を
+    継承し続け、実測を使ったのに仮値を名乗る（またはその逆）状態になる。
+    型は `layout` 側に置く——`layout` は `assembly` を import できない。
+    """
+
+    radius_mm: float
+    provenance: Provenance
+
+def derive_layout(
+    params: ResolvedParams,
+    observed_rolling_radius: ObservedRollingRadius | None = None,
+) -> ChassisLayout: ...
 def dump_layout(layout: ChassisLayout, path: Path) -> None: ...
 def load_layout(path: Path | None = None) -> ChassisLayout: ...
 ```
@@ -675,7 +690,12 @@ def load_layout(path: Path | None = None) -> ChassisLayout: ...
 
 **Implementation Notes**
 - Integration: 実効転がり半径は、観測があれば `measurements.json` の代表値、
-  無ければ公称値の半分を用いる。⚠️ **どちらを使ったかは `provenance` に現れる**
+  無ければ公称値の半分を用いる。⚠️ **どちらを使ったかは `provenance` に現れる**。
+  そのため観測は `ObservedRollingRadius`（値＋出所）として渡し、観測を使う場合は
+  `weakest_provenance` の畳み込みから `wheel.nominal_diameter_mm` の寄与を外して
+  観測側の出所へ差し替える。⚠️ **`ResolvedParams` へ観測を混ぜてはならない**
+  （`Config` が `Assembly` へ依存することになり依存方向が逆転し、
+  パラメータ識別子が観測のたびに動く）。組み立てるのは `cli` / `__init__` 側である
 - Validation: `arm_length_mm` は接合部の当たり面を確保できる最小長さ以上であること（要件 3.10 の前提）
 - Risks: ⚠️ **`bracket.mount_face_reference` の確認が済むまで `base_radius_mm` の出所は仮値である。**
   `derive_layout` はこれを黙って実測に格上げしない
@@ -833,16 +853,16 @@ DEFAULT_MEASUREMENTS_PATH: Final[Path]
 @dataclass(frozen=True, slots=True)
 class WheelObservation:
     index: int
-    effective_rolling_diameter_mm: float
+    effective_rolling_diameter_mm: float | None
     method: str                     # static_loaded / rolling
     limitation_note: str            # method が転動を伴わない場合は必須
 
 @dataclass(frozen=True, slots=True)
 class ClearanceObservation:
     name: str
-    measured_mm: float
-    design_mm: float
-    difference_mm: float
+    measured_mm: float | None
+    design_mm: float | None
+    difference_mm: float | None
 
 @dataclass(frozen=True, slots=True)
 class FitDeviation:
@@ -860,12 +880,12 @@ class AssemblyCheck:
 @dataclass(frozen=True, slots=True)
 class AssemblyRecord:
     schema_version: str
-    mass_g: float
-    cog_height_mm: float
-    cog_radial_offset_mm: float
+    mass_g: float | None                        # 未記入は None
+    cog_height_mm: float | None
+    cog_radial_offset_mm: float | None  # ⚠️ 0.0 は「偏り無し」という測定結果であり未記入ではない
     cog_method: str
     wheels: tuple[WheelObservation, ...]
-    representative_wheel_diameter_mm: float
+    representative_wheel_diameter_mm: float | None
     clearances: tuple[ClearanceObservation, ...]
     fit_deviations: tuple[FitDeviation, ...]
     checks: tuple[AssemblyCheck, ...]
@@ -875,8 +895,11 @@ def load_assembly_record(path: Path | None = None) -> AssemblyRecord: ...
 def dump_assembly_record(record: AssemblyRecord, path: Path) -> None: ...
 def missing_observations(record: AssemblyRecord) -> tuple[str, ...]: ...
 def is_assembly_complete(record: AssemblyRecord) -> bool: ...
+def representative_rolling_radius_mm(record: AssemblyRecord) -> float | None: ...
 ```
-- Preconditions: 記録ファイルが存在すること。存在しない場合は `MeasurementError`
+- Preconditions: 記録ファイルが存在すること。存在しない場合は `MeasurementError`。
+  ⚠️ **全項目が未記入の記録も読み込みは成功する**（6群の実測が始まる前から
+  他の検査を回せるようにするため）。未記入は `missing_observations` が報せる
 - Postconditions: `is_assembly_complete(r)` は `missing_observations(r) == ()` と同値
 - Invariants: `representative_wheel_diameter_mm` は `wheels` の平均に一致する。
   ⚠️ 一致しない記録は `ConsistencyError` で拒否する（二重管理の防止）

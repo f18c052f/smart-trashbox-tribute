@@ -1,0 +1,92 @@
+{
+  "checks": [
+    {
+      "name": "hub_setscrew_no_slip",
+      "note": "",
+      "result": "pending"
+    },
+    {
+      "name": "wheel_bolt_circle",
+      "note": "",
+      "result": "pending"
+    },
+    {
+      "name": "stand_retention",
+      "note": "",
+      "result": "pending"
+    }
+  ],
+  "clearances": [
+    {
+      "design_mm": null,
+      "difference_mm": null,
+      "measured_mm": null,
+      "name": "motor_body"
+    },
+    {
+      "design_mm": null,
+      "difference_mm": null,
+      "measured_mm": null,
+      "name": "bracket"
+    },
+    {
+      "design_mm": null,
+      "difference_mm": null,
+      "measured_mm": null,
+      "name": "fastener"
+    },
+    {
+      "design_mm": null,
+      "difference_mm": null,
+      "measured_mm": null,
+      "name": "base_underside"
+    },
+    {
+      "design_mm": null,
+      "difference_mm": null,
+      "measured_mm": null,
+      "name": "cable"
+    }
+  ],
+  "cog_height_mm": null,
+  "cog_method": "",
+  "cog_radial_offset_mm": null,
+  "fit_deviations": [],
+  "mass_g": null,
+  "provenance": {
+    "clearances.base_underside.measured_mm": "assumed",
+    "clearances.bracket.measured_mm": "assumed",
+    "clearances.cable.measured_mm": "assumed",
+    "clearances.fastener.measured_mm": "assumed",
+    "clearances.motor_body.measured_mm": "assumed",
+    "cog_height_mm": "assumed",
+    "cog_radial_offset_mm": "assumed",
+    "mass_g": "assumed",
+    "representative_wheel_diameter_mm": "assumed",
+    "wheels.0.effective_rolling_diameter_mm": "assumed",
+    "wheels.1.effective_rolling_diameter_mm": "assumed",
+    "wheels.2.effective_rolling_diameter_mm": "assumed"
+  },
+  "representative_wheel_diameter_mm": null,
+  "schema_version": "1.0",
+  "wheels": [
+    {
+      "effective_rolling_diameter_mm": null,
+      "index": 0,
+      "limitation_note": "",
+      "method": ""
+    },
+    {
+      "effective_rolling_diameter_mm": null,
+      "index": 1,
+      "limitation_note": "",
+      "method": ""
+    },
+    {
+      "effective_rolling_diameter_mm": null,
+      "index": 2,
+      "limitation_note": "",
+      "method": ""
+    }
+  ]
+}
