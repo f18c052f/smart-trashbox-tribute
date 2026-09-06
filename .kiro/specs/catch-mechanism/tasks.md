@@ -284,7 +284,7 @@
 
 ## 6. 統合: 下流契約と通し検証
 
-- [ ] 6. 統合: 下流契約と通し検証
+- [x] 6. 統合: 下流契約と通し検証
 
 - [x] 6.1 下流が消費する公開契約を確定し、契約テストを追加する
   - パッケージ入口の公開シンボルを確定し、形状ライブラリを import しない状態に保つ
@@ -300,7 +300,7 @@
   - _Depends: 5.4_
   - _Boundary: PublicApi_
 
-- [ ] 6.2 通しで再生成・照合・還元の一貫性を検証する
+- [x] 6.2 通しで再生成・照合・還元の一貫性を検証する
   - 生成 → 照合 → 許容誤差導出 → 整合検査を通しで実行し、すべて正常終了することを確認する
   - 保持方針（追加の深さを持たない・底に加工を行わない・後付け締結座を残す）の数値的帰結が、
     パラメータと不変条件の検査によって固定されていることを確認する
@@ -1060,6 +1060,48 @@
   `build123d` / `shapes` / `export` / `trajectory_sim` / `prediction_core` が現れないことを確認）。
   `shapes` / `export` から1名も再エクスポートしていない。⚠️ **CAD 層の名前を公開してはならない**
   （公開すると `__init__` がモジュール直下で CAD 層を import することになり要件 10.3 に反する）。
+- **タスク6.2 / 完了。⚠️ 保守への申し送り**: (a) **通し実行を実プロセスの `python -m catch_mechanism` で
+  固定した**（生成 → 照合 → 識別子のみの照合 → 選定 → 許容誤差導出 → 整合検査）。
+  ⚠️ **観測は終了コードの「列」である**: 形状ライブラリ導入で `(0,0,0,0,0,0)`、遮断で `(3,3,0,0,0,0)`。
+  `build` と `check` だけが 3 になり、`check --digest-only` / `select` / `tolerance` /
+  `tolerance --check` は両環境で 0（親が直接再現）。
+  (b) ⚠️ **鎖の `check` 段は自己参照的で検出力がほぼ無い。** `build --update-baseline` が数秒前に
+  書いた記録と比べるため、出荷 `geometry-baseline.json` の体積を歪めても 33 件すべて緑のままである
+  （レビュアーが実測）。**形状記録の退行検出は `test_catch_geometry_regression.py`（5件）が持つ。**
+  この段は「鎖が繋がっている」ことの証拠であって回帰検出ではない。実行時間の約 10〜12 秒を占める。
+  (c) ⚠️ **`test_the_pipeline_leaves_the_shipped_files_untouched` は docstring が挙げる2つの危険を
+  どちらも捕まえない。** `_SHIPPED_GLOBS` が `configs/**/*.json` と `src/**/*.py` だけで **`var/` を
+  含まない**ため、`--output-dir` を外して出荷 `var/cad/` へ書いても 33 件すべて緑。また
+  `tolerance` を `--output` 無しで実行しても記録がバイト再現的なので sha256 が動かない。
+  内容が実際に変わる変更は捕まえるが、`/kiro-validate-impl` で docstring の訂正か
+  `var/cad` への glob 拡張を検討すること。
+  (d) ⚠️ **`test_the_two_environments_are_distinguishable_by_exit_code` は値 3 を固定していない。**
+  `CadUnavailableError` を exit 2 へ写しても列は `(2,2,0,0,0,0)` で依然「区別できる」ため緑になる。
+  値 3 を固定するのは兄弟の `test_every_step_that_needs_the_shape_library_fails_with_its_own_exit_code`
+  である。対で要件 5.7 を覆っているが、単体の主張としては弱い。
+  (e) ⚠️ **要件 9.3 の実行時観測は静的走査の重複ではない**（レビュアーが実証）。素の
+  `import trajectory_sim` は既存の AST 走査も捕まえるが、
+  `__import__("importlib").import_module("trajectory" + "_sim")` は AST から見えず、
+  **新規4件だけ**が捕まえる。⚠️ 遮断が過剰でないこと（`import catch_mechanism` は成功する）も
+  確認済み。⚠️ **`"trajectory_sim" not in stderr` を目印にしてはならない**——整合検査は
+  `configs/trajectory_sim/*.json` を読むためパス文字列として正常に現れる。
+  (f) ⚠️ **要件 9.5 の検査が、緩衝材の材質が黙って混入するのを止めている唯一の仕組みである。**
+  現実的な保守シナリオ（`liner_material` を型・`dimensions.json`・記録すべてへ整合的に追加）で
+  **新規3件だけ**が落ち既存974件は緑だった。検出器は語単位で、`liner_flat_min_diameter_mm` は
+  当たらず `liner_material` は当たる。⚠️ ただし LINER_WORDS に当たらない命名
+  （`retention.pad_material` / `retention.insert_shore_a`）は見逃す（Note 6.1(d) と同じ既知の限界）。
+  (g) ⚠️ **design.md を解析するテストが本ファイルで7件増えた**（既存の約4箇所と合わせて11箇所）。
+  要件 9.1 / 9.2 / 9.5 が散文の記録を要求し design.md がその正である以上、機械化の手段は解析しか無く、
+  各主張は機械可読な相手（`dimensions.json` / `catch-opening.json` / `PARAMETER_PATHS`）と対にしてある。
+  ⚠️ **`/kiro-validate-impl` が design.md を整形・訂正するときは、Note 6.1(c) の
+  `len(design_names) == 42` と併せて本ファイルも同一変更で追随させること。**
+  ⚠️ また `assert set(decisions) == {1,2,3,4,5}` と `if number == 5: continue` は
+  正当な「決定6」の追加で落ちる。表の有無で分岐する形へ変える余地がある。
+  (h) 実行時間は `tests/catch_mechanism` で **45.1s → 72.8s（+27.6s）**。うち 25.1s が CAD 導入側の
+  鎖、遮断側の鎖は 1.85s。CAD 非依存の28件は 3.82s で走る。
+  (i) ⚠️ **Note 5.4(e) の `cli._check_simulator_config` の穴（`provenance` 行が無い設定を黙って
+  exit 0 にする）は本タスクでも開いたままである**（`_Boundary: 統合_` は `cli.py` を触れない）。
+  出荷設定は 5.4 のテストが守っているが、利用者が任意の設定へ CLI を掛ける経路は塞がっていない。
 - **環境（全タスク共通）**: Python 環境は **WSL2 側にのみ存在する**。Windows 側に `python` / `uv` は無い。
   検証は必ず `wsl -e bash -lc 'cd /mnt/c/Users/user/repos/stb-hardware && uv run pytest -q'` の形で実行する。
   ⚠️ Windows から `uv sync` して `.venv/` を上書きしないこと（Linux venv が壊れる）。
