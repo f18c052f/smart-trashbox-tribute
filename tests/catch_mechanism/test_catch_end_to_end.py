@@ -26,7 +26,7 @@
 4. **判断の記録と数値の一致**（要件 9.1, 9.2, 9.3, 9.5）: design.md
    「受け口形状の決定」節が記録する決定1〜5と、出荷パラメータの値が一致すること。
    ⚠️ **値そのものの不変条件は本ファイルの主張ではない**——
-   `added_depth_mm == 0` / `bottom_modification == "none"` / 締結座の数が
+   `added_depth_mm == 0` / `bottom_modification in ALLOWED_BOTTOM_MODIFICATIONS` / 締結座の数が
    **表現不可能な状態として**固定されていることは `test_catch_rim_invariants.py`
    （タスク 4.4）が持ち、型の側の拒否は `test_catch_params.py` が持つ。
    本ファイルが足すのは**記録と値の突き合わせ**であり、記録の側の数字を書き換えても
@@ -683,7 +683,10 @@ def test_the_recorded_numbers_agree_with_the_shipped_parameters() -> None:
     assert depth is not None, "決定2 が `added_depth_mm` の決定値を書いていない"
     assert float(depth.group(1)) == retention.added_depth_mm
 
-    bottom = re.search(r'bottom_modification\s*=\s*"([a-z]+)"', decisions[3])
+    # ⚠️ 文字クラスに `_` を含める。`[a-z]+` では `"bottom_removed"` に**一致せず**、
+    # 記録と値の突き合わせが「決定値が書かれていない」として落ちる——記録が正しく
+    # ても落ちる形であり、正規表現側の欠陥である。
+    bottom = re.search(r'bottom_modification\s*=\s*"([a-z_]+)"', decisions[3])
     assert bottom is not None, "決定3 が `bottom_modification` の決定値を書いていない"
     assert bottom.group(1) == retention.bottom_modification
 

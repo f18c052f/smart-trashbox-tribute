@@ -48,7 +48,12 @@ from catch_mechanism.config import (
     parameters_digest,
 )
 from catch_mechanism.errors import CatchMechanismError, ParameterError
-from catch_mechanism.params import PARAMETER_PATHS, MechanismParams, Provenance
+from catch_mechanism.params import (
+    ALLOWED_BOTTOM_MODIFICATIONS,
+    PARAMETER_PATHS,
+    MechanismParams,
+    Provenance,
+)
 
 # ---------------------------------------------------------------------------
 # ヘルパ
@@ -129,7 +134,11 @@ def test_shipped_values_match_the_measured_trash_can() -> None:
     assert params.retention.retrofit_fastener_count == 6
     # 設計上の決定は型でも固定されているが、設定ファイル側でも同じ値である。
     assert params.retention.added_depth_mm == 0.0
-    assert params.retention.bottom_modification == "none"
+    # ⚠️ design.md 決定3（底を抜き、段積み土台を缶の内側へ通す）の出荷値。
+    # 型が許すのは `ALLOWED_BOTTOM_MODIFICATIONS` の2値であり、そのどちらを
+    # 出荷しているかは設定ファイルが明示する。
+    assert params.retention.bottom_modification == "bottom_removed"
+    assert params.retention.bottom_modification in ALLOWED_BOTTOM_MODIFICATIONS
 
 
 MEASURED_PATHS = frozenset(

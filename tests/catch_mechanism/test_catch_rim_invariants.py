@@ -63,6 +63,7 @@ import pytest
 from catch_mechanism.constraints import check_envelope, required_segment_count
 from catch_mechanism.errors import GeometryError, ParameterError
 from catch_mechanism.params import (
+    ALLOWED_BOTTOM_MODIFICATIONS,
     JointPolicy,
     MechanismParams,
     ObjectSpec,
@@ -582,7 +583,7 @@ def test_the_retrofit_seats_are_a_ring_total_spread_as_evenly_as_possible(
 # 不変条件 5: 決定2 / 決定3 は「未設定」ではなく「表現不可能」である（要件 9.4）
 #
 # ⚠️ 既存の `test_catch_params.py::test_added_depth_must_be_zero` /
-# `test_bottom_modification_must_be_none` は **1つの悪い値**（5.0 / "cut"）を拒否
+# `test_bottom_modification_must_be_in_the_allowlist` は **1つの悪い値**（5.0 / "cut"）を拒否
 # することを見る。本節が足すのは「他の道が無い」側——広い候補集合、しきい値をすり
 # 抜けうる値（`1e-12` / `nan`）、綴りの揺れ、そして**既に妥当な集約からの
 # `dataclasses.replace`**。決定は既定値として置かれているだけでなく、構築のどの
@@ -632,19 +633,44 @@ def test_only_a_zero_depth_is_accepted(added_depth_mm: float) -> None:
 
 @pytest.mark.parametrize(
     "bottom_modification",
-    ["cut", "None", "NONE", "none ", " none", "", "hole", "cutout", "no"],
+    [
+        "cut",
+        "None",
+        "NONE",
+        "none ",
+        " none",
+        "",
+        "hole",
+        "cutout",
+        "no",
+        # 決定3 が `"bottom_removed"` へ差し替わったことで新たに起きうる揺れ。
+        # 境界が動いただけであり、境界の外が拒否される強さは変わらない。
+        "bottom removed",
+        "bottom-removed",
+        "Bottom_Removed",
+        "BOTTOM_REMOVED",
+        "bottom_removed ",
+        " bottom_removed",
+        "removed",
+        "bottom_cut",
+    ],
 )
 def test_a_bottom_modification_cannot_be_represented(bottom_modification: str) -> None:
     """⚠️ **設計の自己整合性の検査であり、合否条件ではない**（要件 9.6）。
 
-    決定3「底に加工を行わない（`bottom_modification = "none"`）」を、**綴りの揺れを
-    含めて**固定する（要件 9.4 / design.md 決定3）。
+    決定3 の底の扱いが `ALLOWED_BOTTOM_MODIFICATIONS` の**記録済みの選択肢に
+    閉じている**ことを、綴りの揺れを含めて固定する（要件 9.4 / design.md 決定3）。
 
-    ⚠️ `"None"` / `"NONE"` / 前後の空白は、設定ファイルの手書きで最も起きやすい
-    揺れである。大小同一視や `strip()` を足した実装は「底に加工しない」の綴りを
-    増やすことになり、単一の正が2つになる。決定3 の根拠には ⚠️ **不可逆な加工で
-    ある**ことが含まれる——覆すなら明示的に覆すべきである。
+    ⚠️ 決定3 は「底を抜く（`bottom_modification = "bottom_removed"`）」へ差し替わったが、
+    **項目が自由入力になったわけではない**。動いたのは境界であって強さではなく、
+    一覧の外は今も表現できない。
+
+    ⚠️ `"None"` / `"NONE"` / `"bottom removed"` / 前後の空白は、設定ファイルの
+    手書きで最も起きやすい揺れである。大小同一視や `strip()`、区切り文字の同一視を
+    足した実装は、同じ決定の綴りを増やして単一の正を複数にする。決定3 の**残る
+    警告**は ⚠️ **不可逆な加工である**ことであり——覆すなら明示的に覆すべきである。
     """
+    assert bottom_modification not in ALLOWED_BOTTOM_MODIFICATIONS
     with pytest.raises(ParameterError) as excinfo:
         RetentionParams(
             retrofit_fastener_count=6,
@@ -652,6 +678,22 @@ def test_a_bottom_modification_cannot_be_represented(bottom_modification: str) -
             bottom_modification=bottom_modification,
         )
     assert "bottom_modification" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("bottom_modification", sorted(ALLOWED_BOTTOM_MODIFICATIONS))
+def test_only_a_recorded_bottom_modification_is_accepted(bottom_modification: str) -> None:
+    """⚠️ **設計の自己整合性の検査であり、合否条件ではない**（要件 9.6）。
+
+    拒否側の対側。受理されるのは `ALLOWED_BOTTOM_MODIFICATIONS` ちょうどであり、
+    一覧はテスト側に書き写さずここから引く（一覧を足して検証を足し忘れる形を
+    作らない）。
+    """
+    retention = RetentionParams(
+        retrofit_fastener_count=6,
+        liner_flat_min_diameter_mm=140.0,
+        bottom_modification=bottom_modification,
+    )
+    assert retention.bottom_modification == bottom_modification
 
 
 def test_the_retention_decisions_survive_dataclasses_replace() -> None:
@@ -674,11 +716,21 @@ def test_the_retention_decisions_survive_dataclasses_replace() -> None:
     with pytest.raises(ParameterError):
         dataclasses.replace(valid, bottom_modification="cut")
 
+    # ⚠️ 記録済みの選択肢へ差し替えた**その先**でも一覧の外は塞がっている。
+    # 「一度でも許可値を通れば以後は自由」という退行を落とす。
+    removed = dataclasses.replace(valid, bottom_modification="bottom_removed")
+    assert removed.bottom_modification == "bottom_removed"
+    assert removed.added_depth_mm == 0.0
+    with pytest.raises(ParameterError):
+        dataclasses.replace(removed, bottom_modification="bottom removed")
+    with pytest.raises(ParameterError):
+        dataclasses.replace(removed, added_depth_mm=12.0)
+
     # 決定に触れない差し替えは通る（塞いだのは決定だけであること）。
     widened = dataclasses.replace(valid, retrofit_fastener_count=8)
     assert widened.retrofit_fastener_count == 8
     assert widened.added_depth_mm == 0.0
-    assert widened.bottom_modification == "none"
+    assert widened.bottom_modification in ALLOWED_BOTTOM_MODIFICATIONS
 
 
 @pytest.mark.parametrize("fastener_count", [0, -1, -6])

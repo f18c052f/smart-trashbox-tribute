@@ -7,7 +7,8 @@ Invariants と、tasks.md タスク 1.3 の「観測可能な完了状態」で�
 1. **実物の寸法に既定値が無い**こと。省略した構築が `TypeError` で失敗すること
    （要件 1.4 / design.md「Params」Responsibilities: 「既定値を与えるのは
    設計上の選択に限る」）。既定値を持ってよいのは受け口の**決定値**
-   （`added_depth_mm = 0.0` / `bottom_modification = "none"`）だけである
+   （`added_depth_mm = 0.0` / `bottom_modification`）だけである。⚠️ 後者は
+   `ALLOWED_BOTTOM_MODIFICATIONS` の**記録済みの選択肢**に閉じている（決定3）
 2. **出所は実測 / 仮値の2値**であり、導出は「入力の最弱を継承する」こと
    （要件 1.2, 1.5, 9.4）。⚠️ 第3の値を作らないことを値集合の完全一致で固定する
 3. **許可材料の一覧に無い材料を構築時に拒否する**こと（要件 2.5）
@@ -39,6 +40,7 @@ import pytest
 from catch_mechanism import params as params_module
 from catch_mechanism.errors import CatchMechanismError, ParameterError
 from catch_mechanism.params import (
+    ALLOWED_BOTTOM_MODIFICATIONS,
     ALLOWED_MATERIALS,
     PARAMETER_PATHS,
     JointPolicy,
@@ -280,14 +282,20 @@ def test_retention_decisions_are_the_only_defaults() -> None:
     """既定値を持つのは受け口の決定値だけである（design.md「Params」Invariants）。
 
     `added_depth_mm = 0.0`（受け口は本体に深さを足さない）と
-    `bottom_modification = "none"`（底へ加工を行わない）は実測ではなく
-    **設計上の決定**であり、型として固定してよい唯一の値である。
+    `bottom_modification`（底の扱い）は実測ではなく**設計上の決定**であり、
+    既定値を持ってよい唯一の項目である。
+
+    ⚠️ 既定値そのものは `"none"`（加工を行わない）のままである——出荷値が
+    `"bottom_removed"` へ動いたこと（決定3）は、**設定ファイルが明示している**
+    からであって、型が黙って底を抜く既定を持つからではない。既定に
+    「不可逆な加工」を置かない。
     """
     defaults = {f.name: f.default for f in fields(RetentionParams)}
     assert defaults["retrofit_fastener_count"] is MISSING
     assert defaults["liner_flat_min_diameter_mm"] is MISSING
     assert defaults["added_depth_mm"] == 0.0
     assert defaults["bottom_modification"] == "none"
+    assert defaults["bottom_modification"] in ALLOWED_BOTTOM_MODIFICATIONS
 
 
 # ---------------------------------------------------------------------------
@@ -424,13 +432,39 @@ def test_added_depth_must_be_zero() -> None:
     assert "5.0" in message
 
 
-def test_bottom_modification_must_be_none() -> None:
-    """底へ加工を行わない決定を型で表す（design.md「Params」Invariants）。"""
+def test_bottom_modification_must_be_in_the_allowlist() -> None:
+    """底の扱いは記録済みの選択肢からのみ選べる（design.md「Params」Invariants）。
+
+    ⚠️ **自由入力ではない。** design.md 決定3 は底を抜く選択（`"bottom_removed"`）
+    へ差し替わったが、覆せる範囲が広がったのではなく**記録済みの選択肢が2つに
+    なった**だけである。一覧に無い値は今も構築時に拒否される。
+    """
     with pytest.raises(ParameterError) as excinfo:
         _retention(bottom_modification="cut")
     message = str(excinfo.value)
     assert "bottom_modification" in message
     assert "cut" in message
+
+
+@pytest.mark.parametrize("bottom_modification", sorted(ALLOWED_BOTTOM_MODIFICATIONS))
+def test_every_recorded_bottom_modification_is_accepted(bottom_modification: str) -> None:
+    """許可一覧の各値が構築を通る（拒否側の対側）。
+
+    ⚠️ 一覧を**テスト側に書き写さない**——`ALLOWED_BOTTOM_MODIFICATIONS` から
+    引くことで、一覧に値を足したのに検証を足し忘れる形を作らない
+    （`ALLOWED_MATERIALS` と同じ扱い）。
+    """
+    retention = _retention(bottom_modification=bottom_modification)
+    assert retention.bottom_modification == bottom_modification
+
+
+def test_the_bottom_modification_allowlist_is_exactly_the_recorded_decisions() -> None:
+    """許可一覧は design.md 決定3 が記録する2つちょうどである（要件 9.4）。
+
+    ⚠️ **ここだけは値を書き下す。** 一覧そのものが決定の記録であり、要素が黙って
+    増えれば「記録済みの選択肢からのみ選べる」という性質が空文になる。
+    """
+    assert ALLOWED_BOTTOM_MODIFICATIONS == frozenset({"none", "bottom_removed"})
 
 
 def test_model_id_must_not_be_empty() -> None:
@@ -687,16 +721,19 @@ def test_params_survive_asdict_deepcopy_and_pickle() -> None:
     型は、設定ファイルの書き出しと識別子の算出をどちらも塞ぐ。
     """
     params = _params(
+        # ⚠️ 既定値ではない側（決定3 の `"bottom_removed"`）で直列化を通す。
+        # 既定値だけを見るテストは、決定を持つ項目が書き出しから漏れても沈黙する。
+        retention=_retention(bottom_modification="bottom_removed"),
         provenance={
             "trash_can.opening_inner_diameter_mm": Provenance.MEASURED,
             "target_object.diameter_mm": Provenance.ASSUMED,
-        }
+        },
     )
 
     payload = asdict(params)
     assert payload["trash_can"]["model_id"] == "yamada-kagaku-no335"
     assert payload["trash_can"]["opening_inner_diameter_mm"] == 220.0
-    assert payload["retention"]["bottom_modification"] == "none"
+    assert payload["retention"]["bottom_modification"] == "bottom_removed"
     assert payload["provenance"] == {
         "trash_can.opening_inner_diameter_mm": Provenance.MEASURED,
         "target_object.diameter_mm": Provenance.ASSUMED,
@@ -768,7 +805,12 @@ def test_parameter_error_is_a_catch_mechanism_error() -> None:
 
 
 def test_module_exports_the_designed_names() -> None:
-    """design.md「Params」Service Interface の名前をそのまま公開する。"""
+    """design.md「Params」Service Interface の名前をそのまま公開する。
+
+    ⚠️ `ALLOWED_BOTTOM_MODIFICATIONS` は**モジュールの**公開名であって、
+    `catch_mechanism.__all__`（下流への公開契約）ではない。後者へ足さないことは
+    `test_catch_downstream_contract.py` の `PUBLIC_CONTRACT` が固定している。
+    """
     assert set(params_module.__all__) == {
         "Provenance",
         "TrashCanMeasurements",
@@ -781,6 +823,7 @@ def test_module_exports_the_designed_names() -> None:
         "ParameterPath",
         "PARAMETER_PATHS",
         "ALLOWED_MATERIALS",
+        "ALLOWED_BOTTOM_MODIFICATIONS",
     }
 
 

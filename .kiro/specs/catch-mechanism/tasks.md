@@ -1105,3 +1105,11 @@
 - **環境（全タスク共通）**: Python 環境は **WSL2 側にのみ存在する**。Windows 側に `python` / `uv` は無い。
   検証は必ず `wsl -e bash -lc 'cd /mnt/c/Users/user/repos/stb-hardware && uv run pytest -q'` の形で実行する。
   ⚠️ Windows から `uv sync` して `.venv/` を上書きしないこと（Linux venv が壊れる）。
+
+---
+
+⚠️ **本ファイルは完了時点の記録である。決定 3 はその後改訂された。**
+「底に加工を行わない（`bottom_modification = "none"`）」は
+**「底を抜き、段積み土台を缶の内側へ通す（`bottom_modification = "bottom_removed"`）」**へ
+置き換わっている。本文中の 決定3 への言及と、実装ノートに残る旧ダイジェストは
+その時点のものである。**正は `design.md` の決定 3。**

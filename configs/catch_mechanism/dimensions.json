@@ -28,7 +28,7 @@
   },
   "retention": {
     "added_depth_mm": 0.0,
-    "bottom_modification": "none",
+    "bottom_modification": "bottom_removed",
     "liner_flat_min_diameter_mm": 140.0,
     "retrofit_fastener_count": 6
   },

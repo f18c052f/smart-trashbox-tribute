@@ -446,7 +446,7 @@ class RetentionParams:
     retrofit_fastener_count: int
     liner_flat_min_diameter_mm: float
     added_depth_mm: float          # 受け口が本体に足す深さ。決定値は 0.0
-    bottom_modification: str       # "none" 固定。底へ加工を行わない決定を型で表す
+    bottom_modification: str       # ALLOWED_BOTTOM_MODIFICATIONS のいずれか。底の扱いの決定を型で表す
 
 @dataclass(frozen=True, slots=True)
 class MechanismParams:
@@ -460,12 +460,13 @@ class MechanismParams:
 
 PARAMETER_PATHS: Mapping[str, ParameterPath]
 ALLOWED_MATERIALS: frozenset[str]  # {"PETG", "PLA"}（PLA は非構造部材に限る旨を注記）
+ALLOWED_BOTTOM_MODIFICATIONS: frozenset[str]  # {"none", "bottom_removed"}（決定3。記録済みの選択肢のみ）
 ```
 
 - Preconditions: すべての長さ・直径は有限かつ正、角度は 0 以上 90 度未満、`provenance` のキーは `PARAMETER_PATHS` に含まれる
 - Postconditions: 構築を通った `MechanismParams` は以降の層で再検証を要さない
 - Invariants: `bottom_flat_diameter_mm <= bottom_outer_diameter_mm <= opening_inner_diameter_mm`、
-  `material in ALLOWED_MATERIALS`、`retention.bottom_modification == "none"`、`retention.added_depth_mm == 0.0`
+  `material in ALLOWED_MATERIALS`、`retention.bottom_modification in ALLOWED_BOTTOM_MODIFICATIONS`、`retention.added_depth_mm == 0.0`
 
 **Implementation Notes**
 
@@ -1006,7 +1007,7 @@ __all__ = [
 2. 採寸値を変えると取り付け部の内径が追随する（8.5, 1.6）
 3. 各セグメントの外接箱が造形可能寸法に収まる（8.3, 2.3）
 4. 後付け用の締結座が `retrofit_fastener_count` 箇所存在する（9.7）
-5. `added_depth_mm == 0.0` かつ `bottom_modification == "none"` を型と検証で固定する（9.4）
+5. `added_depth_mm == 0.0` かつ `bottom_modification in ALLOWED_BOTTOM_MODIFICATIONS` を型と検証で固定する（9.4）
 
 > ⚠️ **これらのしきい値は「設計の自己整合性」の検査であり、プロジェクトの合否条件（NFR-7）ではない。**
 > 仮値を用いた検査であることを、テストの docstring に明記する（要件 9.6）。
@@ -1063,13 +1064,24 @@ __all__ = [
 | **根拠** | (a) 空き缶（約120mm）が寝て収まる深さは本体で足りている。(b) 深さを足すと重心が上がり、転倒余裕を削る（⚠️ 転倒限界は概算であり判断材料）。(c) 造形量と質量が増える。(d) 「浅い＝跳ね出しやすい」側のリスクは、**底の緩衝材（OQ-10）で後から対処できる余地を残してある** |
 | **帰結** | 高さ方向の設計自由度を M3 の実測まで温存する。深さを足す判断は M3 で跳ね出しが観測されてから行う |
 
-### 決定 3: 底に加工を行わない（`bottom_modification = "none"`）
+### 決定 3: 底を抜き、段積み土台を缶の内側へ通す（`bottom_modification = "bottom_removed"`）
+
+⚠️ **本決定は、以前の「底に加工を行わない」決定を差し替える（supersedes）。**
+以前の決定は**跳ね出し低減の手段としてのくりぬき**を評価して却下したものであり、
+**その論点については今も正しい**。今回覆るのは論点が違うためである——収まりの問題
+（パッケージング）であり、以前の決定はこれを評価していない。
 
 | | |
 |---|---|
-| **決定** | ゴミ箱の底をくりぬかない。底面へは一切の加工を行わない |
-| **根拠** | (a) 底は `chassis-mechanism` の固定アダプタが受ける座であり、剛性と支持を壊す。(b) 底を抜くと**緩衝材を貼る平面が失われ、OQ-10 の後付け余地を潰す**。(c) ⚠️ **不可逆な加工である**（110円で再調達できる利点は一度しか使えない）。(d) くりぬきによる衝突エネルギー低減の効果は未実測であり、D-9 によりシミュレータからも出せない。**未実測の推定で不可逆な選択をしない** |
-| **帰結** | `liner_flat_min_diameter_mm` 以上の平面が底に残ることを設計上の制約として保持する（要件 9.4） |
+| **決定** | ゴミ箱の底をくりぬく。缶は底の無い筒となり、`chassis-mechanism` の 2〜3 段の土台（基板と電池を載せる）を缶の内側へ通す。缶は上から被せ、**側壁を挟持して**固定する |
+| **根拠** | (a) 収まりが成立しない。`chassis-mechanism` タスク 3.4 が実測で示したとおり、基板トレイ（デッキ 140×140 = 19,600mm²）は現行シャシ上のどこにも置けない——基板高さでは缶が中央を占め、空くのは約 5,200〜6,500mm² にすぎず、使える円環は差し渡し Ø270 で 180mm の造形可能寸法を超える。(b) 底を抜くと缶の内側が使える。底から 30mm の高さで Ø182（26,000mm²）が取れ、テーパー 4.865° により上へ行くほど広がる。問題そのものが消える。(c) 以前の根拠「底は固定アダプタが受ける座であり剛性と支持を壊す」は成立しない——底を抜けば座は無く、荷重は土台が受け、缶は側壁で挟持される。(d) 以前の根拠「緩衝材を貼る平面が失われる」も成立しない。平面は**土台の最上段デッキ**が提供し、造形した平らなデッキはテーパーした PP 底より良い下地である。制約は消えず**下流へ移る** |
+| **帰結** | `liner_flat_min_diameter_mm`（要件 9.4）は**落とさない**。ただし要求する平面を提供する部材が変わり、`chassis-mechanism` の最上段デッキがこの径以上の平面を持つ義務を負う。OQ-10（緩衝ライナー）の後付け余地はこれによって保たれる |
+| **残る警告** | ⚠️ **不可逆な加工である**（以前の根拠 (c)。これは今も生きている）。110円で再調達できる利点は**一度の失敗につき一度しか使えない**。したがって**切断は段の寸法が確定し、確認を通ってから**行う。寸法が動きうる間は切らない |
+
+⚠️ 以前の根拠 (d)「くりぬきによる衝突エネルギー低減の効果は未実測」は、本決定には
+掛からない。本決定はくりぬきを**跳ね出し低減の手段としては主張していない**。
+`docs/decisions.md` D-9 により `bounce_out` はモデル外であり、その論点は今も未決着の
+ままである——本決定はそこへ何も足さない。
 
 ### 決定 4: 跳ね出しを抑える返し（内向きリップ）は今は付けない
 

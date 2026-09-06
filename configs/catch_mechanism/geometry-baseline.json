@@ -1,7 +1,7 @@
 {
   "bbox_abs_tolerance_mm": 0.001,
   "generator_version": "build123d 0.11.1",
-  "parameters_digest": "sha256:c09aae4ce16add2c467c4d3fbb0b254bc4cfc0973a3dddf57faefa926b5e89b1",
+  "parameters_digest": "sha256:f0f311737b3989ff63f2ee29596301e135f5433f302cfb0c7cca270b4553d05a",
   "parts": {
     "rim_segment_1": {
       "bbox_mm": [

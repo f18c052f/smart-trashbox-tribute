@@ -12,8 +12,9 @@
 `trajectory_sim.DrivetrainParams` と同じ扱い）。既定値があると、設定ファイルに
 書き忘れた項目が「もっともらしい数」で黙って埋まり、未実測の値が実測のふりを
 する。既定値を持つのは `RetentionParams.added_depth_mm = 0.0` と
-`RetentionParams.bottom_modification = "none"` の2つだけで、これらは実測値では
-なく**設計上の決定**である（design.md「受け口形状の決定」）。
+`RetentionParams.bottom_modification` の2つだけで、これらは実測値ではなく
+**設計上の決定**である（design.md「受け口形状の決定」）。⚠️ 後者は
+`ALLOWED_BOTTOM_MODIFICATIONS` の**記録済みの選択肢からのみ**選べる（決定3）。
 
 出所（`Provenance`）は **`MEASURED` / `ASSUMED` の2値**とする。⚠️ **第3の値を
 作らない。** `trajectory_sim.Provenance` と値集合を一致させ、還元時に翻訳が
@@ -68,6 +69,7 @@ __all__ = [
     "ParameterPath",
     "PARAMETER_PATHS",
     "ALLOWED_MATERIALS",
+    "ALLOWED_BOTTOM_MODIFICATIONS",
 ]
 
 
@@ -82,6 +84,32 @@ ALLOWED_MATERIALS: frozenset[str] = frozenset({"PETG", "PLA"})
 一覧に無い材料は `PrintingConstraints.__post_init__` が構築時に拒否する。
 表記揺れ（`"petg"` / `"PETG "`）は**黙って正規化しない**——正規化を許すと、
 許可一覧そのものが実質的に曖昧になる。
+"""
+
+
+ALLOWED_BOTTOM_MODIFICATIONS: frozenset[str] = frozenset({"none", "bottom_removed"})
+"""ゴミ箱の底への加工として**記録済みの選択肢**（要件 9.4 / design.md 決定3）。
+
+- `"none"`: 底へ一切の加工を行わない。
+- `"bottom_removed"`: 底を抜き、`chassis-mechanism` の段積み土台を缶の内側へ
+  通す。缶は側壁で挟持され、荷重は土台が受ける（design.md 決定3）。
+
+⚠️ **自由入力にしない。** この項目は採寸値ではなく**設計上の決定**であり、
+型の側で選択肢を閉じておくことにこそ意味がある——設定ファイルを書き換える
+だけで決定が黙って覆ることを防ぐ。増えたのは「記録済みの選択肢が2つになった」
+ことだけであって、決定が自由になったわけではない。
+
+⚠️ **`"bottom_removed"` は不可逆である。**110円で再調達できる利点は一度しか
+使えないため、実際の切断は段積み土台の寸法が確定し、検証を通ってから行う
+（design.md 決定3 の「残る警告」）。
+
+一覧に無い値は `RetentionParams.__post_init__` が構築時に拒否する。表記揺れ
+（`"None"` / `"NONE"` / `"bottom removed"` / 前後の空白）は `ALLOWED_MATERIALS`
+と同じく**黙って正規化しない**。
+
+⚠️ 本定数は `catch_mechanism.__all__` に**載せていない**。下流
+（`chassis-mechanism`）は `retention` を参照しない設計であり
+（`src/chassis_mechanism/params.py` の静的検査）、公開契約を広げる理由が無い。
 """
 
 
@@ -389,23 +417,30 @@ class RetentionParams:
     """保持（FR-12）についての決定（要件 9.4, 9.7）。
 
     ⚠️ 本型の後半2フィールドは**採寸値ではなく設計上の決定**であり、型の側で
-    固定する（design.md「Params」Invariants /「受け口形状の決定」）。決定を
-    設定ファイルの自由な入力にすると、「深さを足さない」「底へ加工を行わない」
-    という判断が黙って覆る。
+    閉じる（design.md「Params」Invariants /「受け口形状の決定」）。決定を設定
+    ファイルの自由な入力にすると、「深さを足さない」「底をどう扱うか」という
+    判断が黙って覆る。`added_depth_mm` は単一値に固定し、`bottom_modification`
+    は `ALLOWED_BOTTOM_MODIFICATIONS` の**記録済みの選択肢**に限る。
 
     Attributes:
         retrofit_fastener_count: 後付け部品用の締結座の数（要件 9.7）。既存の
             受け口を作り直さずに跳ね出し抑制部品を足せるようにするため、1 以上。
-        liner_flat_min_diameter_mm: 底面に残すべき平面の最小径（mm）。後から
+        liner_flat_min_diameter_mm: 受け止め面に要る平面の最小径（mm）。後から
             緩衝材を貼れる平面を設計上の制約として保持する（要件 9.4）。
+            ⚠️ この平面を**どの部材が提供するか**は `bottom_modification` で
+            変わる。`"none"` ならゴミ箱の底面そのものが、`"bottom_removed"` なら
+            `chassis-mechanism` の段積み土台の**最上段デッキ**が満たす
+            （design.md 決定3）。⚠️ 底を抜いても本項目は落ちない——OQ-10 の
+            後付け余地を保つ義務が下流へ移るだけである。
             ⚠️ 緩衝材の材質選定と調達は本 Spec の対象外である（要件 9.5）。
-        added_depth_mm: 受け口が本体に足す深さ（mm）。**決定値は 0.0**。
-        bottom_modification: 底への加工。**`"none"` 固定**。
+        added_depth_mm: 受け口が本体に足す深さ（mm）。**決定値は 0.0**（決定2）。
+        bottom_modification: 底への加工。`ALLOWED_BOTTOM_MODIFICATIONS` の
+            いずれか（決定3）。既定は `"none"`。
 
     Raises:
         ParameterError: 締結座の数が 1 以上の整数でない場合、平面の最小径が正の
             有限値でない場合、`added_depth_mm != 0.0` の場合、または
-            `bottom_modification != "none"` の場合。
+            `bottom_modification` が `ALLOWED_BOTTOM_MODIFICATIONS` に無い場合。
     """
 
     retrofit_fastener_count: int
@@ -432,10 +467,13 @@ class RetentionParams:
                 f"added_depth_mm={self.added_depth_mm!r} は 0.0 でなければならない"
                 "（受け口は本体に深さを足さない、という決定を型で表している）。"
             )
-        if self.bottom_modification != "none":
+        if self.bottom_modification not in ALLOWED_BOTTOM_MODIFICATIONS:
+            allowed = ", ".join(repr(value) for value in sorted(ALLOWED_BOTTOM_MODIFICATIONS))
             raise ParameterError(
-                f"bottom_modification={self.bottom_modification!r} は 'none' で"
-                "なければならない（底へ加工を行わない、という決定を型で表している）。"
+                f"bottom_modification={self.bottom_modification!r} は許可されていない。"
+                f"指定できるのは {allowed} のみである"
+                "（底の扱いは記録済みの決定からのみ選べる、という判断を型で"
+                "表している。大文字小文字・前後の空白も一致していなければならない）。"
             )
 
 
