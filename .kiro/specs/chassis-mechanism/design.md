@@ -213,7 +213,7 @@ errors → params → config → layout → {clearance, joints} → {assembly, b
 ```
 
 - 各層は**左側の層からのみ** import する。上位方向の import は許さない
-- `catch_mechanism` の公開 API は `config` / `joints` / `baseline` / `shapes` から import してよい。
+- `catch_mechanism` の公開 API は `params` / `config` / `joints` / `baseline` / `shapes` から import してよい。
   ⚠️ **内部モジュール（`catch_mechanism.params` 等）を直接 import しない**
 - `build123d` の import は **`shapes` / `export` の2モジュールに限る**
 - `__init__` は `shapes` / `export` を import しない（公開 API が OCCT を要求しないため）。
