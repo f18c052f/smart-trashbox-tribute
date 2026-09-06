@@ -36,7 +36,7 @@
     新パッケージが import でき、**既存の全 Spec のテストが引き続き通る**
   - _Requirements: 1.1_
 
-- [ ] 1.2 例外階層を定義する
+- [x] 1.2 例外階層を定義する
   - 基底例外を `ValueError` の派生として定義し、パラメータ不正・形状不正・隙間不足・観測不足・
     整合不一致・形状環境不在の6系統を用意する
   - ⚠️ **上流の例外階層を継承せず、包み直しもしない**方針をこの階層で表現する
@@ -561,3 +561,11 @@
 
 ⚠️ **`docs/open-questions.md` と `docs/decisions.md` の更新は本 Spec の対象外**である（A-10）。
 決着内容は後から移せる粒度で本 Spec 側に残す。
+
+### 実装時に持ち越す注意
+
+- **1.2**: 上流 `catch_mechanism` と本 Spec は `ParameterError` / `GeometryError` /
+  `ConsistencyError` / `CadUnavailableError` の**4つの名前が綴りで衝突する**。両者は
+  独立した型であり、4.1 の終了コード写像では ⚠️ **上流例外を先に捕捉する順序で書くと
+  取り違える**。とくに `GeometryError` は design.md 上で本 Spec が 1、上流が 2 と
+  **異なる終了コード**に割り当てられている
