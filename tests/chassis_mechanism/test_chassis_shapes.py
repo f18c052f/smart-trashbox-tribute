@@ -35,17 +35,20 @@ from chassis_mechanism.config import load_params
 from chassis_mechanism.errors import CadUnavailableError, GeometryError
 from chassis_mechanism.layout import derive_layout
 from chassis_mechanism.shapes import (
+    CABLE_ROUTE_NAMES,
     MIN_HAND_ACCESS_MM,
     PART_NAMES,
     AdapterGeometry,
     BatteryTrayGeometry,
     BuiltPart,
+    CableGuideGeometry,
     DeckStackGeometry,
     DriveBaseGeometry,
     StandGeometry,
     StandInputs,
     adapter_geometry,
     battery_tray_geometry,
+    cable_guide_geometry,
     build_parts,
     build_service_stand_legs,
     deck_stack_geometry,
@@ -506,6 +509,7 @@ from chassis_mechanism.shapes import (
     adapter_geometry,
     battery_tray_geometry,
     build_parts,
+    cable_guide_geometry,
     deck_stack_geometry,
     drive_base_geometry,
     part_names,
@@ -520,6 +524,7 @@ drive_base = drive_base_geometry(params, layout)
 adapter = adapter_geometry(params, layout)
 deck = deck_stack_geometry(params, layout)
 tray = battery_tray_geometry(params, layout)
+guide = cable_guide_geometry(params, layout)
 
 report = {
     "stub_blocked_the_shape_library": blocked,
@@ -549,6 +554,18 @@ report = {
     "tray_floor_bottom_height_mm": tray.floor_bottom_height_mm,
     "tray_extraction_angle_deg": tray.extraction_angle_deg,
     "tray_ear_outer_radius_mm": tray.ear_outer_radius_mm,
+    "cable_lowest_height_mm": guide.cable_lowest_height_mm,
+    "cable_route_names": [route.name for route in guide.routes],
+    "cable_route_bands_mm": [
+        [route.inner_y_mm, route.outer_y_mm] for route in guide.routes
+    ],
+    "cable_guide_top_height_mm": guide.top_height_mm,
+    "cable_guide_mount_bolt_radii_mm": list(guide.mount_bolt_radii_mm),
+    "cable_guide_estop_lead_out_y_mm": guide.estop_lead_out_y_mm,
+    "cable_passage_angles_deg": [route.passage_angle_deg for route in guide.routes],
+    "cable_passage_arc_deg": list(guide.passage_arc_deg),
+    "cable_passage_spacing_mm": guide.passage_spacing_mm,
+    "cable_window_bottom_height_mm": guide.window_bottom_height_mm,
     "build_failed": False,
     "error_type": "",
     "message": "",
@@ -635,6 +652,24 @@ def test_geometry_is_available_and_building_fails_loudly_without_the_shape_libra
     assert report["slot_width_mm"] == drive_base.slot_width_mm
     assert report["arm_thickness_mm"] == drive_base.arm_thickness_mm
     assert report["boss_diameter_mm"] == drive_base.boss_diameter_mm
+    # ⚠️ 配線ガイドも算術だけで決まる（通路の分離も保持の最下点も CAD を要さない）。
+    guide = cable_guide_geometry(params, derive_layout(params))
+    assert report["cable_lowest_height_mm"] == guide.cable_lowest_height_mm
+    assert report["cable_route_names"] == list(CABLE_ROUTE_NAMES)
+    assert report["cable_route_bands_mm"] == [
+        [route.inner_y_mm, route.outer_y_mm] for route in guide.routes
+    ]
+    assert report["cable_guide_top_height_mm"] == guide.top_height_mm
+    assert report["cable_guide_mount_bolt_radii_mm"] == list(guide.mount_bolt_radii_mm)
+    assert report["cable_guide_estop_lead_out_y_mm"] == guide.estop_lead_out_y_mm
+    # ⚠️ 経路（通し穴と窓）も算術だけで決まる——⚠️ **繋がっているかどうかを
+    # 知るには CAD が要る**が、どこを通るのかは CAD 無しで読める。
+    assert report["cable_passage_angles_deg"] == [
+        route.passage_angle_deg for route in guide.routes
+    ]
+    assert report["cable_passage_arc_deg"] == list(guide.passage_arc_deg)
+    assert report["cable_passage_spacing_mm"] == guide.passage_spacing_mm
+    assert report["cable_window_bottom_height_mm"] == guide.window_bottom_height_mm
     # ⚠️ アダプタの座も算術だけで決まる（上流の採寸値・テーパー角・分割数導出）。
     assert report["adapter_segment_count"] == adapter.segment_count
     assert report["adapter_outer_radius_mm"] == adapter.outer_radius_mm
@@ -808,6 +843,7 @@ def test_the_drive_base_is_a_central_plate_with_three_radial_arms(
         "battery_tray",
         "board_deck",
         "catch_deck",
+        "cable_guide",
         "service_stand",
     )
     assert part_names(params) == (  # type: ignore[arg-type]
@@ -826,6 +862,9 @@ def test_the_drive_base_is_a_central_plate_with_three_radial_arms(
         "catch_deck_1",
         "catch_deck_2",
         "catch_deck_3",
+        "cable_guide_1",
+        "cable_guide_2",
+        "cable_guide_3",
         "service_stand_1",
         "service_stand_2",
         "service_stand_3",
@@ -2157,3 +2196,693 @@ def test_the_deck_and_tray_solids_are_deterministic(
         assert tuple(part.metrics for part in first) == tuple(
             part.metrics for part in second
         )
+
+
+# ---------------------------------------------------------------------------
+# 8. 配線ガイド（タスク 3.5 / 要件 4.6, 7.6, 7.7, 8.4, 8.7 / design.md 決定 8）
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def guide(shipped: tuple[object, object]) -> CableGuideGeometry:
+    params, layout = shipped
+    return cable_guide_geometry(params, layout)  # type: ignore[arg-type]
+
+
+def _replace_cable(params: object, **changes: object) -> object:
+    """`cable` 群だけを差し替えた `ResolvedParams` を作る。"""
+    from dataclasses import replace
+
+    return replace(
+        params,  # type: ignore[type-var]
+        chassis=replace(
+            params.chassis, cable=replace(params.chassis.cable, **changes)  # type: ignore[attr-defined]
+        ),
+    )
+
+
+def _replace_power(params: object, **changes: object) -> object:
+    """`power` 群だけを差し替えた `ResolvedParams` を作る。"""
+    from dataclasses import replace
+
+    return replace(
+        params,  # type: ignore[type-var]
+        chassis=replace(
+            params.chassis, power=replace(params.chassis.power, **changes)  # type: ignore[attr-defined]
+        ),
+    )
+
+
+def test_the_three_systems_are_three_separate_routes(
+    guide: CableGuideGeometry,
+) -> None:
+    """⚠️ **色ではなく経路そのものを分ける**（要件 7.7 / design.md 決定 8）。
+
+    ⚠️ **取り違えるとエンコーダが飛ぶ。** 3系統は独立した通路を持ち、通路の間には
+    壁の厚さぶんの肉が残る——⚠️ **重なる通路や、壁の無い隣り合わせを作らない。**
+    """
+    assert tuple(route.name for route in guide.routes) == CABLE_ROUTE_NAMES
+    assert len(guide.routes) == 3
+    for route in guide.routes:
+        assert route.outer_y_mm - route.inner_y_mm == pytest.approx(
+            guide.channel_width_mm
+        )
+    for left, right in zip(guide.routes, guide.routes[1:], strict=False):
+        gap_mm = right.inner_y_mm - left.outer_y_mm
+        assert gap_mm == pytest.approx(guide.wall_thickness_mm)
+        assert gap_mm > 0.0
+    # 内側と外側にも壁が残る（通路が部品の外へ開いていない）。
+    assert guide.routes[0].inner_y_mm - guide.skirt_inner_y_mm == pytest.approx(
+        guide.wall_thickness_mm
+    )
+    assert guide.routes_outer_y_mm - guide.routes[-1].outer_y_mm == pytest.approx(
+        guide.wall_thickness_mm
+    )
+
+
+def test_the_route_lookup_rejects_an_unknown_system(
+    guide: CableGuideGeometry,
+) -> None:
+    """⚠️ 引けなかった系統について検査が黙らないよう、未知の名は拒否する。"""
+    assert guide.route("supply") is guide.routes[-1]
+    with pytest.raises(GeometryError) as excinfo:
+        guide.route("hydraulic")
+    assert "hydraulic" in str(excinfo.value)
+
+
+def test_the_cable_lowest_point_is_the_height_the_clearance_calculation_uses(
+    shipped: tuple[object, object], guide: CableGuideGeometry
+) -> None:
+    """⚠️ **配線の最下点は隙間の算出対象そのものである**（要件 4.2, 4.6）。
+
+    ⚠️ **形の側で別の高さを決めない。** ガイドが保持する最下点と `clearance` が
+    `cable` として返す高さが食い違えば、「隙間は足りている」という判定は形について
+    何も言っていない。
+    """
+    from chassis_mechanism.clearance import clearance_items
+
+    params, layout = shipped
+    heights = {
+        item.name: item.height_mm
+        for item in clearance_items(layout, params.chassis)  # type: ignore[arg-type,attr-defined]
+    }
+    assert guide.cable_lowest_height_mm == pytest.approx(heights["cable"])
+
+
+def test_lowering_the_cable_offset_lowers_the_guide_with_it(
+    shipped: tuple[object, object]
+) -> None:
+    """⚠️ **空振りでないこと**: オフセットを下げると保持箇所も同じだけ下がる。"""
+    from dataclasses import replace
+
+    from chassis_mechanism.clearance import clearance_items
+
+    params, layout = shipped
+    lowered = replace(
+        params,  # type: ignore[type-var]
+        chassis=replace(
+            params.chassis,  # type: ignore[attr-defined]
+            clearance=replace(
+                params.chassis.clearance, cable_lowest_offset_mm=15.0  # type: ignore[attr-defined]
+            ),
+        ),
+    )
+    guide = cable_guide_geometry(lowered, layout)  # type: ignore[arg-type]
+    heights = {
+        item.name: item.height_mm
+        for item in clearance_items(layout, lowered.chassis)  # type: ignore[arg-type,attr-defined]
+    }
+    assert guide.cable_lowest_height_mm == pytest.approx(heights["cable"])
+    shipped_mm = cable_guide_geometry(params, layout).cable_lowest_height_mm  # type: ignore[arg-type]
+    assert guide.cable_lowest_height_mm == pytest.approx(shipped_mm - 4.0)
+    # ⚠️ 渡りの通路の内高もオフセットに追随する（床の側の値で高さを決めない）。
+    assert guide.crossing_channel_bottom_mm == pytest.approx(
+        guide.cable_lowest_height_mm + params.chassis.cable.wall_thickness_mm  # type: ignore[attr-defined]
+    )
+
+
+def test_an_offset_too_small_for_the_crossing_channel_is_rejected(
+    shipped: tuple[object, object]
+) -> None:
+    """⚠️ **空振りでないこと**: 渡りの通路は「床の側の値」では成立しない。
+
+    ⚠️ **配線の最下点は隙間の算出対象そのものである**（要件 4.2）。その値が
+    通路の内寸と壁の厚さを収めなければ、⚠️ **経路は繋がらないまま「隙間は
+    足りている」という判定だけが残る**。
+    """
+    from dataclasses import replace
+
+    params, layout = shipped
+    shallow = replace(
+        params,  # type: ignore[type-var]
+        chassis=replace(
+            params.chassis,  # type: ignore[attr-defined]
+            clearance=replace(
+                params.chassis.clearance, cable_lowest_offset_mm=6.0  # type: ignore[attr-defined]
+            ),
+        ),
+    )
+    with pytest.raises(GeometryError) as excinfo:
+        cable_guide_geometry(shallow, layout)  # type: ignore[arg-type]
+    message = str(excinfo.value)
+    assert "cable_lowest_offset_mm" in message
+    assert "wall_thickness_mm" in message
+
+
+def test_a_holding_point_below_the_ground_floor_is_rejected(
+    shipped: tuple[object, object]
+) -> None:
+    """⚠️ 保持箇所が床の下限を割る設定を黙って作らない（要件 4.4, 4.6）。"""
+    from dataclasses import replace
+
+    params, layout = shipped
+    sagging = replace(
+        params,  # type: ignore[type-var]
+        chassis=replace(
+            params.chassis,  # type: ignore[attr-defined]
+            clearance=replace(
+                params.chassis.clearance, cable_lowest_offset_mm=500.0  # type: ignore[attr-defined]
+            ),
+        ),
+    )
+    with pytest.raises(GeometryError) as excinfo:
+        cable_guide_geometry(sagging, layout)  # type: ignore[arg-type]
+    message = str(excinfo.value)
+    assert "cable_lowest_offset_mm" in message
+    assert repr(500.0) in message
+
+
+def test_the_guide_keeps_clear_of_the_adapter_the_ear_and_the_wheel(
+    shipped: tuple[object, object], guide: CableGuideGeometry
+) -> None:
+    """⚠️ **回転部と既に置かれている部品を、半径と接線の両方で避ける**（要件 7.6）。
+
+    ⚠️ **「外側だから当たらない」ではない。** 板はアダプタの外周より外、裾はホイール
+    より内側（トレイの耳の内側）に留まり、耳の帯そのものは通らない。
+    """
+    params, layout = shipped
+    adapter = adapter_geometry(params, layout)  # type: ignore[arg-type]
+    tray = battery_tray_geometry(params, layout)  # type: ignore[arg-type]
+    base = drive_base_geometry(params, layout)  # type: ignore[arg-type]
+
+    assert guide.plate_inner_radius_mm > adapter.outer_radius_mm
+    assert guide.skirt_outer_radius_mm < tray.ear_inner_radius_mm
+    assert guide.skirt_inner_y_mm > tray.web_outer_y_mm
+    assert guide.skirt_inner_y_mm > base.arm_half_width_mm
+    # ⚠️ **渡りはベース板の下を通る**（要件 7.6 の経路の残り半分）。ホイールは
+    # 車軸まわりの円筒であり、⚠️ **隔てているのは高さではなく半径である**
+    # ——渡りはホイールの内側面よりずっと内側を通る。
+    assert guide.cable_lowest_height_mm < base.underside_height_mm
+    assert guide.crossing_inner_radius_mm > tray.outer_half_length_mm
+    assert guide.plate_inner_radius_mm > adapter.outer_radius_mm
+    # ⚠️ ホイールの内側面より内側に留まる（半径でも隔てる）。
+    assert guide.skirt_outer_radius_mm < layout.base_radius_mm  # type: ignore[attr-defined]
+
+
+def test_the_guide_top_is_the_band_that_stays_reachable_with_the_can_on(
+    shipped: tuple[object, object], guide: CableGuideGeometry
+) -> None:
+    """⚠️ 端子台と非常停止の余地は**缶を載せても外から届く帯**に収まる（要件 8.3）。"""
+    params, layout = shipped
+    deck = deck_stack_geometry(params, layout)  # type: ignore[arg-type]
+    low_mm, high_mm = deck.switch_provision_band_mm
+    assert guide.top_height_mm == pytest.approx(high_mm)
+    # ⚠️ **帯に収まるのは「後から触る余地」だけである。** 渡りは帯より下（ベース
+    # 板の下）を通るが、そこへ手を入れることは求められていない（要件 8.3 が
+    # 求めるのは操作部が缶を載せても届くことである）。
+    assert guide.crossing_top_height_mm == pytest.approx(low_mm)
+    assert low_mm <= guide.estop_bolt_height_mm <= high_mm
+    assert low_mm <= guide.estop_lead_out_height_mm <= high_mm
+    assert low_mm <= guide.terminal_pad_bottom_height_mm <= high_mm
+
+
+def test_the_terminal_block_provision_is_a_seat_and_its_screw_holes(
+    guide: CableGuideGeometry,
+) -> None:
+    """⚠️ **端子台は保持箇所と経路であって、位置の決定ではない**（要件 8.4）。
+
+    寸法も方式もタスク 5.6 が決める（`PowerParams` は未決）。ここが持つのは座と
+    ねじ穴、そして⚠️ **そこへ至る経路**（`supply` の通路が座の隣に開く）だけである。
+    """
+    assert len(guide.terminal_bolt_y_mm) == 2
+    # ⚠️ 2つのねじ穴は接線方向に並ぶ（半径方向の帯は狭く、長穴の移動量で動く）。
+    assert abs(guide.terminal_bolt_y_mm[1] - guide.terminal_bolt_y_mm[0]) == (
+        pytest.approx(guide.boss_diameter_mm)
+    )
+    assert guide.terminal_pad_outer_y_mm > guide.terminal_pad_inner_y_mm
+    # ⚠️ 座は `supply` の通路と壁1枚で隣り合う（そこへ至る経路である）。
+    supply = guide.route("supply")
+    assert guide.terminal_pad_inner_y_mm == pytest.approx(supply.outer_y_mm)
+    # 穴は座の肉に収まる（袋穴が板を突き抜けない）。
+    assert guide.terminal_pad_bottom_height_mm < (
+        guide.top_height_mm - guide.insert_bore_depth_mm
+    )
+
+
+def test_a_decided_terminal_block_that_does_not_fit_the_seat_is_rejected(
+    shipped: tuple[object, object]
+) -> None:
+    """⚠️ **空振りでないこと**: 座を作ったことと、決まった端子台が載ることは別である。
+
+    ⚠️ 未決（`None`）のあいだは何も主張しない——タスク 5.6 が寸法を入れた瞬間に
+    この検査が働く。
+    """
+    params, layout = shipped
+    assert params.chassis.power.terminal_block_length_mm is None  # type: ignore[attr-defined]
+    oversized = _replace_power(params, terminal_block_length_mm=500.0)
+    with pytest.raises(GeometryError) as excinfo:
+        cable_guide_geometry(oversized, layout)  # type: ignore[arg-type]
+    assert "terminal_block_length_mm" in str(excinfo.value)
+
+
+def test_the_estop_provision_is_screw_holes_and_a_lead_out(
+    shipped: tuple[object, object], guide: CableGuideGeometry
+) -> None:
+    """⚠️ **非常停止は「後から追加できる余地」だけを残す**（要件 8.6, 8.7）。
+
+    方式の決着は本 Spec の対象外であり（要件 8.6）、`power.estop_provision` は
+    未決のままである。⚠️ **ここで方式を決めない**——ねじ穴と配線の引き出しだけを残す。
+    """
+    params, _ = shipped
+    assert params.chassis.power.estop_provision is None  # type: ignore[attr-defined]
+    assert len(guide.estop_bolt_y_mm) == 2
+    # ⚠️ 座はちょうど1つぶん離れて並ぶ（環が重ならない最小の間隔である）。
+    assert abs(guide.estop_bolt_y_mm[1] - guide.estop_bolt_y_mm[0]) == pytest.approx(
+        guide.boss_diameter_mm
+    )
+    # ⚠️ 引き出しは `supply` の通路へ開く（電源系の器物がそこにある）。
+    assert guide.estop_lead_out_y_mm == pytest.approx(guide.route("supply").center_y_mm)
+    # ⚠️ 取付ねじの座は袋穴であり、通路を貫かない。
+    assert (
+        guide.skirt_outer_radius_mm - guide.channel_outer_radius_mm
+        > guide.insert_bore_depth_mm
+    )
+
+
+def test_a_channel_too_wide_for_the_skirt_is_rejected(
+    shipped: tuple[object, object]
+) -> None:
+    """⚠️ **空振りでないこと**: 通路が太れば裾に肉が残らず、座ぐりが通路を貫く。
+
+    ⚠️ **要求する取付面も併せて下げる。** 通し穴は⚠️ **輪ごと・系統ごとに1つ**
+    （9箇所）であり、通路を太らせると⚠️ **先に基板デッキの取付面の見積もりが
+    尽きる**——下げずに測ると、この検査は裾の肉ではなく取付面の関門を測って
+    しまう（`deck_x_mm` を下げるのは⚠️ **測る対象を裾へ戻すため**であって、
+    裾の条件を緩めるためではない）。
+    """
+    from dataclasses import replace
+
+    params, layout = shipped
+    fat = _replace_cable(params, channel_width_mm=16.0)
+    fat = replace(
+        fat,  # type: ignore[type-var]
+        chassis=replace(
+            fat.chassis,  # type: ignore[attr-defined]
+            board=replace(
+                fat.chassis.board,  # type: ignore[attr-defined]
+                deck_x_mm=100.0,
+                deck_y_mm=100.0,
+            ),
+        ),
+    )
+    with pytest.raises(GeometryError) as excinfo:
+        cable_guide_geometry(fat, layout)  # type: ignore[arg-type]
+    message = str(excinfo.value)
+    assert "channel_width_mm" in message
+    assert "裾の外側" in message
+
+
+def test_the_guide_does_not_include_machined_fits(
+    shipped: tuple[object, object], guide: CableGuideGeometry
+) -> None:
+    """⚠️ 配線ガイドにも切削前提の嵌合を含めない（要件 2.11 / 決定 4）。"""
+    params, _ = shipped
+    chassis = params.chassis  # type: ignore[attr-defined]
+    through_hole_mm = params.joint.through_hole_diameter_mm  # type: ignore[attr-defined]
+    assert guide.bore_diameters_mm
+    for diameter_mm in guide.bore_diameters_mm:
+        assert diameter_mm >= through_hole_mm, diameter_mm
+    mating_nominals_mm = (
+        chassis.bracket.mount_hole_diameter_mm,
+        chassis.motor.shaft_diameter_mm,
+        chassis.hub.boss_diameter_mm,
+        chassis.hub.bore_diameter_mm,
+        chassis.wheel.center_bore_diameter_mm,
+    )
+    for diameter_mm in guide.bore_diameters_mm:
+        for nominal_mm in mating_nominals_mm:
+            assert diameter_mm != pytest.approx(nominal_mm), diameter_mm
+
+
+def test_the_mount_screws_land_outboard_of_the_bracket_slots(
+    shipped: tuple[object, object], guide: CableGuideGeometry
+) -> None:
+    """⚠️ 留めねじはブラケット取付長穴を避け、アームの上面の中実の帯へ入る。
+
+    ⚠️ **長穴に掛かったねじはアームに何も掴んでいない。**
+    """
+    params, layout = shipped
+    base = drive_base_geometry(params, layout)  # type: ignore[arg-type]
+    slot_outer_mm = base.slot_center_radius_mm + base.slot_length_mm / 2.0
+    assert len(guide.mount_bolt_radii_mm) == 2
+    for radius_mm in guide.mount_bolt_radii_mm:
+        assert radius_mm - guide.boss_diameter_mm / 2.0 >= slot_outer_mm
+        assert radius_mm + guide.boss_diameter_mm / 2.0 <= base.arm_outer_radius_mm
+    assert (
+        guide.mount_bolt_radii_mm[1] - guide.mount_bolt_radii_mm[0]
+        >= guide.boss_diameter_mm
+    )
+    # ⚠️ 座はアームの上面の上にあり、インサートはアームの肉に収まる。
+    assert guide.insert_bore_depth_mm < base.arm_thickness_mm
+
+
+def test_the_tray_ear_demands_more_of_the_arm_end_than_the_mount_screws(
+    shipped: tuple[object, object], guide: CableGuideGeometry
+) -> None:
+    """⚠️ **留めねじの帯を先に拒むのはバッテリトレイの耳である**（順序を数で固定）。
+
+    ガイドは「長穴の外端 ＋ 座半分」から「アームの外端 − 座半分」までに座2つが
+    並ぶことを要求する。⚠️ **同じ帯へ耳がより厳しい条件を課している**——耳は
+    長穴の外端から座の外径ぶん**外に始まり**、さらに座2つぶんの長さを要する。
+    したがってガイド側の拒否は出荷の寸法からは届かない。⚠️ **その順序が変わった
+    とき（耳の式や受け持つアームが変わったとき）に気付けるよう、ここで固定する**
+    ——ガイド側の拒否はそのときのための保険である。
+    """
+    params, layout = shipped
+    base = drive_base_geometry(params, layout)  # type: ignore[arg-type]
+    tray = battery_tray_geometry(params, layout)  # type: ignore[arg-type]
+    slot_outer_mm = base.slot_center_radius_mm + base.slot_length_mm / 2.0
+
+    screws_need_mm = 2.0 * guide.boss_diameter_mm
+    ear_needs_mm = tray.ear_outer_radius_mm - slot_outer_mm
+    assert ear_needs_mm > screws_need_mm
+    # 出荷の寸法では耳もガイドも収まっている（どちらの拒否も鳴っていない）。
+    assert tray.ear_outer_radius_mm <= base.arm_outer_radius_mm
+    assert (
+        guide.mount_bolt_radii_mm[1] - guide.mount_bolt_radii_mm[0]
+        >= guide.boss_diameter_mm
+    )
+
+
+def test_a_can_that_pushes_the_plate_outward_leaves_no_room_for_the_routes(
+    shipped: tuple[object, object]
+) -> None:
+    """⚠️ **空振りでないこと**: 缶が太れば板の内縁が外へ動き、通路が裾に収まらない。
+
+    ⚠️ **上流の採寸値が変わればガイドも追随する**（要件 6.9 と同じ向きの依存で
+    ある）——板はアダプタの外周より外にしか置けず、裾の外端はトレイの耳が決める。
+    """
+    from dataclasses import replace
+
+    params, layout = shipped
+    wide_can = replace(
+        params,  # type: ignore[type-var]
+        trash_can=replace(
+            params.trash_can,  # type: ignore[attr-defined]
+            bottom_outer_diameter_mm=200.0,
+            bottom_flat_diameter_mm=190.0,
+        ),
+    )
+    with pytest.raises(GeometryError) as excinfo:
+        cable_guide_geometry(wide_can, layout)  # type: ignore[arg-type]
+    assert "裾の外側" in str(excinfo.value)
+
+
+def test_the_passage_clears_the_battery_tray_in_every_mounting_angle(
+    shipped: tuple[object, object], guide: CableGuideGeometry
+) -> None:
+    """⚠️ **通し穴の下は3つの取付角すべてで自由空間である**（要件 7.6）。
+
+    トレイは1本のアームにしか無いが、⚠️ **配線ガイドは3点とも同一形状**である
+    ——回した位置でトレイの壁の上へ来れば、そこだけ配線の降りる先が無い機体になる。
+    ⚠️ **1点だけ測って済ませない。** 穴は⚠️ **系統ごとに1つ**あり、3系統 × 3取付角の
+    9通りすべてで測る。
+
+    ⚠️ **見るのは実際の隙間である。** かつてここには「穴の `y` はヒューズホルダの
+    置き場の `y` より外」という**座標軸ごとの粗い上界**も置いていたが、
+    ⚠️ **置き場は `x` の広がりを持つ箱**であり、その外側を回れば `y` が小さくても
+    当たらない——粗い上界は自由な弧の外側半分を丸ごと禁じ、3系統を分けて通す
+    余地をそこで失っていた。⚠️ **実際の隙間（`_tray_footprint_gap_mm`）のほうが
+    強い主張である**（2次元の距離であり、3つの取付角すべてで測る）。
+    """
+    import math
+
+    from chassis_mechanism.shapes import (
+        _JOINT_FIT_CLEARANCE_MM,
+        _tray_footprint_gap_mm,
+    )
+
+    params, layout = shipped
+    tray = battery_tray_geometry(params, layout)  # type: ignore[arg-type]
+    deck = deck_stack_geometry(params, layout)  # type: ignore[arg-type]
+    radius_mm = guide.passage_diameter_mm / 2.0
+
+    # 穴は段の立ち上がりの内側にある（出た配線はそのまま筒の中を昇る）。
+    assert guide.passage_center_radius_mm + radius_mm <= deck.riser_inner_radius_mm
+
+    for route in guide.routes:
+        # 穴は耳へつながる腕の外（ガイドの側）——内側では渡りが届かない。
+        assert route.passage_y_mm - radius_mm >= tray.web_outer_y_mm, route.name
+        assert guide.passage_center_radius_mm == pytest.approx(
+            math.hypot(route.passage_x_mm, route.passage_y_mm)
+        ), route.name
+        for angle_deg in layout.wheel_angles_deg:  # type: ignore[attr-defined]
+            radians = math.radians(angle_deg)
+            x_mm = route.passage_x_mm * math.cos(radians) - route.passage_y_mm * (
+                math.sin(radians)
+            )
+            y_mm = route.passage_x_mm * math.sin(radians) + route.passage_y_mm * (
+                math.cos(radians)
+            )
+            gap_mm = _tray_footprint_gap_mm(tray, x_mm, y_mm)
+            assert gap_mm >= radius_mm + _JOINT_FIT_CLEARANCE_MM, (
+                route.name,
+                angle_deg,
+                gap_mm,
+            )
+
+
+def test_a_battery_that_reaches_under_the_passage_is_rejected(
+    shipped: tuple[object, object]
+) -> None:
+    """⚠️ **空振りでないこと**: トレイが伸びれば通し穴の下は塞がる。
+
+    ⚠️ **穴そのものはトレイと交わらない**（穴は中央部の肉の中、トレイはその下）
+    ——塞がるのは**降りる先**である。⚠️ 交差だけを見ていると、この欠陥は通る。
+    """
+    from dataclasses import replace
+
+    params, layout = shipped
+    long_battery = replace(
+        params,  # type: ignore[type-var]
+        chassis=replace(
+            params.chassis,  # type: ignore[attr-defined]
+            battery=replace(params.chassis.battery, length_mm=92.0),  # type: ignore[attr-defined]
+        ),
+    )
+    with pytest.raises(GeometryError) as excinfo:
+        cable_guide_geometry(long_battery, layout)  # type: ignore[arg-type]
+    message = str(excinfo.value)
+    assert "battery.length_mm" in message
+    assert "配線が降りる先が無い" in message
+
+
+def _with_arm_width(params: object, factor: float) -> object:
+    """アームの幅だけを倍率で動かした寸法パラメータを返す。"""
+    from dataclasses import replace
+
+    return replace(
+        params,  # type: ignore[type-var]
+        chassis=replace(
+            params.chassis,  # type: ignore[attr-defined]
+            base=replace(
+                params.chassis.base,  # type: ignore[attr-defined]
+                arm_width_mm=params.chassis.base.arm_width_mm * factor,  # type: ignore[attr-defined]
+            ),
+        ),
+    )
+
+
+def test_the_three_passages_are_spread_across_the_free_arc(
+    shipped: tuple[object, object], guide: CableGuideGeometry
+) -> None:
+    """⚠️ **通し穴の方位角は自由な弧から導出する**（要件 7.7 / 決定 8）。
+
+    ⚠️ **角度を発明しない。** 3系統は弧の両端まで広げて据えられ、⚠️ **穴どうしの
+    間隔は通路の内寸と壁の和以上**である——それを下回れば、中央部で3系統は1つの
+    穴へ合流する。
+    """
+    import math
+
+    arc_start_deg, arc_end_deg = guide.passage_arc_deg
+    angles_deg = [route.passage_angle_deg for route in guide.routes]
+    assert angles_deg[0] == pytest.approx(arc_start_deg)
+    assert angles_deg[-1] == pytest.approx(arc_end_deg)
+    # 等間隔である（弧を3系統で分け合う）。
+    pitch_deg = (arc_end_deg - arc_start_deg) / (len(angles_deg) - 1)
+    for index, angle_deg in enumerate(angles_deg):
+        assert angle_deg == pytest.approx(arc_start_deg + index * pitch_deg)
+    # 間隔は弦で測る（角度ではなく距離が壁である）。
+    assert guide.passage_spacing_mm == pytest.approx(
+        2.0
+        * guide.passage_center_radius_mm
+        * math.sin(math.radians(pitch_deg) / 2.0)
+    )
+    assert guide.passage_spacing_mm >= guide.channel_width_mm + guide.wall_thickness_mm
+
+
+def test_a_wider_arm_narrows_the_free_arc_until_the_routes_merge(
+    shipped: tuple[object, object]
+) -> None:
+    """⚠️ **空振りでないこと**: アームの幅は3系統の分離を条件づけている。
+
+    ⚠️ **これは 3.2 が記録したアーム幅の knife-edge と同じつまみの帰結である。**
+    耳へつながる腕はアームの幅から動き、腕が太るほど⚠️ **穴を置ける弧は両側から
+    削られる**。1.2 倍で穴どうしの壁が残らなくなり、1.5 倍で弧そのものが消える。
+    ⚠️ **どちらも黙って合流させず、寸法パラメータを名指しして拒否する。**
+    """
+    params, layout = shipped
+
+    with pytest.raises(GeometryError) as merged:
+        cable_guide_geometry(_with_arm_width(params, 1.2), layout)  # type: ignore[arg-type]
+    message = str(merged.value)
+    assert "1つの穴へ合流する" in message
+    assert "base.arm_width_mm" in message
+    assert "cable.channel_width_mm" in message
+    assert "cable.wall_thickness_mm" in message
+
+    with pytest.raises(GeometryError) as gone:
+        cable_guide_geometry(_with_arm_width(params, 1.5), layout)  # type: ignore[arg-type]
+    message = str(gone.value)
+    assert "配線が降りる先が無い" in message
+    assert "base.arm_width_mm" in message
+
+    # ⚠️ 出荷の幅では通る（この検査が幅そのものを疑っていない証拠である）。
+    assert cable_guide_geometry(_with_arm_width(params, 1.0), layout).routes  # type: ignore[arg-type]
+
+
+def _free_air_leg_distances_mm(
+    guide: CableGuideGeometry,
+) -> dict[tuple[str, str], float]:
+    """自由空間を渡る脚どうしの最小距離を、⚠️ **実装とは別に組み立てて測る**。
+
+    ⚠️ **中心どうしでも端点どうしでもない。** 平面上の線分では、交差していない
+    限り最小は必ずどちらかの端点で取る——ただし相手の側は⚠️ **線分の内部**であり、
+    出荷の寸法でも `motor` と `supply` の最小は `supply` の脚の途中に落ちる。
+    """
+    import math
+
+    def point_segment_mm(
+        point: tuple[float, float],
+        start: tuple[float, float],
+        end: tuple[float, float],
+    ) -> float:
+        span = (end[0] - start[0], end[1] - start[1])
+        length_squared = span[0] ** 2 + span[1] ** 2
+        ratio = (
+            (point[0] - start[0]) * span[0] + (point[1] - start[1]) * span[1]
+        ) / length_squared
+        ratio = min(max(ratio, 0.0), 1.0)
+        return math.hypot(
+            point[0] - (start[0] + ratio * span[0]),
+            point[1] - (start[1] + ratio * span[1]),
+        )
+
+    legs = {
+        route.name: (
+            (guide.crossing_inner_radius_mm, route.center_y_mm),
+            (route.passage_x_mm, route.passage_y_mm),
+        )
+        for route in guide.routes
+    }
+    distances: dict[tuple[str, str], float] = {}
+    names = [route.name for route in guide.routes]
+    for first in range(len(names)):
+        for second in range(first + 1, len(names)):
+            left = legs[names[first]]
+            right = legs[names[second]]
+            distances[names[first], names[second]] = min(
+                point_segment_mm(left[0], *right),
+                point_segment_mm(left[1], *right),
+                point_segment_mm(right[0], *left),
+                point_segment_mm(right[1], *left),
+            )
+    return distances
+
+
+def test_a_thin_wall_brings_the_free_air_legs_together(
+    shipped: tuple[object, object], guide: CableGuideGeometry
+) -> None:
+    """⚠️ **壁が終わったあとも3系統は離れている**（要件 7.7 / 決定 8）。
+
+    ⚠️ **穴の間隔だけでは足りない。** 渡りの口から中央部の通し穴までは壁の無い
+    自由空間であり、⚠️ **口の並びを決めているのは `cable.wall_thickness_mm`**
+    ——弧も穴の間隔も壁の厚さでは動かないため、⚠️ **壁を薄くすると口だけが内側へ
+    寄り、脚が近づく**。壁 0.5mm では穴の間隔 14.47mm はそのままに `motor` と
+    `supply` の脚が 5.75mm まで詰まる（要る間隔は通路の内寸 8.0mm）——
+    ⚠️ **束が同じ空間を共有すれば、取り違えは配線を挿す直前に起きる。**
+    """
+    params, layout = shipped
+
+    thinned = _replace_cable(params, wall_thickness_mm=0.5)
+    with pytest.raises(GeometryError) as excinfo:
+        cable_guide_geometry(thinned, layout)  # type: ignore[arg-type]
+    message = str(excinfo.value)
+    assert "cable.wall_thickness_mm" in message
+    assert "cable.channel_width_mm" in message
+    assert "motor" in message
+    assert "supply" in message
+    # ⚠️ 穴の間隔の関門では止まっていない（間隔は壁の厚さで動かない）。
+    assert "1つの穴へ合流する" not in message
+
+    # ⚠️ **出荷の寸法では通る**（この検査が壁の厚さそのものを疑っていない証拠）。
+    distances_mm = _free_air_leg_distances_mm(guide)
+    assert min(distances_mm.values()) == pytest.approx(8.3798, abs=1e-4)
+    assert distances_mm["motor", "supply"] == pytest.approx(8.3798, abs=1e-4)
+    assert min(distances_mm.values()) >= guide.channel_width_mm
+    # ⚠️ **余裕は 0.38mm しかない**（要件 1.9 の実測と同時に見直す申し送り）。
+    assert min(distances_mm.values()) - guide.channel_width_mm < 0.5
+
+
+def test_the_window_lets_the_wiring_out_above_the_board_plane(
+    shipped: tuple[object, object], guide: CableGuideGeometry
+) -> None:
+    """⚠️ **窓は基板面より上にある**（要件 7.4, 7.6）。
+
+    低く開ければ配線は段の下へ回り込み、⚠️ 取付面と放熱の隙間を奪う。上は段
+    どうしの重ね代（受け止めデッキの筒）より下でなければならない。
+    """
+    params, layout = shipped
+    deck = deck_stack_geometry(params, layout)  # type: ignore[arg-type]
+    assert guide.window_bottom_height_mm > deck.board_plane_height_mm
+    assert guide.window_top_height_mm < deck.catch_tube_bottom_height_mm
+    assert guide.window_top_height_mm - guide.window_bottom_height_mm == (
+        pytest.approx(guide.channel_width_mm)
+    )
+    # 窓は通し穴と同じ方位角にある（配線は筒の中をまっすぐ昇る）。
+    # ⚠️ **系統ごとに別の角**であり、内側の系統ほど小さい角である。
+    angles_deg = [route.passage_angle_deg for route in guide.routes]
+    assert angles_deg == sorted(angles_deg)
+    assert angles_deg[0] > 0.0
+    assert guide.window_width_mm == pytest.approx(guide.passage_diameter_mm)
+
+
+def test_the_cable_guide_geometry_is_deterministic(
+    shipped: tuple[object, object]
+) -> None:
+    """同一の寸法パラメータからの再導出は同一の値を返す（要件 1.12）。"""
+    params, layout = shipped
+    assert cable_guide_geometry(params, layout) == cable_guide_geometry(  # type: ignore[arg-type]
+        params, layout
+    )
+
+
+def test_the_guide_count_comes_from_the_joint_module(
+    shipped: tuple[object, object], guide: CableGuideGeometry
+) -> None:
+    """⚠️ 点数を形の側で数え直さない（要件 2.1）。"""
+    from chassis_mechanism.joints import segment_counts
+
+    params, _ = shipped
+    assert guide.guide_count == segment_counts(params)["cable_guide"]  # type: ignore[arg-type]
+    assert guide.guide_count == params.chassis.base.wheel_count  # type: ignore[attr-defined]

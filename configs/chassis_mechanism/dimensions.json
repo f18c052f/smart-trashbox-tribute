@@ -48,8 +48,12 @@
     "outline_x_mm": 41.3,
     "outline_y_mm": 38.8
   },
+  "cable": {
+    "channel_width_mm": 8.0,
+    "wall_thickness_mm": 3.0
+  },
   "clearance": {
-    "cable_lowest_offset_mm": 0.0,
+    "cable_lowest_offset_mm": 11.0,
     "fastener_protrusion_mm": 3.0,
     "min_ground_clearance_mm": 5.0
   },
@@ -128,6 +132,8 @@
     "bracket.mount_hole_pitch_mm": "assumed",
     "bracket.outline_x_mm": "measured",
     "bracket.outline_y_mm": "measured",
+    "cable.channel_width_mm": "assumed",
+    "cable.wall_thickness_mm": "assumed",
     "clearance.cable_lowest_offset_mm": "assumed",
     "clearance.fastener_protrusion_mm": "assumed",
     "clearance.min_ground_clearance_mm": "assumed",

@@ -25,6 +25,7 @@ design.md `#### Shapes` は不変条件の検査を**本ファイル**に置く�
 
 from __future__ import annotations
 
+import itertools
 import math
 from typing import Any
 
@@ -40,6 +41,7 @@ from chassis_mechanism.shapes import (
     ADAPTER_SEGMENT_PART_NAME,
     ASSEMBLY_ORDER,
     BATTERY_TRAY_PART_NAME,
+    CABLE_GUIDE_PART_NAME,
     BOARD_DECK_PART_NAME,
     CATCH_DECK_PART_NAME,
     HUB_PLATE_PART_NAME,
@@ -53,6 +55,8 @@ from chassis_mechanism.shapes import (
     assembly_steps,
     battery_tray_geometry,
     build_parts,
+    build_trash_can_shell,
+    cable_guide_geometry,
     deck_stack_geometry,
     drive_base_geometry,
     part_names,
@@ -808,8 +812,14 @@ def test_the_measured_bolt_seat_area_is_insensitive_to_the_arm_width(
 
     `check_joint` が名指しする破壊モードはボルト座面のめり込みであり、支配量は
     座面圧である。⚠️ **アーム幅を広げても座面圧は 1Pa も下がらない。** 幅を
-    1.5 倍にして測った面積が動かないことが、「離れた材料を数えていない」ことの
+    広げて測った面積が動かないことが、「離れた材料を数えていない」ことの
     観測可能な形である。
+
+    ⚠️ **倍率は 1.5 から 1.15 へ下げた（主張は変えていない）。** 中央部は配線の
+    通し穴を持つため `build_drive_base` は配線ガイドの幾何を要するが、
+    ⚠️ **アーム幅 1.5 倍では3系統を分けて通す弧が消え、機体そのものが拒否される**
+    （`tasks.md`「3.5 が残した申し送り」）。ここで見たいのは⚠️ **幅を広げても
+    座面積が動かないこと**であり、広げる量は主張に関与しない。
     """
     import dataclasses
 
@@ -822,7 +832,7 @@ def test_the_measured_bolt_seat_area_is_insensitive_to_the_arm_width(
             params.chassis,
             base=dataclasses.replace(
                 params.chassis.base,
-                arm_width_mm=params.chassis.base.arm_width_mm * 1.5,
+                arm_width_mm=params.chassis.base.arm_width_mm * 1.15,
             ),
         ),
     )
@@ -863,7 +873,11 @@ def test_a_joint_face_thinner_than_the_boss_cannot_realise_the_bearing_area(
     import dataclasses
     import math
 
-    from chassis_mechanism.shapes import _build_motor_arm, battery_tray_geometry
+    from chassis_mechanism.shapes import (
+        _build_motor_arm,
+        battery_tray_geometry,
+        cable_guide_geometry,
+    )
 
     params, layout = shipped
     joint = _arm_joint(shipped)
@@ -880,8 +894,11 @@ def test_a_joint_face_thinner_than_the_boss_cannot_realise_the_bearing_area(
     # ⚠️ バッテリトレイの穴はアームの外側の帯（半径 114mm 以遠）にあり、
     # ここで測る座（半径 64.6 / 73.8mm）とは重ならない。
     tray = battery_tray_geometry(params, layout)
+    # ⚠️ 配線ガイドの座はアームの**上面**（半径 109.6 / 130.6mm）にあり、
+    # ここで測る座とは重ならない。
+    guide = cable_guide_geometry(params, layout)
     measured_mm2 = _measured_bolt_seat_area_mm2(
-        _build_motor_arm(thin, tray), thin
+        _build_motor_arm(thin, tray, guide), thin
     )
 
     # 帯へ切り取られた環の面積を、⚠️ **形からではなく初等幾何から**独立に出す。
@@ -1066,7 +1083,15 @@ def test_no_printed_part_touches_the_motor_body(
 def _placed_drive_base(
     shipped: tuple[Any, Any], parts: dict[str, Any]
 ) -> dict[str, Any]:
-    """駆動ベースの部品を機体座標へ据え付ける（中央部はそのまま、アームは回す）。"""
+    """駆動ベースの部品を機体座標へ据え付ける（中央部はそのまま、アームは回す）。
+
+    ⚠️ **配線ガイドはここに現れない。** ガイドはアダプタより**後**に据える
+    （`ASSEMBLY_ORDER` / design.md 組立手順 13）ため、アダプタを差し込む経路や
+    その取付ボルトを回す筋を見る検査では、まだ置かれていない部品である。
+    ⚠️ **裏返せば、缶を外すときはガイドを先に緩める**——ガイドの板はアダプタの
+    外周のすぐ外（嵌め合い隙間ぶん）に立っており、アダプタ断片はその下を半径
+    方向へ通れない。組み上がり状態の干渉は `_placed_cable_guides` を足して見る。
+    """
     from build123d import Rotation
 
     _, layout = shipped
@@ -1076,6 +1101,24 @@ def _placed_drive_base(
             Rotation(0, 0, angle_deg) * parts[f"motor_arm_{index}"].solid
         )
     return placed
+
+
+def _placed_cable_guides(
+    shipped: tuple[Any, Any], parts: dict[str, Any]
+) -> dict[str, Any]:
+    """配線ガイドを機体座標へ据え付ける（⚠️ 輪の角度へ回す）。
+
+    ⚠️ **3点は同一のソリッドである**（`shapes._placed_machine_parts` と同じ扱い）
+    ——回さずに並べると自分自身と重なる。
+    """
+    from build123d import Rotation
+
+    _, layout = shipped
+    return {
+        f"cable_guide_{index}": Rotation(0, 0, angle_deg)
+        * parts[f"cable_guide_{index}"].solid
+        for index, angle_deg in enumerate(layout.wheel_angles_deg, start=1)
+    }
 
 
 @requires_cad
@@ -2620,6 +2663,7 @@ def test_no_two_assembled_parts_interfere(
     import itertools
 
     placed = dict(_placed_drive_base(shipped, parts))
+    placed.update(_placed_cable_guides(shipped, parts))
     for name, part in parts.items():
         if name.startswith(f"{SERVICE_STAND_PART_NAME}_") or name in placed:
             continue
@@ -3316,6 +3360,7 @@ def test_placing_the_decks_before_the_can_is_caught(
         CATCH_DECK_PART_NAME,
         TRASH_CAN_PART_NAME,
         ADAPTER_SEGMENT_PART_NAME,
+        CABLE_GUIDE_PART_NAME,
     )
     assert sorted(wrong_order) == sorted(ASSEMBLY_ORDER), "順序だけが違う"
     violations = assembly_reach_violations(params, layout, order=wrong_order)
@@ -3373,3 +3418,756 @@ def test_an_order_that_names_an_unknown_part_is_rejected() -> None:
     with pytest.raises(GeometryError) as excinfo:
         assembly_steps(params, layout, order=ASSEMBLY_ORDER + ("wide_rim",))
     assert "wide_rim" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# 8. 配線ガイド（タスク 3.5 / 要件 4.6, 7.6, 7.7, 8.4, 8.7 / design.md 決定 8）
+#
+# ⚠️ **ここが見るのは実形状である。** 「3系統に分けた」という主張は、⚠️ 通路の
+# 間に材料が残っていて初めて形についての主張になる。
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def guide(shipped: tuple[Any, Any]) -> Any:
+    params, layout = shipped
+    return cable_guide_geometry(params, layout)
+
+
+@pytest.fixture(scope="module")
+def guide_solids(shipped: tuple[Any, Any], parts: dict[str, Any]) -> dict[str, Any]:
+    return _placed_cable_guides(shipped, parts)
+
+
+def _channel_box(guide: Any, route: Any, *, inset_mm: float = 0.0) -> Any:
+    """1系統の通路の空洞（鉛直の区間。局所座標＝第1輪の向き）。"""
+    return _box(
+        (
+            guide.channel_inner_radius_mm + inset_mm,
+            guide.channel_outer_radius_mm - inset_mm,
+        ),
+        (route.inner_y_mm + inset_mm, route.outer_y_mm - inset_mm),
+        (
+            guide.crossing_channel_bottom_mm + inset_mm,
+            guide.top_height_mm - inset_mm,
+        ),
+    )
+
+
+def _crossing_box(guide: Any, route: Any, *, inset_mm: float = 0.0) -> Any:
+    """1系統の通路の空洞（渡りの区間＝ベース板の下を内側へ運ぶ部分）。"""
+    return _box(
+        (
+            guide.crossing_inner_radius_mm + inset_mm,
+            guide.channel_outer_radius_mm - inset_mm,
+        ),
+        (route.inner_y_mm + inset_mm, route.outer_y_mm - inset_mm),
+        (
+            guide.crossing_channel_bottom_mm + inset_mm,
+            guide.crossing_top_height_mm - inset_mm,
+        ),
+    )
+
+
+def _guides_union(guide_solids: dict[str, Any]) -> Any:
+    """据え付けた配線ガイドを1つの形へまとめる（測るためだけの和）。"""
+    solids = list(guide_solids.values())
+    combined = solids[0]
+    for solid in solids[1:]:
+        combined = combined + solid
+    return combined
+
+
+@requires_cad
+def test_each_route_is_its_own_channel_with_material_between(
+    guide: Any, parts: dict[str, Any]
+) -> None:
+    """⚠️ **3系統は交差せず、間に材料が残っている**（要件 7.7 / 決定 8）。
+
+    ⚠️ **色だけに頼らず経路そのものを分ける**——取り違えるとエンコーダが飛ぶ。
+    通路が空洞であること、通路どうしが交わらないこと、⚠️ **その間の壁が実体で
+    あること**の3つを実形状に対して測る。
+    """
+    solid = parts["cable_guide_1"].solid
+    boxes = [_channel_box(guide, route) for route in guide.routes]
+    boxes += [_crossing_box(guide, route) for route in guide.routes]
+
+    for box in boxes:
+        assert _volume(solid & box) == 0.0
+    for left, right in itertools.combinations(boxes, 2):
+        # ⚠️ 同じ系統の鉛直と渡りは繋がっている（重なる）。別の系統とは交わらない。
+        if boxes.index(left) % len(guide.routes) == boxes.index(right) % len(
+            guide.routes
+        ):
+            continue
+        assert _volume(left & right) == 0.0
+
+    # ⚠️ 通路どうしの間は**全域が材料**である（壁が消えれば3系統は1つの空洞になる）。
+    # ⚠️ **渡りの区間でも壁は残る**——そして⚠️ **通し穴も窓も系統ごとに1つ**で
+    # あり、経路はどこでも合流しない（要件 7.7 / 決定 8）。
+    for left, right in zip(guide.routes, guide.routes[1:], strict=False):
+        for radius_range_mm, z_range_mm in (
+            (
+                (guide.channel_inner_radius_mm, guide.channel_outer_radius_mm),
+                (guide.crossing_channel_bottom_mm, guide.top_height_mm),
+            ),
+            (
+                (guide.crossing_inner_radius_mm, guide.channel_outer_radius_mm),
+                (guide.crossing_channel_bottom_mm, guide.crossing_top_height_mm),
+            ),
+        ):
+            wall = _box(radius_range_mm, (left.outer_y_mm, right.inner_y_mm), z_range_mm)
+            assert _volume(solid & wall) == pytest.approx(_volume(wall), rel=1e-9)
+
+    # ⚠️ 空振りでないこと: 壁の厚さぶん太らせた通路は材料へ食い込む。
+    grown = _box(
+        (guide.channel_inner_radius_mm, guide.channel_outer_radius_mm),
+        (
+            guide.routes[0].inner_y_mm - guide.wall_thickness_mm,
+            guide.routes[0].outer_y_mm + guide.wall_thickness_mm,
+        ),
+        (guide.cable_lowest_height_mm, guide.top_height_mm),
+    )
+    assert _volume(solid & grown) > 0.0
+
+
+@requires_cad
+def test_the_lowest_material_of_the_guide_is_the_height_the_clearance_uses(
+    shipped: tuple[Any, Any], guide: Any, guide_solids: dict[str, Any]
+) -> None:
+    """⚠️ **配線の最下点が隙間の算出対象に現れる**（要件 4.2, 4.6）。
+
+    ⚠️ **保持箇所は実体である**——通路の下の口の高さが `clearance` の `cable` と
+    一致し、⚠️ **そこより下にガイドの材料は無い**。
+    """
+    from chassis_mechanism.clearance import clearance_items
+
+    params, layout = shipped
+    heights = {
+        item.name: item.height_mm for item in clearance_items(layout, params.chassis)
+    }
+    assert guide.cable_lowest_height_mm == pytest.approx(heights["cable"])
+    for name, solid in guide_solids.items():
+        measured_mm = float(solid.bounding_box().min.Z)
+        assert measured_mm == pytest.approx(heights["cable"], abs=1e-6), name
+        assert measured_mm > params.chassis.clearance.min_ground_clearance_mm
+
+    # ⚠️ **最下点は渡りの床である**（配線はその上に載る）。床の下に材料は無い。
+    solid = parts_union = _guides_union(guide_solids)
+    below = _box(
+        (-_PROBE_MM, _PROBE_MM),
+        (-_PROBE_MM, _PROBE_MM),
+        (guide.cable_lowest_height_mm - 5.0, guide.cable_lowest_height_mm - _EPS_MM),
+    )
+    assert _volume(parts_union & below) == 0.0
+
+    # ⚠️ 渡りの内端は3つとも実際に開いている（そこから通し穴へ渡る）。
+    for route in guide.routes:
+        mouth = _box(
+            (
+                guide.crossing_inner_radius_mm,
+                guide.crossing_inner_radius_mm + _SLAB_MM,
+            ),
+            (route.inner_y_mm, route.outer_y_mm),
+            (guide.crossing_channel_bottom_mm, guide.crossing_top_height_mm),
+        )
+        assert _volume(solid & mouth) == 0.0, route.name
+        # まわりには材料がある（口が部品の外へ抜けていない）。
+        ring = _box(
+            (
+                guide.crossing_inner_radius_mm,
+                guide.crossing_inner_radius_mm + _SLAB_MM,
+            ),
+            (
+                route.inner_y_mm - guide.wall_thickness_mm,
+                route.outer_y_mm + guide.wall_thickness_mm,
+            ),
+            (
+                guide.cable_lowest_height_mm,
+                guide.crossing_top_height_mm,
+            ),
+        )
+        assert _volume(solid & ring) > 0.0, route.name
+
+
+@requires_cad
+def test_no_cable_guide_reaches_a_wheel_or_the_floor(
+    shipped: tuple[Any, Any], guide: Any, guide_solids: dict[str, Any]
+) -> None:
+    """⚠️ **回転部にも床にも触れない**（要件 4.6, 7.6）。
+
+    ⚠️ **「外側だから当たらない」ではない。** ホイールは車軸まわりの円筒であり、
+    その頂点はちょうどベース板の下面の高さにある——ガイドはその高さより下へ出ず、
+    かつホイールの内側面より内側の半径に留まる。⚠️ **両方を実形状で測る。**
+    """
+    from build123d import Rotation
+
+    params, layout = shipped
+    wheel = params.chassis.wheel
+
+    def _wheels(*, radius_growth_mm: float = 0.0, width_growth_mm: float = 0.0) -> Any:
+        combined = None
+        for angle_deg in layout.wheel_angles_deg:
+            solid = Rotation(0, 0, angle_deg) * _wheel_cylinder(
+                radius_mm=wheel.nominal_diameter_mm / 2.0,
+                width_mm=wheel.width_mm,
+                center_height_mm=layout.vertical.axle_center_height_mm,
+                radius_growth_mm=radius_growth_mm,
+                width_growth_mm=width_growth_mm,
+                x_offset_mm=layout.base_radius_mm,
+            )
+            combined = solid if combined is None else combined + solid
+        return combined
+
+    wheels = _wheels()
+    for name, solid in guide_solids.items():
+        assert _volume(solid & wheels) == 0.0, name
+        assert float(solid.bounding_box().min.Z) > (
+            params.chassis.clearance.min_ground_clearance_mm
+        )
+
+    # ⚠️ 空振りでないこと: 半径にも幅にも膨らませたホイールは裾へ届く
+    #（隔てているのが半径と高さの**両方**であることの現れである）。
+    grown = _wheels(radius_growth_mm=20.0, width_growth_mm=12.0)
+    assert sum(_volume(solid & grown) for solid in guide_solids.values()) > 0.0
+
+
+@requires_cad
+def test_the_terminal_seat_is_a_flat_face_with_blind_screw_holes(
+    guide: Any, parts: dict[str, Any]
+) -> None:
+    """⚠️ **端子台の保持箇所は座とねじ穴として実在する**（要件 8.4）。
+
+    ⚠️ **寸法も方式も未決である**（タスク 5.6）。ここが見るのは「後から載せられる
+    平面と、そこへ入るねじの座があること」だけである。⚠️ **ねじ穴は袋穴であり、
+    座の肉を突き抜けない**——突き抜ければ、そこは座ではなく穴である。
+    """
+    solid = parts["cable_guide_1"].solid
+    seat = _box(
+        (guide.terminal_pad_inner_radius_mm, guide.terminal_pad_outer_radius_mm),
+        (guide.terminal_pad_inner_y_mm, guide.terminal_pad_outer_y_mm),
+        (guide.top_height_mm - _SLAB_MM, guide.top_height_mm),
+    )
+    faces = _planar_faces_on_plane(solid & seat, (0.0, 0.0, 1.0), guide.top_height_mm)
+    assert faces, "端子台の座に平面が無い"
+    assert sum(float(face.area) for face in faces) > 0.0
+
+    for y_mm in guide.terminal_bolt_y_mm:
+        column = _box(
+            (
+                guide.terminal_bolt_radius_mm - _INSET_MM,
+                guide.terminal_bolt_radius_mm + _INSET_MM,
+            ),
+            (y_mm - _INSET_MM, y_mm + _INSET_MM),
+            (
+                guide.top_height_mm - guide.insert_bore_depth_mm + _EPS_MM,
+                guide.top_height_mm - _EPS_MM,
+            ),
+        )
+        assert _volume(solid & column) == 0.0, y_mm
+        # ⚠️ **袋穴である**——座ぐりの底より下には材料が残る。
+        below = _box(
+            (
+                guide.terminal_bolt_radius_mm - _INSET_MM,
+                guide.terminal_bolt_radius_mm + _INSET_MM,
+            ),
+            (y_mm - _INSET_MM, y_mm + _INSET_MM),
+            (
+                guide.terminal_pad_bottom_height_mm + _EPS_MM,
+                guide.top_height_mm - guide.insert_bore_depth_mm - _EPS_MM,
+            ),
+        )
+        assert _volume(solid & below) == pytest.approx(_volume(below), rel=1e-6), y_mm
+
+
+@requires_cad
+def test_the_estop_lead_out_opens_only_into_the_supply_route(
+    guide: Any, parts: dict[str, Any]
+) -> None:
+    """⚠️ **非常停止の引き出しは電源の経路へだけ開く**（要件 8.7 / 決定 8）。
+
+    ⚠️ **他の系統へ抜ける穴は「経路を分けた」ことを台無しにする。** 同じ高さ・
+    同じ深さの筋を他の系統の位置で引けば、そこは全域が材料でなければならない。
+    """
+    solid = parts["cable_guide_1"].solid
+    supply = guide.route("supply")
+
+    def _lead_out_path(y_mm: float) -> Any:
+        return _box(
+            (
+                guide.channel_outer_radius_mm + _EPS_MM,
+                guide.skirt_outer_radius_mm - _EPS_MM,
+            ),
+            (y_mm - _INSET_MM, y_mm + _INSET_MM),
+            (
+                guide.estop_lead_out_height_mm - _INSET_MM,
+                guide.estop_lead_out_height_mm + _INSET_MM,
+            ),
+        )
+
+    opened = _lead_out_path(supply.center_y_mm)
+    assert _volume(solid & opened) == 0.0
+    for route in guide.routes:
+        if route.name == "supply":
+            continue
+        blocked = _lead_out_path(route.center_y_mm)
+        assert _volume(solid & blocked) == pytest.approx(
+            _volume(blocked), rel=1e-6
+        ), route.name
+
+    # ⚠️ 引き出しは実際に `supply` の通路へ抜けている（外面から通路まで繋がる）。
+    outside = _box(
+        (
+            guide.skirt_outer_radius_mm - _EPS_MM,
+            guide.skirt_outer_radius_mm + _EPS_MM,
+        ),
+        (supply.center_y_mm - _INSET_MM, supply.center_y_mm + _INSET_MM),
+        (
+            guide.estop_lead_out_height_mm - _INSET_MM,
+            guide.estop_lead_out_height_mm + _INSET_MM,
+        ),
+    )
+    assert _volume(solid & outside) == 0.0
+
+    # ⚠️ 取付ねじの座は**袋穴**であり、通路へは抜けない。
+    for y_mm in guide.estop_bolt_y_mm:
+        beyond = _box(
+            (
+                guide.channel_outer_radius_mm + _EPS_MM,
+                guide.skirt_outer_radius_mm - guide.insert_bore_depth_mm - _EPS_MM,
+            ),
+            (y_mm - _INSET_MM, y_mm + _INSET_MM),
+            (
+                guide.estop_bolt_height_mm - _INSET_MM,
+                guide.estop_bolt_height_mm + _INSET_MM,
+            ),
+        )
+        assert _volume(solid & beyond) == pytest.approx(_volume(beyond), rel=1e-6)
+
+
+@requires_cad
+def test_the_arm_carries_the_insert_bores_the_cable_guide_screws_into(
+    guide: Any, drive_base: Any, parts: dict[str, Any]
+) -> None:
+    """⚠️ **記録された取付ねじが実形状のどこかを通る**（`joints.ASSUMPTIONS`）。
+
+    ガイドはアームの上面へ座る。⚠️ **アーム側に座が無ければ、ねじはどこへも入らない**
+    ——ハブ板がアダプタの座を持つのと同じ関係である。
+    """
+    arm = parts["motor_arm_1"].solid
+    arm_top_mm = drive_base.underside_height_mm + drive_base.arm_thickness_mm
+
+    for radius_mm in guide.mount_bolt_radii_mm:
+        bore = _box(
+            (radius_mm - _INSET_MM, radius_mm + _INSET_MM),
+            (guide.mount_bolt_y_mm - _INSET_MM, guide.mount_bolt_y_mm + _INSET_MM),
+            (arm_top_mm - guide.insert_bore_depth_mm + _EPS_MM, arm_top_mm - _EPS_MM),
+        )
+        assert _volume(arm & bore) == 0.0, radius_mm
+        # ⚠️ **袋穴である**——アームの下面へ抜けない（抜ければ床側の隙間の話になる）。
+        below = _box(
+            (radius_mm - _INSET_MM, radius_mm + _INSET_MM),
+            (guide.mount_bolt_y_mm - _INSET_MM, guide.mount_bolt_y_mm + _INSET_MM),
+            (
+                drive_base.underside_height_mm + _EPS_MM,
+                arm_top_mm - guide.insert_bore_depth_mm - _EPS_MM,
+            ),
+        )
+        assert _volume(arm & below) == pytest.approx(_volume(below), rel=1e-6)
+
+    # ⚠️ 空振りでないこと: 座の無い半径では柱いっぱいに材料がある。
+    between_mm = sum(guide.mount_bolt_radii_mm) / 2.0
+    solid_column = _box(
+        (between_mm - _INSET_MM, between_mm + _INSET_MM),
+        (guide.mount_bolt_y_mm - _INSET_MM, guide.mount_bolt_y_mm + _INSET_MM),
+        (arm_top_mm - guide.insert_bore_depth_mm + _EPS_MM, arm_top_mm - _EPS_MM),
+    )
+    assert _volume(arm & solid_column) == pytest.approx(
+        _volume(solid_column), rel=1e-6
+    )
+
+
+@requires_cad
+def test_each_cable_guide_is_one_solid_that_fits_the_build_volume(
+    shipped: tuple[Any, Any], guide: Any, parts: dict[str, Any]
+) -> None:
+    """⚠️ 宣言した外接箱と実形状が一致し、造形可能寸法に収まる（要件 2.2, 2.3）。
+
+    ⚠️ **点数は `joints.segment_counts()` が正である**（要件 2.1）。
+    """
+    from catch_mechanism import Envelope
+
+    from chassis_mechanism.joints import segment_counts
+
+    params, _ = shipped
+    names = [name for name in parts if name.startswith("cable_guide")]
+    assert len(names) == segment_counts(params)["cable_guide"]
+    for name in names:
+        metrics = parts[name].metrics
+        assert metrics.solid_count == 1, name
+        for value, expected in zip(
+            metrics.bbox_mm,
+            (guide.envelope.x_mm, guide.envelope.y_mm, guide.envelope.z_mm),
+            strict=True,
+        ):
+            assert value == pytest.approx(expected, abs=1e-6), name
+        assert (
+            check_envelope(
+                name,
+                Envelope(
+                    x_mm=metrics.bbox_mm[0],
+                    y_mm=metrics.bbox_mm[1],
+                    z_mm=metrics.bbox_mm[2],
+                ),
+                params.printing,
+            )
+            == ()
+        ), name
+
+
+@requires_cad
+def test_dropping_the_cable_guide_from_above_is_caught(
+    shipped: tuple[Any, Any]
+) -> None:
+    """⚠️ **空振りでないこと: ガイドを真上から降ろす経路は缶に塞がれる**（要件 7.14）。
+
+    缶の側壁は上へ広がっており、⚠️ **ガイドの真上をいずれ横切る**——組み上がった
+    状態はどちらの向きでも同じであるため、⚠️ 最終形の干渉検査はこれを1つも
+    捉えない。ガイドはアームの上面へ**半径方向へ差し込んで**据える。
+    """
+    from chassis_mechanism.shapes import (
+        _AXIAL_APPROACH,
+        _approach_overlap_mm3,
+        _placed_machine_parts,
+        _radial_approach,
+    )
+
+    params, layout = shipped
+    placed = _placed_machine_parts(params, layout)
+    can = placed[TRASH_CAN_PART_NAME]
+    solid = placed["cable_guide_1"]
+
+    assert _approach_overlap_mm3(solid, can, _AXIAL_APPROACH) > 0.0
+    # ⚠️ 記録された向き（半径方向）なら缶に当たらない。
+    radial = _radial_approach(layout.wheel_angles_deg[0])
+    assert _approach_overlap_mm3(solid, can, radial) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# 8b. ⚠️ 経路が**繋がっている**こと（要件 7.6 / タスク 3.5）
+#
+# ⚠️ **これが欠けていた検査である。** 3系統が分かれていることも、最下点が隙間の
+# 算出対象に現れることも、⚠️ **経路がどこへも通じていなくても成り立ってしまう**
+# ——通路の分離だけを測っていると、配線が基板へ届かない機体を全数通してしまう。
+# ここでは通路と同じ断面のプローブを経路に沿って掃引し、⚠️ **どの部品にも当たら
+# ないこと**を実形状に対して測る。
+# ---------------------------------------------------------------------------
+
+
+def _harness_path_solids(guide: Any, route: Any, deck: Any) -> list[Any]:
+    """1系統ぶんの経路（第1輪の向きの局所座標＝機体座標）を区間ごとに並べる。
+
+    ⚠️ **経路は幾何が宣言している値だけで組み立てる**（`CableGuideGeometry` の
+    渡りと窓、`CableRoute` の通し穴）。⚠️ 測るためにここで新しい寸法を発明しない。
+
+    ⚠️ **系統ごとに別の通し穴・別の窓を通る**（要件 7.7 / 決定 8）。渡りの内端から
+    穴までは⚠️ **壁の無い自由空間**であり、そこを1本の傾いた区間として掃引する
+    ——3系統ぶんのこの区間が互いに交わらないことが「経路で分けた」ことの実体で
+    ある（`test_the_harness_has_a_free_path_from_the_guide_to_the_board_plane`）。
+    """
+    from build123d import Align, Box, Cylinder, Location, Rotation
+
+    half_mm = guide.channel_width_mm / 2.0
+    crossing_z = (guide.crossing_channel_bottom_mm, guide.crossing_top_height_mm)
+    reach_angle_deg = math.degrees(
+        math.atan2(
+            route.passage_y_mm - route.center_y_mm,
+            route.passage_x_mm - guide.crossing_inner_radius_mm,
+        )
+    )
+    # ⚠️ **束は口から真っ直ぐ出てから曲がる。** 口の幅は通路の内寸ちょうどしか
+    # 無く、⚠️ **傾いた同じ幅の帯を口の面から直接生やすと角が壁へ食い込む**
+    # ——曲がりは口の外（自由空間）で起きる。真っ直ぐ出る長さは、傾いた帯の
+    # 端面が口の面を越えない最小の長さである。
+    # ⚠️ 角が口の面にちょうど接したままではブール演算の結果が面の扱いに委ねられる
+    # ため、測る余裕（`_EPS_MM`）ぶん外で曲げる。
+    bend_mm = half_mm * abs(math.sin(math.radians(reach_angle_deg))) + _EPS_MM
+    mouth_x_mm = guide.crossing_inner_radius_mm - bend_mm
+    mouth_y_mm = route.center_y_mm
+    reach_mm = math.hypot(
+        route.passage_x_mm - mouth_x_mm, route.passage_y_mm - mouth_y_mm
+    )
+
+    def shaft(z_range: tuple[float, float]) -> Any:
+        z_min, z_max = z_range
+        return Location(
+            (route.passage_x_mm, route.passage_y_mm, (z_min + z_max) / 2.0)
+        ) * Cylinder(
+            guide.passage_diameter_mm / 2.0,
+            z_max - z_min,
+            align=(Align.CENTER, Align.CENTER, Align.CENTER),
+        )
+
+    return [
+        # 1. ガイドの鉛直の通路（端子台の座と非常停止の引き出しが接する区間）。
+        _channel_box(guide, route),
+        # 2. ガイドの渡り（ベース板の下を内側へ運ぶ区間）。
+        _crossing_box(guide, route),
+        # 3. 渡りの口を真っ直ぐ出る区間（⚠️ ここまでは口と同じ向きである）。
+        _box(
+            (mouth_x_mm, guide.crossing_inner_radius_mm),
+            (route.inner_y_mm, route.outer_y_mm),
+            crossing_z,
+        ),
+        # 4. 口から通し穴まで（⚠️ **壁の無い自由空間を斜めに渡る**）。
+        Location(
+            (
+                (mouth_x_mm + route.passage_x_mm) / 2.0,
+                (mouth_y_mm + route.passage_y_mm) / 2.0,
+                (crossing_z[0] + crossing_z[1]) / 2.0,
+            )
+        )
+        * Rotation(0, 0, reach_angle_deg)
+        * Box(
+            reach_mm,
+            guide.channel_width_mm,
+            crossing_z[1] - crossing_z[0],
+            align=(Align.CENTER, Align.CENTER, Align.CENTER),
+        ),
+        # 5. 中央部の通し穴（⚠️ **ここだけが缶の内側へ通じている**）。
+        shaft((guide.crossing_top_height_mm, guide.window_bottom_height_mm)),
+        # 6. 立ち上がりの窓（⚠️ **基板面より上で、系統ごとに別の口から外へ出る**）。
+        Rotation(0, 0, route.passage_angle_deg)
+        * _box(
+            (
+                guide.passage_center_radius_mm - half_mm,
+                _window_exit_mm(guide, deck),
+            ),
+            (-guide.window_width_mm / 2.0, guide.window_width_mm / 2.0),
+            (guide.window_bottom_height_mm, guide.window_top_height_mm),
+        ),
+    ]
+
+
+def _window_exit_mm(guide: Any, deck: Any) -> float:
+    """窓を出たプローブを止める半径（mm）。⚠️ **寸法ではなく測る範囲である。**
+
+    ⚠️ **立ち上がりの外径から導出する**——定数で置くと、外径がその値を越えた
+    瞬間にプローブは窓の内側で止まり、⚠️ **筒から出ていないのに「経路は空いて
+    いる」と言い続ける**。壁を出たことが分かればよいので、外径に壁の厚さぶんを
+    足した半径で止める（取付箇所の円より内側である）。
+    """
+    return deck.riser_outer_radius_mm + guide.wall_thickness_mm
+
+
+@requires_cad
+def test_the_harness_has_a_free_path_from_the_guide_to_the_board_plane(
+    shipped: tuple[Any, Any], guide: Any, parts: dict[str, Any]
+) -> None:
+    """⚠️ **経路は繋がって初めて経路である**（要件 7.6）。そして⚠️ **3系統は
+    最後まで別の経路である**（要件 7.7 / 決定 8）。
+
+    モータ側からガイドの通路へ入った配線が、渡り → 中央部の通し穴 →
+    立ち上がりの中 → 窓、と辿って⚠️ **基板面の高さで缶の内側へ出られる**ことを、
+    通路と同じ断面のプローブで測る。⚠️ **どの部品にも当たらないこと**が1つ目の
+    主張であり、⚠️ **3本の経路が互いに1点も共有しないこと**が2つ目である
+    ——⚠️ **後者が欠けていると、3系統が同じ穴を通る形が黙って通る。**
+    """
+    params, layout = shipped
+    deck = deck_stack_geometry(params, layout)
+    placed = dict(_placed_drive_base(shipped, parts))
+    placed.update(_placed_cable_guides(shipped, parts))
+    for name, part in parts.items():
+        if name.startswith(f"{SERVICE_STAND_PART_NAME}_") or name in placed:
+            continue
+        placed[name] = part.solid
+    placed[TRASH_CAN_PART_NAME] = build_trash_can_shell(params, layout)
+
+    chains = {
+        route.name: _harness_path_solids(guide, route, deck) for route in guide.routes
+    }
+    for name, probes in chains.items():
+        for index, probe in enumerate(probes):
+            for part_name, solid in placed.items():
+                assert _volume(probe & solid) == 0.0, (name, index, part_name)
+
+    # ⚠️ **3系統の経路は全区間で互いに交わらない。** ガイドの中では壁が隔てて
+    # いるが、⚠️ **渡りの口から先は壁が無い**——そこで交わる形は「経路で分けた」
+    # という主張を端子の手前で失う。
+    for left, right in itertools.combinations(chains, 2):
+        for left_index, left_probe in enumerate(chains[left]):
+            for right_index, right_probe in enumerate(chains[right]):
+                assert _volume(left_probe & right_probe) == 0.0, (
+                    left,
+                    left_index,
+                    right,
+                    right_index,
+                )
+
+    # ⚠️ 経路は基板面より上で外へ出る（低く出れば段の下へ回り込む）。
+    assert guide.window_bottom_height_mm > deck.board_plane_height_mm
+    assert guide.window_top_height_mm < deck.catch_tube_bottom_height_mm
+    # ⚠️ プローブは筒の外まで届いている（窓の内側で止まっていない）。
+    assert _window_exit_mm(guide, deck) > deck.riser_outer_radius_mm
+
+
+@requires_cad
+def test_material_separates_the_three_passages_in_every_plate_they_cross(
+    shipped: tuple[Any, Any], guide: Any, parts: dict[str, Any]
+) -> None:
+    """⚠️ **穴どうしの間に材料が残っている**（要件 7.7 / 決定 8）。
+
+    ⚠️ **「系統ごとに穴を開けた」は、間に肉が残って初めて形についての主張になる。**
+    中央部の板と基板デッキの板の両方で、隣り合う通し穴の中心の間に立てた円柱が
+    ⚠️ **全域材料である**ことを測る（穴が1つに融合していれば空洞が出る）。
+    """
+    from build123d import Align, Cylinder, Location
+
+    params, layout = shipped
+    drive_base = drive_base_geometry(params, layout)
+    deck = deck_stack_geometry(params, layout)
+    hub = parts[HUB_PLATE_PART_NAME].solid
+    board = parts[BOARD_DECK_PART_NAME].solid
+
+    # ⚠️ 壁の太さぶん（穴の間隔 − 通路の内寸）の円柱を、穴と穴の真ん中に立てる。
+    wall_mm = guide.passage_spacing_mm - guide.channel_width_mm
+    assert wall_mm >= guide.wall_thickness_mm
+
+    def wall_probe(left: Any, right: Any, z_range: tuple[float, float]) -> Any:
+        z_min, z_max = z_range
+        return Location(
+            (
+                (left.passage_x_mm + right.passage_x_mm) / 2.0,
+                (left.passage_y_mm + right.passage_y_mm) / 2.0,
+                (z_min + z_max) / 2.0,
+            )
+        ) * Cylinder(
+            wall_mm / 2.0,
+            z_max - z_min,
+            align=(Align.CENTER, Align.CENTER, Align.CENTER),
+        )
+
+    hub_z = (
+        drive_base.underside_height_mm + _EPS_MM,
+        drive_base.underside_height_mm + drive_base.plate_thickness_mm - _EPS_MM,
+    )
+    board_z = (
+        deck.board_plate_bottom_height_mm + _EPS_MM,
+        deck.board_plate_top_height_mm - _EPS_MM,
+    )
+    for left, right in zip(guide.routes, guide.routes[1:], strict=False):
+        for solid, z_range, label in (
+            (hub, hub_z, HUB_PLATE_PART_NAME),
+            (board, board_z, BOARD_DECK_PART_NAME),
+        ):
+            probe = wall_probe(left, right, z_range)
+            assert _volume(solid & probe) == pytest.approx(
+                _volume(probe), rel=1e-9
+            ), (left.name, right.name, label)
+
+    # ⚠️ 空振りでないこと: 穴そのものの位置に立てた同じ円柱は材料に当たらない。
+    for route in guide.routes:
+        bore = wall_probe(route, route, hub_z)
+        assert _volume(hub & bore) == 0.0, route.name
+
+
+@requires_cad
+def test_merging_the_three_passages_makes_the_routes_share_one_path(
+    shipped: tuple[Any, Any], guide: Any
+) -> None:
+    """⚠️ **空振りでないこと**: 3系統を1つの通し穴へ束ねると経路は交わる。
+
+    ⚠️ **これが前の版の形である。** 通し穴を輪ごとに1つだけ開ける設計では、
+    3本の経路は中央部で同じ空間を通る——⚠️ **経路の分離は、配線を挿す直前で
+    失われていた。** 交差を測る検査が無ければ、その形は黙って通る。
+    """
+    import dataclasses
+
+    params, layout = shipped
+    deck = deck_stack_geometry(params, layout)
+    merged = dataclasses.replace(
+        guide,
+        routes=tuple(
+            dataclasses.replace(
+                route,
+                passage_angle_deg=guide.routes[1].passage_angle_deg,
+                passage_x_mm=guide.routes[1].passage_x_mm,
+                passage_y_mm=guide.routes[1].passage_y_mm,
+            )
+            for route in guide.routes
+        ),
+    )
+    merged_chains = [
+        _harness_path_solids(merged, route, deck) for route in merged.routes
+    ]
+    overlap_mm3 = sum(
+        _volume(left & right)
+        for left_chain, right_chain in itertools.combinations(merged_chains, 2)
+        for left in left_chain
+        for right in right_chain
+    )
+    assert overlap_mm3 > 0.0
+
+    # ⚠️ 束ねていない本来の経路は1点も共有しない（この検査が形そのものを
+    # 疑っていない証拠である）。
+    chains = [_harness_path_solids(guide, route, deck) for route in guide.routes]
+    assert (
+        sum(
+            _volume(left & right)
+            for left_chain, right_chain in itertools.combinations(chains, 2)
+            for left in left_chain
+            for right in right_chain
+        )
+        == 0.0
+    )
+
+
+@requires_cad
+def test_closing_either_new_opening_blocks_the_harness_path(
+    shipped: tuple[Any, Any], guide: Any
+) -> None:
+    """⚠️ **空振りでないこと**: 2つの開口のどちらを塞いでも経路は通らなくなる。
+
+    ⚠️ **経路を通しているのは中央部の通し穴と立ち上がりの窓の2つだけである。**
+    どちらか一方でも塞げばプローブは材料へ当たる——⚠️ この2つが無い設計では、
+    3系統の分離が完璧でも配線は基板へ届かない。
+    """
+    import dataclasses
+
+    from chassis_mechanism.shapes import _build_board_deck, _build_hub_plate
+
+    params, layout = shipped
+    drive_base = drive_base_geometry(params, layout)
+    adapter = adapter_geometry(params, layout)
+    deck = deck_stack_geometry(params, layout)
+    route = guide.route("supply")
+    probes = _harness_path_solids(guide, route, deck)
+
+    # (a) 通し穴を余所へ移した中央部は、経路の鉛直区間を塞ぐ。
+    moved = dataclasses.replace(
+        guide,
+        routes=tuple(
+            dataclasses.replace(
+                item,
+                passage_x_mm=-item.passage_x_mm,
+                passage_y_mm=-item.passage_y_mm,
+            )
+            for item in guide.routes
+        ),
+    )
+    blocked_plate = _build_hub_plate(drive_base, adapter, moved)
+    assert sum(_volume(probe & blocked_plate) for probe in probes) > 0.0
+    # 本来の中央部は塞がない（この検査が中央部そのものを疑っていない証拠）。
+    plate = _build_hub_plate(drive_base, adapter, guide)
+    assert sum(_volume(probe & plate) for probe in probes) == 0.0
+
+    # (b) 窓を受け止めデッキの筒の高さへ移した基板デッキは、経路の出口を塞ぐ。
+    raised = dataclasses.replace(
+        guide,
+        window_bottom_height_mm=deck.catch_tube_bottom_height_mm,
+        window_top_height_mm=deck.catch_tube_bottom_height_mm + guide.window_width_mm,
+    )
+    blocked_deck = _build_board_deck(deck, 0, raised)
+    assert sum(_volume(probe & blocked_deck) for probe in probes) > 0.0
+    board_deck = _build_board_deck(deck, 0, guide)
+    assert sum(_volume(probe & board_deck) for probe in probes) == 0.0

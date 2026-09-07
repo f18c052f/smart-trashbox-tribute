@@ -1302,6 +1302,43 @@ def test_the_deck_to_deck_joints_follow_the_upper_deck_split() -> None:
         )
 
 
+def test_the_assumptions_argue_the_retention_layout_from_the_lip_the_cut_leaves() -> None:
+    """⚠️ **要件 6.8（改訂版）の根拠は「底を抜いた後に残る縁の幅」である。**
+
+    底が残っていた頃の根拠——「底は薄く変形しやすい」「底の外周を押さえる」——は
+    ⚠️ **もう成立しない**（design.md 決定 4b で底は抜かれ、保持ボルトは**側壁**を
+    貫く）。根拠の記録が古い設計を述べたままだと、⚠️ **配置を見直す人が、
+    もう存在しない底を根拠に読む**。
+    """
+    entry = next(record for record in ASSUMPTIONS if "6.8" in record)
+    # 縁の幅は「底の外径 − 切り取り径」であり、両方の出どころが記録に現れる。
+    assert "TrashCanMeasurements.bottom_outer_diameter_mm" in entry
+    assert "adapter.bottom_cut_diameter_mm" in entry
+    assert "縁の幅" in entry
+    # 締結が貫くのは側壁であり、側壁の変形しやすさが根拠に現れる。
+    assert "側壁" in entry
+    # ⚠️ 底を押さえる旧設計の主張が残っていないこと。
+    assert "底の外周" not in entry
+    assert "ゴミ箱の底は薄く" not in entry
+    # ⚠️ 上流の値そのものは書き写さない（要件 6.3）。
+    assert "bottom_thickness_mm が正である" in entry
+
+
+def test_the_assumptions_record_the_cable_guide_hardware_gap() -> None:
+    """⚠️ **配線ガイドの取付ねじが締結部品一覧に現れないことを記録に残す。**
+
+    ガイドが受けるのは配線と搭載物の重さだけであり、締結の軸は積層方向である
+    ——スタンドオフと同じ理由で接合部としては記録できない。⚠️ **そのぶん要件 2.10 の
+    調達一覧に欠けが生まれる**ため、タスク 5.5 への申し送りを残す（調達で
+    気付くのでは遅い）。
+    """
+    entry = next(record for record in ASSUMPTIONS if "配線ガイド" in record)
+    assert "mount_bolt_radii_mm" in entry
+    assert "5.5" in entry
+    # ⚠️ 側面へ留めない理由（重ね代が伸びると掴める帯が消える）を残す。
+    assert "ARM_JOINT_LAP_LENGTH_FORMULA" in entry
+
+
 def test_the_assumptions_record_the_standoff_hardware_gap() -> None:
     """⚠️ **要件 2.10 の欠けを記録として残す**（要件 11.7 / タスク 5.5 への申し送り）。
 

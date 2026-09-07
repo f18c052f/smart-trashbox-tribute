@@ -1167,7 +1167,10 @@ def test_component_names_splits_on_the_first_separator() -> None:
 
 
 def test_collect_root_parameter_components_reads_the_real_dataclass() -> None:
-    """現ツリーの `ChassisParams` から12群 ＋ `provenance` が読める。"""
+    """現ツリーの `ChassisParams` から各群 ＋ `provenance` が読める。
+
+    ⚠️ タスク 3.5 が配線ガイドの寸法（`cable`）を足したため13群である。
+    """
     source = _current_sources()["params"]
     names = {name for name, _ in collect_root_parameter_components(source)}
     assert names == {
@@ -1180,6 +1183,7 @@ def test_collect_root_parameter_components_reads_the_real_dataclass() -> None:
         "adapter",
         "battery",
         "board",
+        "cable",
         "power",
         "stand",
         "joint_local",

@@ -69,6 +69,7 @@ __all__ = [
     "AdapterSpec",
     "BatterySpec",
     "BoardSpec",
+    "CableParams",
     "PowerParams",
     "StandSpec",
     "LocalJointLimits",
@@ -772,6 +773,48 @@ class BoardSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class CableParams:
+    """配線ガイドの寸法（要件 4.6, 7.6, 7.7, 8.4, 8.7）。
+
+    ⚠️ **経路の本数は本群に無い。** モータ配線・エンコーダ配線・電源配線の3系統は
+    要件 7.7 が名指しで数え上げているものであり、⚠️ **設定で減らせる値にすると
+    「2系統を1本の経路へまとめる」設定を作れてしまう**——取り違えるとエンコーダが
+    飛ぶ、というのが決定 8 が経路を分ける理由そのものである（`board.driver_count`
+    が設定値であるのに `shapes._FIXED_BOARD_COUNT` が設定値でないのと同じ扱い）。
+    本数の正は `shapes.CABLE_ROUTE_NAMES` である。
+
+    ⚠️ **経路の位置・長さ・保持箇所の高さも本群に無い。** それらは駆動ベース・
+    アダプタ・バッテリトレイの幾何と `clearance.cable_lowest_offset_mm` から
+    導出される（要件 4.6 の最下点は隙間の算出対象そのものである）。本群が持つのは
+    ⚠️ **配線そのものの太さに由来する量だけ**である。
+
+    Attributes:
+        channel_width_mm: 1系統ぶんの配線を通す経路の内寸（mm）。
+            ⚠️ **束の太さから決まる量であり、形の都合で決めた量ではない。**
+            最も太いのは電源配線（シリコン AWG14 相当の2本）であり、並べて通せる
+            幅を採る。⚠️ 値の出所は仮値である——実際のハーネスを組んだ時点で
+            実測へ置き換える対象である（要件 1.9）。
+        wall_thickness_mm: 経路どうしを隔てる壁と、ガイドの肉の厚さ（mm）。
+            ⚠️ **これが「色ではなく経路で分ける」ことの実体である**（決定 8）
+            ——壁が消えれば3系統は1つの空洞になる。0.4mm ノズルで数本ぶんの
+            押出幅であり、配線の重さだけを受ける壁として置く。⚠️ **整備スタンドの
+            壁（`shapes._WALL_THICKNESS_MM`）を流用しない**——あちらはモータ反力を
+            面で受ける壁であり、同じ物理ではない。
+
+    Raises:
+        ParameterError: いずれかが正の有限値でない場合。
+    """
+
+    channel_width_mm: float
+    wall_thickness_mm: float
+
+    def __post_init__(self) -> None:
+        """全不変条件を検証し、違反時は違反項目名と値を添えて拒否する。"""
+        _require_positive_finite(self.channel_width_mm, "channel_width_mm")
+        _require_positive_finite(self.wall_thickness_mm, "wall_thickness_mm")
+
+
+@dataclass(frozen=True, slots=True)
 class PowerParams:
     """電源系の機構的な決着を値として持つ（要件 8.1, 8.2, 8.5, 8.7）。
 
@@ -1050,6 +1093,7 @@ class ChassisParams:
         adapter: ゴミ箱固定アダプタの寸法。
         battery: バッテリとトレイの寸法。
         board: 基板トレイの寸法。
+        cable: 配線ガイドの寸法。
         power: 電源系の決着（未決は `None`）。
         stand: 整備スタンドの寸法。
         joint_local: 本 Spec が課す接合部の下限。
@@ -1075,6 +1119,7 @@ class ChassisParams:
     adapter: AdapterSpec
     battery: BatterySpec
     board: BoardSpec
+    cable: CableParams
     power: PowerParams
     stand: StandSpec
     joint_local: LocalJointLimits

@@ -1,13 +1,13 @@
 """部品の形状構築と指標の抽出（design.md `#### Shapes` / 要件 1.11, 1.12, 2.2,
 2.5, 2.6, 2.11, 3.1, 3.2, 3.7, 3.8, 3.10, 5.1-5.6, 5.8, 6.1, 6.2, 6.5, 6.7, 6.9）。
 
-⚠️ **現在構築するのは整備スタンドと駆動ベースとゴミ箱固定アダプタである。**
-要件 5.1 は整備スタンドを他のどの造形物よりも先に設計・造形・検証することを
-求めており（タスク 3.1）、駆動ベース（`hub_plate` / `motor_arm_*`、タスク 3.2）と
-ゴミ箱固定アダプタ（`adapter_segment_*`、タスク 3.3）がそれに続く。design.md
-`#### Shapes` の部品表の残り（`battery_tray` / `board_tray` / `cable_guide_*`）は
-タスク 3.4〜3.5 が本モジュールへ足す。
-`PART_NAMES` と `build_parts` はその都度広がる。
+⚠️ **design.md `#### Shapes` の部品表は出そろっている。** 要件 5.1 は整備スタンドを
+他のどの造形物よりも先に設計・造形・検証することを求めており（タスク 3.1）、
+駆動ベース（`hub_plate` / `motor_arm_*`、タスク 3.2）、ゴミ箱固定アダプタ
+（`adapter_segment_*`、タスク 3.3）、バッテリトレイと段積み土台
+（`battery_tray` / `board_deck_*` / `catch_deck_*`、タスク 3.4）、配線ガイド
+（`cable_guide_*`、タスク 3.5）がそれに続いた。⚠️ **`board_tray` はもう無い**
+——底を抜いた缶の内側へ段を通す決定（design.md 決定 4b）が置き換えている。
 
 ## 常時荷重がかかる部位の断面の根拠（要件 2.5 / design.md「機構の決定」決定 3）
 
@@ -125,6 +125,7 @@ design.md は「⚠️ **PLA は Tg 以下でも常時荷重下でクリープ�
 
 from __future__ import annotations
 
+import itertools
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -169,11 +170,15 @@ __all__ = [
     "MOTOR_ARM_PART_NAME",
     "SERVICE_STAND_PART_NAME",
     "TRASH_CAN_PART_NAME",
+    "CABLE_GUIDE_PART_NAME",
+    "CABLE_ROUTE_NAMES",
     "AdapterGeometry",
     "AssemblyReachViolation",
     "AssemblyStep",
     "BatteryTrayGeometry",
     "BuiltPart",
+    "CableGuideGeometry",
+    "CableRoute",
     "DeckStackGeometry",
     "DriveBaseGeometry",
     "StandGeometry",
@@ -182,8 +187,10 @@ __all__ = [
     "assembly_reach_violations",
     "assembly_steps",
     "battery_tray_geometry",
+    "cable_guide_geometry",
     "build_adapter_segments",
     "build_battery_tray",
+    "build_cable_guides",
     "build_deck_stack",
     "build_drive_base",
     "build_parts",
@@ -204,6 +211,7 @@ ADAPTER_SEGMENT_PART_NAME: Final[str] = "adapter_segment"
 BATTERY_TRAY_PART_NAME: Final[str] = "battery_tray"
 BOARD_DECK_PART_NAME: Final[str] = "board_deck"
 CATCH_DECK_PART_NAME: Final[str] = "catch_deck"
+CABLE_GUIDE_PART_NAME: Final[str] = "cable_guide"
 SERVICE_STAND_PART_NAME: Final[str] = "service_stand"
 
 PART_NAMES: Final[tuple[str, ...]] = (
@@ -213,6 +221,7 @@ PART_NAMES: Final[tuple[str, ...]] = (
     BATTERY_TRAY_PART_NAME,
     BOARD_DECK_PART_NAME,
     CATCH_DECK_PART_NAME,
+    CABLE_GUIDE_PART_NAME,
     SERVICE_STAND_PART_NAME,
 )
 """本モジュールが構築する部品の**種類**（design.md `#### Shapes` の部品表）。
@@ -284,6 +293,22 @@ _JOINT_FIT_CLEARANCE_MM: Final[float] = 0.4
 ノズルの押出幅1本ぶんであり、FDM の造形誤差をそのまま逃がせる大きさである
 ——⚠️ **これを詰めると「削って合わせる」ことが前提の設計になる**（寸法差は長穴と
 隙間で吸収する、が決定 4 である）。
+"""
+
+_PASSAGE_MAX_ANGLE_DEG: Final[float] = 90.0
+"""通し穴の中心を探す方位角の上限（度）。⚠️ **形を決める量ではなく探索範囲である。**
+
+これを越えると穴は局所座標で `x < 0`——⚠️ **渡りの内端より機体中心側へ回り込み、
+渡りが届かない**位置になる。⚠️ 下限は導出である（耳へつながる腕より外側の角）
+のに対し、上限は「ガイドの側」という向きそのものであり、寸法から動かない。
+"""
+
+_PASSAGE_REFINE_STEPS: Final[int] = 60
+"""自由な弧の端を二分法で詰める回数（⚠️ **形を決める量ではない**）。
+
+走査の刻み（嵌め合い隙間ぶんの弦）を 2^60 で割るまで詰める——倍精度の
+表現能力を使い切る回数であり、⚠️ **これを減らすと弧が刻みのぶんだけ内側に
+留まる**（形は安全側にずれるが、端の値が刻みに依存するようになる）。
 """
 
 _TOOL_OVERSHOOT_MM: Final[float] = 1.0
@@ -952,9 +977,9 @@ def build_parts(
 ) -> tuple[BuiltPart, ...]:
     """全部品を構築し、それぞれの形状指標を添えて返す（design.md `#### Shapes`）。
 
-    ⚠️ **現在返るのは駆動ベース・ゴミ箱固定アダプタ・バッテリトレイ・
-    段積み土台・整備スタンドの脚である**（タスク 3.5 が配線ガイドを足す）。
-    並びと名前は `part_names(params)` に一致する。
+    ⚠️ **返るのは駆動ベース・ゴミ箱固定アダプタ・バッテリトレイ・段積み土台・
+    配線ガイド・整備スタンドの脚である。** 並びと名前は `part_names(params)` に
+    一致する。
 
     ⚠️ **設計入力の絞り込みは `stand_inputs` が行う。** 本関数がスタンドの構築へ
     `ResolvedParams` を渡すことはない（要件 5.2）——駆動ベースにはその限定が無い
@@ -983,6 +1008,7 @@ def build_parts(
         + build_adapter_segments(params, layout)
         + build_battery_tray(params, layout)
         + build_deck_stack(params, layout)
+        + build_cable_guides(params, layout)
         + build_service_stand_legs(stand_inputs(params, layout), params.printing)
     )
 
@@ -1390,7 +1416,11 @@ def _slot_void(
     return void
 
 
-def _build_motor_arm(geometry: DriveBaseGeometry, tray: BatteryTrayGeometry) -> Any:
+def _build_motor_arm(
+    geometry: DriveBaseGeometry,
+    tray: BatteryTrayGeometry,
+    guide: CableGuideGeometry,
+) -> Any:
     """モータ取付部1本のソリッドを組み立てる（機体座標、第1輪の向き）。
 
     参照は**幾何セレクタ**（座標と範囲）で明示的に組み立てる。⚠️ 生成名を一切
@@ -1402,6 +1432,11 @@ def _build_motor_arm(geometry: DriveBaseGeometry, tray: BatteryTrayGeometry) -> 
     記録しており、⚠️ **アーム側に穴が無ければ、記録された締結はどこも通らない。**
     ⚠️ **穴は3本すべてに開ける**——1本だけに開けるとアームが別部品になり、
     組立で取り違えたときに気付けない（`BATTERY_TRAY_ARM_INDEX` の docstring）。
+
+    ⚠️ **配線ガイドの留めねじの座（袋穴）も上面に開ける。** ガイドはアームの
+    上面へ座り、ねじは長穴の外端より外・アームの外端より内の中実の帯へ入る
+    （`cable_guide_geometry`）。⚠️ **この座は締結部品一覧に現れない**
+    ——`joints.ASSUMPTIONS` が理由とタスク 5.5 への申し送りを持つ。
     """
     build123d = _require_shape_library()
     z_bottom_mm = geometry.underside_height_mm
@@ -1460,6 +1495,19 @@ def _build_motor_arm(geometry: DriveBaseGeometry, tray: BatteryTrayGeometry) -> 
             (z_bottom_mm - overshoot_mm, z_top_mm + overshoot_mm),
         )
 
+    # 配線ガイドの留めねじのインサート座（⚠️ **袋穴**である。上面から入る）。
+    for radius_mm in guide.mount_bolt_radii_mm:
+        body -= _vertical_bore_between(
+            build123d,
+            radius_mm=radius_mm,
+            y_mm=guide.mount_bolt_y_mm,
+            diameter_mm=guide.insert_bore_diameter_mm,
+            z_range=(
+                z_top_mm - guide.insert_bore_depth_mm,
+                z_top_mm + _TOOL_OVERSHOOT_MM,
+            ),
+        )
+
     # バッテリトレイの締結の貫通穴（⚠️ **二股より外の中実の帯を貫く**）。
     for radius_mm in tray.bolt_radii_mm:
         body -= _bolt_bore(
@@ -1475,7 +1523,11 @@ def _build_motor_arm(geometry: DriveBaseGeometry, tray: BatteryTrayGeometry) -> 
     return body
 
 
-def _build_hub_plate(geometry: DriveBaseGeometry, adapter: AdapterGeometry) -> Any:
+def _build_hub_plate(
+    geometry: DriveBaseGeometry,
+    adapter: AdapterGeometry,
+    guide: CableGuideGeometry,
+) -> Any:
     """中央部のソリッドを組み立てる（機体座標。3方向の舌を持つ）。
 
     ⚠️ **アダプタの締結の相手側もここに開ける。** `joints.derive_joints` は
@@ -1530,6 +1582,28 @@ def _build_hub_plate(geometry: DriveBaseGeometry, adapter: AdapterGeometry) -> A
                 ),
                 diameter_mm=adapter.insert_bore_diameter_mm,
             )
+
+    # ⚠️ **配線の通し穴**（要件 7.6, 7.7 / タスク 3.5）。⚠️ **輪ごと・系統ごとに
+    # 1つ**（3輪 × 3系統）、配線ガイドの渡りが届く位置へ開ける。⚠️ **1つに束ねない**
+    # ——ガイドが分けた3系統をここで合流させれば、分離は配線を挿す直前で失われる
+    # （決定 8）。⚠️ **これが無ければ配線は缶の中へ入れない**——アダプタの床は
+    # 同じ高さの帯を全周で塞いでおり、⚠️ **床へ開けることはできない**（掴み面が
+    # 消える。要件 6.12）。穴は段の立ち上がりの内側にあり、出た配線はそのまま
+    # 筒の中を昇る。
+    for angle_deg in geometry.wheel_angles_deg:
+        for route in guide.routes:
+            body -= build123d.Rotation(0, 0, angle_deg) * _vertical_bore_between(
+                build123d,
+                radius_mm=route.passage_x_mm,
+                y_mm=route.passage_y_mm,
+                diameter_mm=guide.passage_diameter_mm,
+                z_range=(
+                    geometry.underside_height_mm - _TOOL_OVERSHOOT_MM,
+                    geometry.underside_height_mm
+                    + geometry.plate_thickness_mm
+                    + _TOOL_OVERSHOOT_MM,
+                ),
+            )
     return body
 
 
@@ -1579,7 +1653,11 @@ def build_drive_base(
             "中央部の外径かホイール配置半径を見直すこと。"
         )
 
-    plate = _build_hub_plate(geometry, adapter_geometry(params, layout))
+    plate = _build_hub_plate(
+        geometry,
+        adapter_geometry(params, layout),
+        cable_guide_geometry(params, layout),
+    )
     parts = [
         BuiltPart(
             name=HUB_PLATE_PART_NAME,
@@ -1587,7 +1665,11 @@ def build_drive_base(
             metrics=measure_part(HUB_PLATE_PART_NAME, plate),
         )
     ]
-    arm = _build_motor_arm(geometry, battery_tray_geometry(params, layout))
+    arm = _build_motor_arm(
+        geometry,
+        battery_tray_geometry(params, layout),
+        cable_guide_geometry(params, layout),
+    )
     parts.extend(
         BuiltPart(
             name=f"{MOTOR_ARM_PART_NAME}_{index}",
@@ -2766,6 +2848,16 @@ def deck_stack_geometry(
         * math.pi
         / 4.0
         * joint.insert_outer_diameter_mm**2
+        # ⚠️ **配線の通し穴も板から面積を奪う**（要件 7.6, 7.7 / タスク 3.5）。
+        # ⚠️ **穴は輪ごと・系統ごとに1つ**であり（3輪 × 3系統 = 9 箇所）、径は
+        # 通路の内寸である（`_build_board_deck` が同じ2つの値から穴を開ける）。
+        # ⚠️ **系統の数を掛け落とすと、取付面の見積もりは空いていない面積を
+        # 数えたままになる**——3系統に分けた瞬間に穴は3倍になる。
+        - chassis.base.wheel_count
+        * len(CABLE_ROUTE_NAMES)
+        * math.pi
+        / 4.0
+        * chassis.cable.channel_width_mm**2
     )
     required_area_mm2 = board.deck_x_mm * board.deck_y_mm
     if usable_area_mm2 < required_area_mm2:
@@ -3237,7 +3329,9 @@ def _vertical_bore(
     ) * build123d.Cylinder(diameter_mm / 2.0, z_max - z_min, align=None)
 
 
-def _build_board_deck(geometry: DeckStackGeometry, index: int) -> Any:
+def _build_board_deck(
+    geometry: DeckStackGeometry, index: int, guide: CableGuideGeometry
+) -> Any:
     """基板デッキの断片1つのソリッドを組み立てる（機体座標、据え付けの角度）。
 
     ⚠️ **足す形だけが扇形であり、抜く形はすべて全周である**
@@ -3314,6 +3408,42 @@ def _build_board_deck(geometry: DeckStackGeometry, index: int) -> Any:
                     geometry.riser_outer_radius_mm + overshoot_mm,
                 ),
                 diameter_mm=geometry.through_hole_diameter_mm,
+            )
+
+    # ⚠️ **配線の窓**（要件 7.6, 7.7 / タスク 3.5）。⚠️ **基板面より上に開ける**
+    # ——低く開ければ配線は段の下へ回り込み、取付面と放熱の隙間を奪う。
+    # 位置は配線ガイドの通し穴と同じ方位角であり、⚠️ **配線は筒の中をまっすぐ
+    # 昇ってここから出る**（`cable_guide_geometry`）。⚠️ **窓も系統ごとに1つ**で
+    # あり、3系統は別の口から缶の内側へ現れる（決定 8）。
+    for wheel_angle_deg in guide.guide_angles_deg:
+        for route in guide.routes:
+            window_angle_deg = wheel_angle_deg + route.passage_angle_deg
+            if (window_angle_deg - start_deg) % 360.0 > span_deg:
+                continue
+            # ⚠️ **段の板そのものにも通し穴が要る。** 板は立ち上がりの内側まで中実
+            # であり（取付面はその上面である）、⚠️ **窓だけでは配線が板の下で
+            # 行き止まる。** 穴は立ち上がりの内側にあり、取付箇所の円
+            # （`mount_circle_radius_mm`）からは離れている。
+            body -= build123d.Rotation(
+                0, 0, window_angle_deg
+            ) * _vertical_bore_between(
+                build123d,
+                radius_mm=guide.passage_center_radius_mm,
+                y_mm=0.0,
+                diameter_mm=guide.passage_diameter_mm,
+                z_range=(
+                    geometry.board_plate_bottom_height_mm - overshoot_mm,
+                    geometry.board_plate_top_height_mm + overshoot_mm,
+                ),
+            )
+            body -= build123d.Rotation(0, 0, window_angle_deg) * _box_between(
+                build123d,
+                (
+                    geometry.riser_inner_radius_mm - overshoot_mm,
+                    geometry.riser_outer_radius_mm + overshoot_mm,
+                ),
+                (-guide.window_width_mm / 2.0, guide.window_width_mm / 2.0),
+                (guide.window_bottom_height_mm, guide.window_top_height_mm),
             )
     return body
 
@@ -3431,6 +3561,7 @@ def build_deck_stack(
             "段の高さか缶との隙間を見直すこと。"
         )
 
+    guide = cable_guide_geometry(params, layout)
     parts: list[BuiltPart] = []
     for base_name, count, builder in (
         (BOARD_DECK_PART_NAME, geometry.board_segment_count, _build_board_deck),
@@ -3442,7 +3573,11 @@ def build_deck_stack(
                 if count == _UNSPLIT_PART_COUNT
                 else f"{base_name}_{index + 1}"
             )
-            solid = builder(geometry, index)
+            solid = (
+                builder(geometry, index, guide)
+                if base_name == BOARD_DECK_PART_NAME
+                else builder(geometry, index)
+            )
             parts.append(
                 BuiltPart(name=name, solid=solid, metrics=measure_part(name, solid))
             )
@@ -3602,6 +3737,1182 @@ def build_battery_tray(
 
 
 # ---------------------------------------------------------------------------
+# 配線ガイド（タスク 3.5 / 要件 4.6, 7.6, 7.7, 8.4, 8.7 / design.md 決定 8）
+#
+# ## ⚠️ 色ではなく**経路**で分ける（要件 7.7 / 決定 8）
+#
+# エンコーダの黒は GND、モータ電源の負は白であり、⚠️ **取り違えるとエンコーダが
+# 飛ぶ**。決定 8 はこれを色ではなく経路の分離で防ぐと定めている——ガイドは
+# `CABLE_ROUTE_NAMES` の3系統それぞれに**別々の閉じた通路**を持ち、通路どうしは
+# `cable.wall_thickness_mm` の壁で隔てられる。⚠️ **壁が消えれば3系統は1つの
+# 空洞になる**（`test_chassis_invariants.py` が実形状で壁の存在を測る）。
+#
+# ## ⚠️ 配線の最下点は隙間の算出対象そのものである（要件 4.6, 4.2）
+#
+# 通路の**下の口**の高さは
+# `layout.vertical.mount_face_height_mm - clearance.cable_lowest_offset_mm` であり、
+# これは `clearance.clearance_items()` が `cable` として返す高さと**同じ式**である
+# ——⚠️ **形の側で別の高さを決めない**。出荷値ではオフセットが 0 であり、
+# 「配線はベース板の下面より下へ垂れない」という主張になる。
+#
+# ⚠️ **この主張が届く範囲を取り違えない。** ガイドが保持するのは渡りの床の上で
+# あり、⚠️ **そこからモータの端子までの区間（モータ自身のリード線）は本 Spec の
+# 形状に無い**。その区間の最下点はモータ胴体に沿って下がりうるが、⚠️ 胴体下面は
+# 既に5部位のうち**最も低い**部位として一覧に出ている（`clearance` の
+# `motor_body`）——設計値としての `cable` は「ガイドが保持する最下点」であり、
+# 実物の最下点は組立後の実測（要件 4.5、`measurements.json` の
+# `clearances.cable.measured_mm`）が持つ。
+#
+# ## ⚠️ 経路は繋がって初めて経路である（要件 7.6, 7.4）
+#
+# ⚠️ **基板は缶の内側にある**（要件 7.4 の取付箇所は段の上）。ガイドの通路だけを
+# 作っても配線はそこへ届かない——⚠️ **缶の内側へ通じている道は1つしかない**。
+# 配線は次の順で通る（`test_chassis_invariants.py` が通路と同じ断面のプローブを
+# 掃引して、⚠️ **どの部品にも当たらないこと**を実形状で測る）:
+#
+# 1. **ガイドの鉛直の通路**（`z` はベース板の下面から缶の底の面まで）。上の口に
+#    端子台の座が接し、非常停止の引き出しがここへ開く
+# 2. **ガイドの渡り**（ベース板の**下**を内側へ。⚠️ 板の高さの帯には中央部と
+#    アダプタの裾が居るため、渡れるのは下だけである）。⚠️ **系統ごとの壁は
+#    ここでも残る**
+# 3. **ガイドの口から通し穴までの渡り**（⚠️ **自由空間であり壁は無い**）。
+#    ⚠️ **ここでも3系統は交わらない**——隔てるのは壁ではなく経路そのものの
+#    隔たりであり、`test_chassis_invariants.py` が実形状のプローブの交差として測る
+# 4. **中央部の通し穴**（⚠️ **輪ごと・系統ごとに1つ**）。⚠️ **アダプタの床には
+#    開けられない**——そこは缶の縁を掴む面であり、穴を開ければ掴み面が消える
+#    （要件 6.12）。穴は段の立ち上がりの内側にあり、⚠️ **その下が自由空間である
+#    位置**へ置く（バッテリトレイの張り出しを3つの取付角すべてで避ける）
+# 5. **段の立ち上がりの中**（筒の内側をまっすぐ昇る）。途中で**基板デッキの板**を
+#    貫く（板は立ち上がりの内側まで中実であり、窓だけでは板の下で行き止まる）。
+#    ⚠️ **板の穴も系統ごとに1つ**である
+# 6. **立ち上がりの窓**（⚠️ **基板面より上**）。ここで缶の内側の取付面へ出る。
+#    ⚠️ **窓も系統ごとに1つ**であり、3系統は別の口から現れる
+#
+# ## ⚠️ 通し穴も**系統ごとに分ける**（要件 7.7 / 決定 8）
+#
+# ⚠️ **ここで束ねたら分けた意味が無い。** 要件 7.7 と決定 8 が名指しする危険は
+# 「同じ輪のモータ配線とエンコーダ配線を取り違える」ことであり、⚠️ **取り違えが
+# 起きるのは配線を挿す直前**である。ガイドで分けた3系統を通し穴で1つの空洞へ
+# 合流させれば、⚠️ **分離は端子のすぐ手前で失われる**——それは分けていないのと
+# 変わらない。したがって通し穴は⚠️ **輪ごと・系統ごとに1つ**（3輪 × 3系統 = 9
+# 箇所）開け、基板デッキの板の穴と立ち上がりの窓も同じ数だけ開ける。
+# ⚠️ **穴は板から面積も奪う**——`deck_stack_geometry` の取付面の見積もりは
+# `wheel_count × len(CABLE_ROUTE_NAMES)` 個ぶんを差し引く。
+#
+# ## ⚠️ 穴の方位角は**自由な弧から導出する**（角度を発明しない）
+#
+# 穴の中心が置ける方位角は帯として存在する。⚠️ **その帯はバッテリトレイが3つの
+# 取付角で作る影の間に空いている**——ガイドは3点とも同一形状であるから、影は
+# 3つとも避けねばならない。`_passage_free_arc_deg` がその弧を実際に探し、
+# 3系統を⚠️ **弧の両端まで広げて**据える（広げるほど穴どうしの壁は厚くなり、
+# 自由空間を渡る区間も離れる。弧の端には嵌め合い隙間ぶんが残してある）。
+#
+# ⚠️ **弧が足りなければ拒否する。** 穴の中心の間隔が `channel_width_mm +
+# wall_thickness_mm` に満たなければ穴どうしの間に壁が残らない——そのとき
+# `GeometryError` が弧の幅と、弧を狭めている寸法パラメータを名指しする。
+# ⚠️ **分離はアームの幅に条件づけられている**: 幅を 1.2 倍にすると間隔が足りず、
+# 1.5 倍にすると弧そのものが消える。⚠️ これは 3.2 が記録したアーム幅の
+# knife-edge と**同じつまみの2つ目の帰結**であり、`tasks.md`「3.5 が残した
+# 申し送り」に並べて記録してある。
+#
+# ## ⚠️ 中央部から先も3系統は交わらない
+#
+# ガイドの口（渡りの内端）から通し穴までは⚠️ **自由空間であり壁が無い**
+# ——そこで分離を保つのは経路そのものの隔たりである。3本の経路が互いに交わらない
+# ことは `test_chassis_invariants.py` が⚠️ **実形状のプローブどうしの交差**として
+# 測る（`test_the_harness_has_a_free_path_from_the_guide_to_the_board_plane`）。
+# 穴を出た後は筒の中を系統ごとに昇り、⚠️ **系統ごとに別の窓から外へ出る。**
+#
+# ## ⚠️ 回転部へ触れない（要件 7.6）
+#
+# ガイドはどの点も**ホイールより内側の半径**（`battery_tray` の耳の内側）に留まり、
+# かつベース板の下面より下へ出ない。ホイールは車軸まわりの円筒であり、その頂点は
+# ちょうどベース板の下面の高さにある——⚠️ **「外側だから当たらない」ではなく、
+# 半径と高さの両方で隔てる**（`test_chassis_invariants.py` が実形状で測る）。
+#
+# ## ⚠️ アームの**上面**へ留める（`joints.ASSUMPTIONS`）
+#
+# ガイドが受けるのは配線と、そこへ載る端子台・非常停止手段の重さだけである。
+# 締結の軸は積層方向であり、⚠️ **要件 2.8 が禁じる接合部としては記録できない**
+# （基板のスタンドオフと同じ分類。`joints.ASSUMPTIONS` が調達一覧の欠けを
+# タスク 5.5 への申し送りとして残している）。⚠️ **側面へ留めない理由も記録に
+# ある**——側面のうち座を並べられる帯は二股の付け根とブラケット取付長穴に
+# 挟まれており、当たり面の下限を上げて重ね代が伸びた瞬間に消える。
+#
+# ## ⚠️ 端子台と非常停止は**余地**であって位置の決定ではない（要件 8.4, 8.6, 8.7）
+#
+# 端子台の寸法も非常停止の方式も `PowerParams` では未決（`None`）であり、
+# その決定はタスク 5.6 である。ここが作るのは⚠️ **座と、ねじ穴と、配線の
+# 引き出し**だけである——⚠️ **未決の値を発明して位置を決めない**。決まった寸法が
+# 入ったときに座が足りなければ `GeometryError` で拒否する（`cable_guide_geometry`）。
+# ---------------------------------------------------------------------------
+
+
+CABLE_ROUTE_NAMES: Final[tuple[str, ...]] = ("encoder", "motor", "supply")
+"""分離して通す配線の系統（要件 7.7 が名指しで数え上げているものである）。
+
+⚠️ **設定値にしない。** 寸法パラメータにすると「2系統を1本の経路へまとめる」
+設定を作れてしまい、決定 8 が防いでいる取り違えの余地がそこから戻る
+（`_FIXED_BOARD_COUNT` と同じ扱い）。
+
+並びは**アーム側から外側へ**である。
+
+- `encoder`: 最も内側。⚠️ **取り違えると飛ぶのはこの系統である**——外側の面
+  （端子台と非常停止の余地があり、ブリングアップ中に手が入る側）と壁を接しない
+- `motor`: 中央
+- `supply`: 最も外側。⚠️ 端子台の座と非常停止の引き出しがこの通路に接している
+  ——電源系の器物はすべて外側の面にあり、そこへ至る通路が外側にあることは
+  「経路が交差しない」ことの条件そのものである（要件 8.4）
+"""
+
+
+@dataclass(frozen=True, slots=True)
+class CableRoute:
+    """1系統ぶんの通路（⚠️ **形状オブジェクトを持たない**）。
+
+    ⚠️ **通し穴は系統ごとに持つ。** 幾何の側に穴が1つしか無ければ、3系統は
+    中央部で1つの空洞へ合流する——⚠️ **取り違えが起きるのは配線を挿す直前**で
+    あり、そこで分離を失う設計は分けていないのと変わらない（要件 7.7 / 決定 8）。
+
+    Attributes:
+        name: 系統の名（`CABLE_ROUTE_NAMES` のいずれか）。
+        inner_y_mm: 通路の内側（アーム側）の接線方向の位置。
+        outer_y_mm: 通路の外側の接線方向の位置。
+        passage_angle_deg: この系統の通し穴の局所の方位角（度）。⚠️ **自由な弧
+            から導出する**（`_passage_free_arc_deg`）。立ち上がりの窓と基板デッキの
+            板の穴も同じ角にある。
+        passage_x_mm: 通し穴の中心（局所 x）。
+        passage_y_mm: 通し穴の中心（局所 y）。⚠️ **耳へつながる腕より外側である**
+            ——腕はガイドの側と機体中心側を隔てており、内側では渡りが届かない。
+    """
+
+    name: str
+    inner_y_mm: float
+    outer_y_mm: float
+    passage_angle_deg: float
+    passage_x_mm: float
+    passage_y_mm: float
+
+    @property
+    def center_y_mm(self) -> float:
+        """通路の中心の接線方向の位置（mm）。"""
+        return (self.inner_y_mm + self.outer_y_mm) / 2.0
+
+
+@dataclass(frozen=True, slots=True)
+class CableGuideGeometry:
+    """配線ガイド1点の幾何（要件 4.6, 7.6, 7.7, 8.4, 8.7）。
+
+    ⚠️ **形状オブジェクトを持たない**（`StandGeometry` と同じ規律）。値は
+    **第1輪の向きを +x に採った局所座標**であり、`z` だけが機体座標（接地面から
+    の高さ）と一致する。⚠️ **据え付けの角度を形へ焼き付けない**——3点は同一形状
+    であり、`guide_angles_deg` だけが位置を与える（`motor_arm` と同じ扱い）。
+
+    Attributes:
+        guide_count: 点数（⚠️ `joints.segment_counts()` が正）。
+        guide_angles_deg: 各点の据え付けの角度（度）。
+        cable_lowest_height_mm: 通路の下の口の高さ（mm）。⚠️ **`clearance` が
+            `cable` として返す高さと同じ式である**（要件 4.2, 4.6）。
+        top_height_mm: ガイドの上面（＝缶の底の面）。⚠️ **缶を載せた状態でも外から
+            届く帯の上端である**（`DeckStackGeometry.switch_provision_band_mm`）。
+        arm_top_height_mm: アームの上面（＝板が座る面）。
+        plate_thickness_mm: 板の厚さ（mm）。⚠️ **アダプタの床と同じ帯を占める。**
+        plate_inner_y_mm: 板の内側（アームの反対側）の接線方向の位置。
+        plate_inner_radius_mm: 板の内側の半径（＝アダプタの外周 ＋ 嵌め合い隙間）。
+        plate_outer_radius_mm: 板の外側の半径（＝アームの外端）。
+        skirt_inner_y_mm: 裾の内側の接線方向の位置。⚠️ **バッテリトレイの耳の
+            外面より外である**——耳と同じ帯を通ると、ガイドを半径方向へ差し込む
+            経路が耳で塞がれる（要件 7.14）。
+        skirt_outer_radius_mm: 裾の外側の半径（＝耳の内側 − 嵌め合い隙間）。
+        crossing_inner_radius_mm: 渡りの内端の半径。⚠️ **バッテリトレイの外周を
+            避けた位置である**——ここから先は自由空間の経路になる。
+        crossing_channel_bottom_mm: 渡りの通路の床の上面（＝配線が載る高さ）。
+        crossing_top_height_mm: 渡りの天井（＝駆動ベースの下面）。⚠️ **渡りは
+            ベース板の下を通る**——板の高さの帯には中央部とアダプタの裾が居る。
+        passage_center_radius_mm: 通し穴の中心の半径（⚠️ **立ち上がりの内側に
+            収まる**——穴を出た配線はそのまま段の筒の中を昇る）。⚠️ 3系統とも
+            同じ半径であり、違うのは方位角だけである（`CableRoute`）。
+        passage_arc_deg: 穴の中心を置ける自由な弧（度、`(始点, 終点)`）。
+            ⚠️ **バッテリトレイが3つの取付角で作る影の間に空いた帯である**
+            ——アームの幅で狭くなる。3系統はこの弧の両端まで広げて据える。
+        passage_spacing_mm: 隣り合う通し穴の中心の間隔（弦、mm）。⚠️ **これが
+            `channel_width_mm + wall_thickness_mm` を下回れば壁が残らない。**
+        passage_diameter_mm: 通し穴の径（mm、＝通路の内寸）。
+        window_bottom_height_mm: 立ち上がりの窓の下端。⚠️ **基板面より上である。**
+        window_top_height_mm: 窓の上端。
+        window_width_mm: 窓の幅（mm、接線方向）。
+        channel_inner_radius_mm: 通路の内側の半径。
+        channel_outer_radius_mm: 通路の外側の半径。
+        channel_width_mm: 通路の内寸（mm、寸法パラメータ）。
+        wall_thickness_mm: 壁の厚さ（mm、寸法パラメータ）。
+        routes: 3系統の通路（`CABLE_ROUTE_NAMES` の順）。
+        routes_outer_y_mm: 最も外側の通路の外壁の外面。
+        mount_bolt_radii_mm: アームの上面へ留めるねじの半径（⚠️ **本数は調達
+            一覧に現れない**——`joints.ASSUMPTIONS` の申し送りを参照）。
+        mount_bolt_y_mm: 留めねじの接線方向の位置（⚠️ アームの上面の上である）。
+        terminal_pad_inner_y_mm: 端子台の座の内側の接線方向の位置。
+        terminal_pad_outer_y_mm: 座の外側の接線方向の位置。
+        terminal_pad_bottom_height_mm: 座の肉の下面。
+        terminal_pad_inner_radius_mm: 座の肉の内側の半径。⚠️ **ねじ穴のまわりに
+            座の外径ぶんだけ置く**——板の帯いっぱいに広げると、⚠️ アダプタの
+            取付ボルトを外から回す工具の筋（要件 6.6）へ角が入り込む。
+        terminal_pad_outer_radius_mm: 座の肉の外側の半径。
+        terminal_bolt_radius_mm: 座のねじ穴の半径。⚠️ **2つのねじ穴は半径では
+            なく接線方向に並ぶ**——半径方向の帯はアダプタの外周とトレイの耳に
+            挟まれて狭く、⚠️ **長穴の移動量を変えるだけで座2つぶんを失う**。
+        terminal_bolt_y_mm: 座のねじ穴の接線方向の位置（2箇所）。
+        estop_bolt_height_mm: 非常停止の取付ねじ穴の高さ。
+        estop_bolt_y_mm: 取付ねじ穴の接線方向の位置（2箇所）。
+        estop_lead_out_height_mm: 配線の引き出しの高さ。
+        estop_lead_out_y_mm: 引き出しの接線方向の位置（＝ `supply` の通路の中心）。
+        through_hole_diameter_mm: 貫通穴の径（mm、上流）。
+        insert_bore_diameter_mm: インサート座の下穴径（mm、上流）。
+        insert_bore_depth_mm: インサート座の深さ（mm、上流のインサート長）。
+        boss_diameter_mm: ねじ座の外径（mm、⚠️ `joints` の係数が正）。
+        envelope: 軸並行外接箱（局所座標での広がり）。
+        bore_diameters_mm: ⚠️ **造形する穴の径の一覧**（要件 2.11 の検査対象）。
+    """
+
+    guide_count: int
+    guide_angles_deg: tuple[float, ...]
+    cable_lowest_height_mm: float
+    top_height_mm: float
+    arm_top_height_mm: float
+    plate_thickness_mm: float
+    plate_inner_y_mm: float
+    plate_inner_radius_mm: float
+    plate_outer_radius_mm: float
+    skirt_inner_y_mm: float
+    skirt_outer_radius_mm: float
+    crossing_inner_radius_mm: float
+    crossing_channel_bottom_mm: float
+    crossing_top_height_mm: float
+    passage_center_radius_mm: float
+    passage_arc_deg: tuple[float, float]
+    passage_spacing_mm: float
+    passage_diameter_mm: float
+    window_bottom_height_mm: float
+    window_top_height_mm: float
+    window_width_mm: float
+    channel_inner_radius_mm: float
+    channel_outer_radius_mm: float
+    channel_width_mm: float
+    wall_thickness_mm: float
+    routes: tuple[CableRoute, ...]
+    routes_outer_y_mm: float
+    mount_bolt_radii_mm: tuple[float, ...]
+    mount_bolt_y_mm: float
+    terminal_pad_inner_y_mm: float
+    terminal_pad_outer_y_mm: float
+    terminal_pad_bottom_height_mm: float
+    terminal_pad_inner_radius_mm: float
+    terminal_pad_outer_radius_mm: float
+    terminal_bolt_radius_mm: float
+    terminal_bolt_y_mm: tuple[float, ...]
+    estop_bolt_height_mm: float
+    estop_bolt_y_mm: tuple[float, ...]
+    estop_lead_out_height_mm: float
+    estop_lead_out_y_mm: float
+    through_hole_diameter_mm: float
+    insert_bore_diameter_mm: float
+    insert_bore_depth_mm: float
+    boss_diameter_mm: float
+    envelope: Envelope
+    bore_diameters_mm: tuple[float, ...]
+
+    def route(self, name: str) -> CableRoute:
+        """系統の名で通路を引く。
+
+        Raises:
+            GeometryError: 未知の系統名の場合。⚠️ **黙って `None` を返さない**
+                ——引けなかった系統について検査は何も言わなくなる。
+        """
+        for route in self.routes:
+            if route.name == name:
+                return route
+        raise GeometryError(
+            f"配線の系統 {name!r} は存在しない（あるのは {CABLE_ROUTE_NAMES!r}）。"
+        )
+
+
+def _box_gap_mm(
+    x_mm: float,
+    y_mm: float,
+    *,
+    x_half_mm: float,
+    y_range_mm: tuple[float, float],
+) -> float:
+    """点と、原点まわりの軸並行な長方形との隙間（mm、内側なら 0）。"""
+    y_min_mm, y_max_mm = y_range_mm
+    dx_mm = max(abs(x_mm) - x_half_mm, 0.0)
+    dy_mm = max(y_min_mm - y_mm, y_mm - y_max_mm, 0.0)
+    return math.hypot(dx_mm, dy_mm)
+
+
+def _tray_footprint_gap_mm(
+    tray: BatteryTrayGeometry, x_mm: float, y_mm: float
+) -> float:
+    """機体座標の点と、バッテリトレイが駆動ベースの下面で占める領域との隙間（mm）。
+
+    ⚠️ **トレイは3つの矩形として近似する**——バッテリのポケット、ヒューズホルダの
+    置き場、耳へつながる腕である。⚠️ **近似は外側へ倒す**（腕は両側にあるものと
+    して数える）——`build_parts` の実形状より広く見積もるため、この隙間が足りて
+    いれば実形状でも足りている。⚠️ 逆は言えない（狭く見積もる近似にしない）。
+
+    ⚠️ **トレイの角度はここに入らない。** 呼び手が据え付けの角度へ回した点を渡す
+    ——トレイは1本のアームにしか無いが、配線ガイドは3点とも同一形状であり、
+    回した位置で食い合えばそこだけ通らない機体になる。
+    """
+    pocket_mm = _box_gap_mm(
+        x_mm,
+        y_mm,
+        x_half_mm=tray.outer_half_length_mm,
+        y_range_mm=(-tray.outer_half_width_mm, tray.outer_half_width_mm),
+    )
+    fuse_bay_mm = _box_gap_mm(
+        x_mm,
+        y_mm,
+        x_half_mm=tray.fuse_bay_wall_x_mm,
+        y_range_mm=(tray.outer_half_width_mm, tray.fuse_bay_wall_y_mm),
+    )
+    # ⚠️ 腕は左右対称に数える（実形状より広い側へ倒す）。
+    web_mm = min(
+        _box_gap_mm(
+            x_mm,
+            y_mm,
+            x_half_mm=tray.ear_outer_radius_mm,
+            y_range_mm=(tray.web_inner_y_mm, tray.web_outer_y_mm),
+        ),
+        _box_gap_mm(
+            x_mm,
+            y_mm,
+            x_half_mm=tray.ear_outer_radius_mm,
+            y_range_mm=(-tray.web_outer_y_mm, -tray.web_inner_y_mm),
+        ),
+    )
+    return min(pocket_mm, fuse_bay_mm, web_mm)
+
+
+def _point_segment_distance_mm(
+    point: tuple[float, float],
+    start: tuple[float, float],
+    end: tuple[float, float],
+) -> float:
+    """点と線分の距離（mm）。⚠️ **端点だけでなく線分の内部も見る。**"""
+    span_x_mm = end[0] - start[0]
+    span_y_mm = end[1] - start[1]
+    length_squared = span_x_mm * span_x_mm + span_y_mm * span_y_mm
+    if length_squared == 0.0:
+        return math.hypot(point[0] - start[0], point[1] - start[1])
+    # ⚠️ 射影の足は線分の中へ丸め込む（延長線上の足を採らない）。
+    ratio = (
+        (point[0] - start[0]) * span_x_mm + (point[1] - start[1]) * span_y_mm
+    ) / length_squared
+    ratio = min(max(ratio, 0.0), 1.0)
+    return math.hypot(
+        point[0] - (start[0] + ratio * span_x_mm),
+        point[1] - (start[1] + ratio * span_y_mm),
+    )
+
+
+def _segments_cross(
+    first: tuple[tuple[float, float], tuple[float, float]],
+    second: tuple[tuple[float, float], tuple[float, float]],
+) -> bool:
+    """2つの線分が交差するか（⚠️ 交差していれば距離は 0 である）。"""
+
+    def orientation(
+        origin: tuple[float, float],
+        left: tuple[float, float],
+        right: tuple[float, float],
+    ) -> float:
+        return (left[0] - origin[0]) * (right[1] - origin[1]) - (
+            left[1] - origin[1]
+        ) * (right[0] - origin[0])
+
+    first_start, first_end = first
+    second_start, second_end = second
+    return (
+        (orientation(second_start, second_end, first_start) > 0.0)
+        != (orientation(second_start, second_end, first_end) > 0.0)
+    ) and (
+        (orientation(first_start, first_end, second_start) > 0.0)
+        != (orientation(first_start, first_end, second_end) > 0.0)
+    )
+
+
+def _segment_distance_mm(
+    first: tuple[tuple[float, float], tuple[float, float]],
+    second: tuple[tuple[float, float], tuple[float, float]],
+) -> float:
+    """2つの線分の最小距離（mm、⚠️ **閉じた形で求める**）。
+
+    ⚠️ **中心どうしの距離でも端点どうしの距離でもない。** 自由空間を渡る3本の脚は
+    互いに平行でなく、⚠️ **最小値は一方の端点と他方の内部の間に落ちる**——出荷の
+    寸法でも `motor` と `supply` の最小は `supply` の脚の途中（端から約 67%）に
+    ある。平面上の線分では、交差していない限り最小は必ずどちらかの端点で取るため、
+    ⚠️ 交差の判定と4通りの「点と線分」の距離だけで閉じる（走査も刻みも無い）。
+    """
+    if _segments_cross(first, second):
+        return 0.0
+    return min(
+        _point_segment_distance_mm(first[0], *second),
+        _point_segment_distance_mm(first[1], *second),
+        _point_segment_distance_mm(second[0], *first),
+        _point_segment_distance_mm(second[1], *first),
+    )
+
+
+def _passage_clearance_mm(
+    tray: BatteryTrayGeometry,
+    wheel_angles_deg: tuple[float, ...],
+    *,
+    radius_mm: float,
+    angle_deg: float,
+) -> float:
+    """通し穴の中心とバッテリトレイの外周との隙間（mm、⚠️ **3つの取付角の最小**）。
+
+    ⚠️ **配線ガイドは3点とも同一形状である。** トレイは1本のアームにしか無いが、
+    局所座標で決めた1つの方位角は3つの取付角すべてで使われる——1点だけ測って
+    済ませると、⚠️ **そこだけ配線の降りる先が無い機体**が通る。
+    """
+    radians = math.radians(angle_deg)
+    x_mm = radius_mm * math.cos(radians)
+    y_mm = radius_mm * math.sin(radians)
+    return min(
+        _tray_footprint_gap_mm(
+            tray,
+            x_mm * math.cos(math.radians(mount_deg))
+            - y_mm * math.sin(math.radians(mount_deg)),
+            x_mm * math.sin(math.radians(mount_deg))
+            + y_mm * math.cos(math.radians(mount_deg)),
+        )
+        for mount_deg in wheel_angles_deg
+    )
+
+
+def _passage_free_arc_deg(
+    tray: BatteryTrayGeometry,
+    wheel_angles_deg: tuple[float, ...],
+    *,
+    radius_mm: float,
+    clearance_mm: float,
+    min_angle_deg: float,
+) -> tuple[float, float] | None:
+    """通し穴の中心を置ける自由な弧（度）を探して返す。無ければ `None`。
+
+    ⚠️ **角度を発明しない。** 弧はバッテリトレイが3つの取付角で作る影の間に空いた
+    帯であり、⚠️ **その端は影が決める**——ここで定数を置くと、トレイが動いても
+    穴は動かず、影の上に開いたままの機体を黙って通す。
+
+    探索は `min_angle_deg` 以上・`_PASSAGE_MAX_ANGLE_DEG` 未満を刻んで走査し、
+    最初に見つかった連続区間の両端を二分法で詰める。⚠️ **上限を 90 度に採るのは、
+    それを越えると穴が渡りの手前（局所 x が負）へ回り込み、渡りが届かなくなる**
+    ためである。⚠️ **走査は探索であって保証ではない**——刻みより狭い塞がりを
+    跨ぎうるので、⚠️ **選んだ角度は呼び手が1点ずつ測り直す**（`cable_guide_geometry`）。
+
+    Args:
+        tray: バッテリトレイの幾何（影の元）。
+        wheel_angles_deg: 据え付けの角度（⚠️ すべて避ける）。
+        radius_mm: 穴の中心の半径。
+        clearance_mm: 中心に要る隙間（＝穴の半径 ＋ 嵌め合い隙間）。
+        min_angle_deg: 探索の下限（⚠️ 耳へつながる腕より外側である角）。
+
+    Returns:
+        `(始点, 終点)` の度。⚠️ 探索範囲に自由な角が1つも無ければ `None`。
+    """
+    # ⚠️ 刻みは穴の中心を嵌め合い隙間ぶん動かす角度である（形の都合の定数ではない）。
+    step_deg = math.degrees(_JOINT_FIT_CLEARANCE_MM / radius_mm)
+
+    def clear(angle_deg: float) -> bool:
+        return (
+            _passage_clearance_mm(
+                tray, wheel_angles_deg, radius_mm=radius_mm, angle_deg=angle_deg
+            )
+            >= clearance_mm
+        )
+
+    start_deg: float | None = None
+    angle_deg = min_angle_deg
+    while angle_deg < _PASSAGE_MAX_ANGLE_DEG:
+        if clear(angle_deg):
+            start_deg = angle_deg
+            break
+        angle_deg += step_deg
+    if start_deg is None:
+        return None
+    end_deg = start_deg
+    while end_deg + step_deg < _PASSAGE_MAX_ANGLE_DEG and clear(end_deg + step_deg):
+        end_deg += step_deg
+
+    def refine(inside_deg: float, outside_deg: float) -> float:
+        """自由な側と塞がった側を挟んで境界へ詰める（返すのは自由な側）。"""
+        for _ in range(_PASSAGE_REFINE_STEPS):
+            middle_deg = (inside_deg + outside_deg) / _BOTH_SIDES
+            if clear(middle_deg):
+                inside_deg = middle_deg
+            else:
+                outside_deg = middle_deg
+        return inside_deg
+
+    if start_deg > min_angle_deg:
+        start_deg = refine(start_deg, max(min_angle_deg, start_deg - step_deg))
+    end_deg = refine(end_deg, min(_PASSAGE_MAX_ANGLE_DEG, end_deg + step_deg))
+    return (start_deg, end_deg)
+
+
+def cable_guide_geometry(
+    params: ResolvedParams, layout: ChassisLayout
+) -> CableGuideGeometry:
+    """配線ガイドの形を寸法パラメータと幾何の導出結果から決める（タスク 3.5）。
+
+    ⚠️ **形状を構築しない。** 本関数は算術のみで完結し、形状ライブラリの無い
+    環境でも全数値と成立条件を評価できる（`adapter_geometry` と同じ規律）。
+
+    Args:
+        params: `config.load_params()` の戻り値。
+        layout: `layout.derive_layout()` の戻り値。
+
+    Returns:
+        配線ガイドの幾何。
+
+    Raises:
+        GeometryError: 保持の最下点が床との隙間の下限を下回る場合、板が座る帯が
+            残らない場合、裾に通路と壁が収まらない場合、⚠️ **通し穴の中心を置ける
+            自由な弧が無い場合**、⚠️ **弧が3系統を壁つきで並べるには狭い場合**、
+            非常停止の座ぐりが通路を貫く場合、引き出しが裾の高さに収まらない場合、
+            留めねじの座がブラケット取付長穴とアームの外端の間に並ばない場合、
+            または決定済みの端子台の寸法が座に収まらない場合。
+            ⚠️ メッセージには**項目名と値**を載せる。
+    """
+    chassis = params.chassis
+    cable = chassis.cable
+    joint = params.joint
+
+    drive_base = drive_base_geometry(params, layout)
+    adapter = adapter_geometry(params, layout)
+    tray = battery_tray_geometry(params, layout)
+    deck = deck_stack_geometry(params, layout)
+
+    wall_mm = cable.wall_thickness_mm
+    channel_mm = cable.channel_width_mm
+    boss_diameter_mm = BOSS_DIAMETER_FACTOR * joint.insert_outer_diameter_mm
+
+    # ⚠️ **最下点は隙間の算出対象と同じ式である**（要件 4.2, 4.6 /
+    # `clearance.clearance_items`）。形の側で別の高さを決めない。
+    cable_lowest_height_mm = (
+        layout.vertical.mount_face_height_mm - chassis.clearance.cable_lowest_offset_mm
+    )
+    if cable_lowest_height_mm < chassis.clearance.min_ground_clearance_mm:
+        raise GeometryError(
+            f"配線の保持の最下点 {cable_lowest_height_mm!r}mm が床との隙間の下限 "
+            f"{chassis.clearance.min_ground_clearance_mm!r}mm を下回る"
+            f"（clearance.cable_lowest_offset_mm="
+            f"{chassis.clearance.cable_lowest_offset_mm!r}）。⚠️ 保持箇所そのものが"
+            "床へ近づく設定であり、配線が垂れ下がらないことの根拠にならない"
+            "（要件 4.4, 4.6）。"
+        )
+
+    arm_top_height_mm = drive_base.underside_height_mm + drive_base.arm_thickness_mm
+    top_height_mm = adapter.floor_top_height_mm
+    plate_thickness_mm = top_height_mm - arm_top_height_mm
+    if plate_thickness_mm < wall_mm:
+        raise GeometryError(
+            f"アームの上面 {arm_top_height_mm!r}mm と缶の底の面 "
+            f"{top_height_mm!r}mm の間が {plate_thickness_mm!r}mm しかなく、"
+            f"cable.wall_thickness_mm={wall_mm!r} の板が入らない"
+            f"（adapter.wall_thickness_mm={chassis.adapter.wall_thickness_mm!r}）。"
+        )
+
+    # ⚠️ 板はアダプタの外周より外の帯にしか置けない（アダプタの床が同じ高さの帯を
+    # 全周で占めている）。嵌め合い隙間ぶん逃がす。
+    plate_inner_radius_mm = adapter.outer_radius_mm + _JOINT_FIT_CLEARANCE_MM
+    plate_outer_radius_mm = drive_base.arm_outer_radius_mm
+    # ⚠️ 裾はバッテリトレイの耳を避ける。耳と同じ帯を通ると、ガイドを半径方向へ
+    # 差し込む経路が耳で塞がれる（要件 7.14）。
+    skirt_inner_y_mm = tray.web_outer_y_mm + _JOINT_FIT_CLEARANCE_MM
+    skirt_outer_radius_mm = tray.ear_inner_radius_mm - _JOINT_FIT_CLEARANCE_MM
+    if skirt_outer_radius_mm > plate_outer_radius_mm:
+        raise GeometryError(
+            f"裾の外側 {skirt_outer_radius_mm!r}mm がアームの外端 "
+            f"{plate_outer_radius_mm!r}mm を超える（耳の内側 "
+            f"{tray.ear_inner_radius_mm!r}mm）。"
+        )
+
+    channel_inner_radius_mm = plate_inner_radius_mm + wall_mm
+    channel_outer_radius_mm = channel_inner_radius_mm + channel_mm
+    if channel_outer_radius_mm + wall_mm > skirt_outer_radius_mm:
+        raise GeometryError(
+            f"通路の外側 {channel_outer_radius_mm!r}mm に壁 {wall_mm!r}mm を足すと"
+            f"裾の外側 {skirt_outer_radius_mm!r}mm を超える"
+            f"（cable.channel_width_mm={channel_mm!r}）。"
+            "⚠️ 通路の外に肉が残らなければ、非常停止の座ぐりが通路を貫く。"
+        )
+    # ⚠️ **非常停止の座は通路を貫いてはならない**（袋穴である）。
+    outer_wall_mm = skirt_outer_radius_mm - channel_outer_radius_mm
+    if outer_wall_mm <= joint.insert_length_mm:
+        raise GeometryError(
+            f"通路の外側の肉 {outer_wall_mm!r}mm が上流のインサート長 "
+            f"{joint.insert_length_mm!r}mm 以下であり、非常停止の取付ねじの座が"
+            "通路を貫く（要件 8.7）。⚠️ 足りない座を黙って浅く作らない。"
+        )
+
+    # ⚠️ **渡り（要件 7.6 の「経路」の残り半分）。** ここから先が無ければ、
+    # 3系統に分けた通路は基板へ届かない——⚠️ **経路は繋がって初めて経路である。**
+    crossing_top_height_mm = layout.vertical.mount_face_height_mm
+    crossing_channel_bottom_mm = cable_lowest_height_mm + wall_mm
+    crossing_channel_height_mm = (
+        layout.vertical.mount_face_height_mm - crossing_channel_bottom_mm
+    )
+    if crossing_channel_height_mm < channel_mm:
+        raise GeometryError(
+            f"渡りの通路の内高 {crossing_channel_height_mm!r}mm が通路の内寸 "
+            f"{channel_mm!r}mm に足りない（clearance.cable_lowest_offset_mm="
+            f"{chassis.clearance.cable_lowest_offset_mm!r}、"
+            f"cable.wall_thickness_mm={wall_mm!r}）。⚠️ 配線の最下点は"
+            "隙間の算出対象そのものであり、床の側の値で通路の高さを決めない。"
+        )
+    # ⚠️ 渡りはバッテリトレイの外周を避けたところで終わる（その先は自由空間）。
+    crossing_inner_radius_mm = (
+        tray.outer_half_length_mm + _JOINT_FIT_CLEARANCE_MM + channel_mm / 2.0
+    )
+
+    # 中央部の通し穴（⚠️ **ここだけが缶の内側へ通じている**）。⚠️ **系統ごとに
+    # 1つずつ開ける**（要件 7.7 / 決定 8）——1つに束ねれば、ガイドが分けた3系統は
+    # 配線を挿す直前で1つの空洞へ合流する。位置は導出である:
+    # ⚠️ **穴の中心が置ける自由な弧を実際に探し**（トレイが3つの取付角で作る影の
+    # 間に空いた帯である）、⚠️ **その両端まで広げて**3系統を据える。
+    passage_radius_mm = channel_mm / 2.0
+    passage_center_radius_mm = (
+        deck.riser_inner_radius_mm - _JOINT_FIT_CLEARANCE_MM - passage_radius_mm
+    )
+    # ⚠️ **穴は耳へつながる腕より外側（ガイドの側）にしか置けない。** 腕はガイドの
+    # 側と機体中心側を隔てており、内側に開けても渡りが届かない。⚠️ **腕はアームの
+    # 幅から動く**ため、この下限もアームの幅とともに上がる。
+    passage_min_y_mm = (
+        tray.web_outer_y_mm + _JOINT_FIT_CLEARANCE_MM + passage_radius_mm
+    )
+    if passage_center_radius_mm <= passage_min_y_mm:
+        raise GeometryError(
+            f"通し穴の半径 {passage_center_radius_mm!r}mm が、耳へつながる腕を"
+            f"避けるのに要る接線方向の位置 {passage_min_y_mm!r}mm 以下であり、"
+            "立ち上がりの内側に穴の居場所が無い"
+            f"（riser_inner={deck.riser_inner_radius_mm!r}、"
+            f"web_outer_y_mm={tray.web_outer_y_mm!r}、"
+            f"base.arm_width_mm={chassis.base.arm_width_mm!r}）。"
+        )
+    passage_min_angle_deg = math.degrees(
+        math.asin(passage_min_y_mm / passage_center_radius_mm)
+    )
+    # ⚠️ **穴の下が自由空間であることを3つの据え付け角すべてで見る。**
+    # トレイは1本のアームにしか無いが、⚠️ **ガイドは3点とも同一形状**であり、
+    # 回した位置でトレイの壁の上へ来れば、そこだけ配線の降りる先が無い機体になる。
+    # ⚠️ **見るのは穴の中心である**——穴は中央部の肉の中（トレイより上）にあり、
+    # トレイと交わることはない。塞がるのは**その下へ降りる経路**であり、中心が
+    # 外周の外にあれば配線は空いている側を通れる。
+    passage_clearance_mm = passage_radius_mm + _JOINT_FIT_CLEARANCE_MM
+    passage_arc_deg = _passage_free_arc_deg(
+        tray,
+        layout.wheel_angles_deg,
+        radius_mm=passage_center_radius_mm,
+        clearance_mm=passage_clearance_mm,
+        min_angle_deg=passage_min_angle_deg,
+    )
+    if passage_arc_deg is None:
+        raise GeometryError(
+            f"通し穴の中心を置ける方位角が "
+            f"[{passage_min_angle_deg!r}, {_PASSAGE_MAX_ANGLE_DEG!r}) 度に1つも"
+            f"無い——どの角でもいずれかの取付角でバッテリトレイの外周へ "
+            f"{passage_clearance_mm!r}mm より近づく。⚠️ そこには配線が降りる先が"
+            f"無い（battery.length_mm={chassis.battery.length_mm!r}、"
+            f"battery.fuse_holder_width_mm="
+            f"{chassis.battery.fuse_holder_width_mm!r}、"
+            f"base.arm_width_mm={chassis.base.arm_width_mm!r}）。"
+        )
+    arc_start_deg, arc_end_deg = passage_arc_deg
+    # ⚠️ **3系統は弧の両端まで広げて据える。** 広げるほど穴どうしの壁は厚くなり、
+    # ⚠️ **自由空間を渡る区間（ガイドの口から穴まで）も離れる**——弧の端には
+    # 嵌め合い隙間ぶんが残してある（`clearance_mm`）ので、内側へ寄せる理由は無い。
+    passage_pitch_deg = (arc_end_deg - arc_start_deg) / max(
+        len(CABLE_ROUTE_NAMES) - 1, 1
+    )
+    passage_angles_deg = tuple(
+        arc_start_deg + index * passage_pitch_deg
+        for index in range(len(CABLE_ROUTE_NAMES))
+    )
+    # ⚠️ **壁が残るかどうかは角度ではなく距離で決まる**（弦で測る）。
+    passage_spacing_mm = (
+        _BOTH_SIDES
+        * passage_center_radius_mm
+        * math.sin(math.radians(passage_pitch_deg) / _BOTH_SIDES)
+    )
+    if passage_spacing_mm < channel_mm + wall_mm:
+        raise GeometryError(
+            f"通し穴の中心の間隔 {passage_spacing_mm!r}mm が通路の内寸と壁の和 "
+            f"{channel_mm + wall_mm!r}mm に足りず、⚠️ **3系統が中央部で1つの穴へ"
+            f"合流する**（要件 7.7 / 決定 8）。自由な弧は {passage_arc_deg!r} 度"
+            f"（幅 {arc_end_deg - arc_start_deg!r} 度、半径 "
+            f"{passage_center_radius_mm!r}mm）しかない。⚠️ 弧を狭めているのは "
+            f"base.arm_width_mm={chassis.base.arm_width_mm!r}、"
+            f"battery.length_mm={chassis.battery.length_mm!r}、"
+            f"battery.fuse_holder_width_mm="
+            f"{chassis.battery.fuse_holder_width_mm!r} であり、要る幅は "
+            f"cable.channel_width_mm={channel_mm!r} ＋ "
+            f"cable.wall_thickness_mm={wall_mm!r} である。"
+        )
+    # ⚠️ **選んだ角度は1つずつ測り直す。** 弧は刻んで走査して端を挟み込むため、
+    # ⚠️ **刻みより狭い塞がりを跨いでいる可能性がある**——跨いでいれば、両端は
+    # 自由でも中の点がトレイの影の上に来る。黙って通さない。
+    for angle_deg in passage_angles_deg:
+        gap_mm = _passage_clearance_mm(
+            tray,
+            layout.wheel_angles_deg,
+            radius_mm=passage_center_radius_mm,
+            angle_deg=angle_deg,
+        )
+        if gap_mm < passage_clearance_mm:
+            raise GeometryError(
+                f"通し穴の方位角 {angle_deg!r} 度が、いずれかの取付角で"
+                f"バッテリトレイの外周へ {gap_mm!r}mm まで近づく"
+                f"（要る隙間 {passage_clearance_mm!r}mm）。⚠️ そこには配線が"
+                f"降りる先が無い（自由な弧 {passage_arc_deg!r} 度の内側に"
+                "走査が跨いだ塞がりがある）。"
+            )
+
+    # 立ち上がりの窓（⚠️ **基板面より上に開ける**——基板の高さで出さなければ
+    # 配線は段の下へ回り込む）。上端は受け止めデッキの筒より下に収める。
+    window_bottom_height_mm = deck.board_plane_height_mm + wall_mm
+    window_top_height_mm = window_bottom_height_mm + channel_mm
+    window_width_mm = channel_mm
+    if window_top_height_mm >= deck.catch_tube_bottom_height_mm:
+        raise GeometryError(
+            f"立ち上がりの窓の上端 {window_top_height_mm!r}mm が受け止めデッキの"
+            f"筒の下端 {deck.catch_tube_bottom_height_mm!r}mm 以上であり、"
+            "窓が段どうしの重ね代へ掛かる（要件 7.10）。"
+        )
+
+    # ⚠️ **通路の並び順と通し穴の並び順は同じ向きである**（内側の系統ほど小さい
+    # 方位角）。⚠️ 逆に対応させると、ガイドの口から穴までの3本の経路が壁の無い
+    # 自由空間で交差する。
+    routes = tuple(
+        CableRoute(
+            name=name,
+            inner_y_mm=skirt_inner_y_mm + wall_mm + index * (channel_mm + wall_mm),
+            outer_y_mm=skirt_inner_y_mm + (index + 1) * (channel_mm + wall_mm),
+            passage_angle_deg=passage_angles_deg[index],
+            passage_x_mm=passage_center_radius_mm
+            * math.cos(math.radians(passage_angles_deg[index])),
+            passage_y_mm=passage_center_radius_mm
+            * math.sin(math.radians(passage_angles_deg[index])),
+        )
+        for index, name in enumerate(CABLE_ROUTE_NAMES)
+    )
+    routes_outer_y_mm = routes[-1].outer_y_mm + wall_mm
+
+    # ⚠️ **壁が終わったあとも3系統は離れていなければならない**（要件 7.7 / 決定 8）。
+    # 渡りの口から中央部の通し穴までは⚠️ **壁の無い自由空間**であり、そこで束が
+    # 触れ合えば、⚠️ **取り違えは配線を挿す直前に起きる**——穴の間隔（弦）だけを
+    # 見ても足りない。⚠️ **口の並びは通路の並びであり `wall_thickness_mm` が
+    # 決めている**のに対し、穴の並びは自由な弧が決めている（弧も間隔も壁の厚さでは
+    # 動かない）。⚠️ **壁を薄くするほど口だけが内側へ寄り、脚は近づく。**
+    free_air_legs = tuple(
+        (
+            (crossing_inner_radius_mm, route.center_y_mm),
+            (route.passage_x_mm, route.passage_y_mm),
+        )
+        for route in routes
+    )
+    for first_index, second_index in itertools.combinations(range(len(routes)), 2):
+        leg_gap_mm = _segment_distance_mm(
+            free_air_legs[first_index], free_air_legs[second_index]
+        )
+        if leg_gap_mm < channel_mm:
+            raise GeometryError(
+                f"自由空間を渡る脚どうしが {routes[first_index].name!r} と "
+                f"{routes[second_index].name!r} の間で {leg_gap_mm!r}mm まで"
+                f"近づき、通路の内寸 {channel_mm!r}mm を下回る——⚠️ **渡りの口から"
+                f"通し穴までは壁が無く、そこで2系統が同じ空間を共有する**"
+                f"（要件 7.7 / 決定 8）。⚠️ 穴の間隔 {passage_spacing_mm!r}mm は"
+                f"足りていても、⚠️ **口の並びは "
+                f"cable.wall_thickness_mm={wall_mm!r} が決めており**、薄くするほど"
+                f"口だけが内側へ寄る。要る間隔は "
+                f"cable.channel_width_mm={channel_mm!r} である。"
+            )
+
+    # 端子台の座（⚠️ **余地であって位置の決定ではない**。要件 8.4）。
+    # ⚠️ 裾と重ねて作る——面で接するだけでは1つの立体にならない。
+    terminal_pad_inner_y_mm = routes_outer_y_mm - wall_mm
+    terminal_pad_outer_y_mm = terminal_pad_inner_y_mm + _BOTH_SIDES * boss_diameter_mm
+    terminal_pad_bottom_height_mm = top_height_mm - (
+        joint.insert_length_mm + wall_mm
+    )
+    # ⚠️ **ねじ穴は接線方向に並べる。** 半径方向の帯はアダプタの外周とトレイの耳に
+    # 挟まれており、⚠️ **長穴の移動量を変えるだけで座2つぶんの長さを失う**
+    # ——接線方向は座の幅（`_BOTH_SIDES * boss_diameter_mm`）を自分で持っている。
+    pad_center_y_mm = (terminal_pad_inner_y_mm + terminal_pad_outer_y_mm) / 2.0
+    terminal_bolt_y_mm = (
+        pad_center_y_mm - boss_diameter_mm / 2.0,
+        pad_center_y_mm + boss_diameter_mm / 2.0,
+    )
+    terminal_bolt_radius_mm = (plate_inner_radius_mm + skirt_outer_radius_mm) / 2.0
+    # ⚠️ **座の肉はねじ穴のまわりだけに置く。** 板の帯いっぱいに広げると、
+    # ⚠️ アダプタの取付ボルトを缶を据えたまま外から回す工具の筋（要件 6.6）へ
+    # 座の角が入り込む——`test_chassis_invariants.py` がその筋を実形状で測る。
+    terminal_pad_inner_radius_mm = terminal_bolt_radius_mm - boss_diameter_mm / 2.0
+    terminal_pad_outer_radius_mm = terminal_bolt_radius_mm + boss_diameter_mm / 2.0
+    if skirt_outer_radius_mm - plate_inner_radius_mm < boss_diameter_mm:
+        raise GeometryError(
+            f"端子台の座の帯 {plate_inner_radius_mm!r}mm 〜 "
+            f"{skirt_outer_radius_mm!r}mm に座の外径 {boss_diameter_mm!r}mm が"
+            "収まらない（要件 8.4）。"
+        )
+    # ⚠️ **タスク 5.6 が端子台の寸法を決めたときに、この座が足りることを検査する。**
+    # 未決（`None`）のあいだは何も主張しない——⚠️ 未決を 0 と読み替えない。
+    pad_length_mm = skirt_outer_radius_mm - plate_inner_radius_mm
+    pad_width_mm = terminal_pad_outer_y_mm - terminal_pad_inner_y_mm
+    power = chassis.power
+    for value_mm, name, available_mm in (
+        (power.terminal_block_length_mm, "terminal_block_length_mm", pad_length_mm),
+        (power.terminal_block_width_mm, "terminal_block_width_mm", pad_width_mm),
+    ):
+        if value_mm is not None and value_mm > available_mm:
+            raise GeometryError(
+                f"power.{name}={value_mm!r} が端子台の座の {available_mm!r}mm を"
+                "超える（要件 8.4）。⚠️ 座を作ったことと、決まった端子台が載ることは"
+                "別である。"
+            )
+
+    # 留めねじ（⚠️ **アームの上面へ入る**。長穴の外端より外、アームの外端より内）。
+    slot_outer_radius_mm = (
+        drive_base.slot_center_radius_mm + drive_base.slot_length_mm / _BOTH_SIDES
+    )
+    # ⚠️ **座は板の内縁と長穴の外端の、外側のほうから始まる**——板の外にある座は
+    # ねじが通らず、長穴に掛かった座はアームに何も掴んでいない。
+    mount_bolt_radii_mm = (
+        max(slot_outer_radius_mm, plate_inner_radius_mm) + boss_diameter_mm / 2.0,
+        plate_outer_radius_mm - boss_diameter_mm / 2.0,
+    )
+    # ⚠️ **この拒否は出荷の寸法からは届かない。** 同じ帯へバッテリトレイの耳が
+    # より厳しい条件を課しており（`battery_tray_geometry`: 耳は長穴の外端から座の
+    # 外径ぶん外に始まり、さらに座2つぶんの長さを要する）、先にそちらが拒否する
+    # ——その順序は `test_chassis_shapes.py` が固定している。⚠️ **それでも置く**:
+    # 耳の条件が変われば（受け持つアームが変わる、耳の長さの式が変わる）、
+    # この帯を守るものは他に無い。
+    if mount_bolt_radii_mm[1] - mount_bolt_radii_mm[0] < boss_diameter_mm:
+        raise GeometryError(
+            f"留めねじの座 {mount_bolt_radii_mm!r} が座の外径 "
+            f"{boss_diameter_mm!r}mm ぶん離れない（板の内縁 "
+            f"{plate_inner_radius_mm!r}mm、ブラケット取付長穴の外端 "
+            f"{slot_outer_radius_mm!r}mm、アームの外端 "
+            f"{plate_outer_radius_mm!r}mm）。⚠️ 座が重なれば2本目は当たり面を"
+            f"持たない（base.slot_travel_mm={chassis.base.slot_travel_mm!r}）。"
+        )
+    if joint.insert_length_mm >= drive_base.arm_thickness_mm:
+        raise GeometryError(
+            f"インサート長 insert_length_mm={joint.insert_length_mm!r} が"
+            f"アームの厚さ {drive_base.arm_thickness_mm!r}mm 以上であり、"
+            "留めねじの座がアームを貫く。"
+        )
+    plate_inner_y_mm = -boss_diameter_mm / 2.0
+    mount_bolt_y_mm = 0.0
+
+    # 非常停止の取付余地（要件 8.7）。⚠️ **方式は決めない**——ねじ穴と引き出しだけ
+    # である（要件 8.6 は決着を対象外としており、`power.estop_provision` は未決）。
+    # ⚠️ **非常停止の余地は「缶を載せても外から届く帯」の中に置く**（要件 8.3 が
+    # メインスイッチへ課すのと同じ帯である）。⚠️ 渡りの高さへ下げない——そこは
+    # ベース板の下であり、手を入れる場所ではない。
+    estop_bolt_height_mm = crossing_top_height_mm + boss_diameter_mm / 2.0
+    estop_bolt_y_mm = (
+        skirt_inner_y_mm + boss_diameter_mm / 2.0,
+        skirt_inner_y_mm + boss_diameter_mm * 1.5,
+    )
+    if estop_bolt_height_mm + boss_diameter_mm / 2.0 > arm_top_height_mm:
+        raise GeometryError(
+            f"非常停止の取付ねじの座（高さ {estop_bolt_height_mm!r}mm、外径 "
+            f"{boss_diameter_mm!r}mm）が裾の上端 {arm_top_height_mm!r}mm を"
+            "はみ出す（要件 8.7）。"
+        )
+    # ⚠️ 引き出しは `supply` の通路へ**だけ**開く（他の系統へは壁が残る）。
+    lead_out_low_mm = crossing_top_height_mm + wall_mm + channel_mm / 2.0
+    lead_out_high_mm = arm_top_height_mm - wall_mm - channel_mm / 2.0
+    if lead_out_low_mm > lead_out_high_mm:
+        raise GeometryError(
+            f"非常停止の配線の引き出し（径 {channel_mm!r}mm）が裾の高さ "
+            f"{crossing_top_height_mm!r}mm 〜 {arm_top_height_mm!r}mm に"
+            f"壁 {wall_mm!r}mm を残して収まらない（要件 8.7）。"
+        )
+    estop_lead_out_height_mm = (lead_out_low_mm + lead_out_high_mm) / 2.0
+
+    envelope = Envelope(
+        x_mm=plate_outer_radius_mm - crossing_inner_radius_mm,
+        y_mm=terminal_pad_outer_y_mm - plate_inner_y_mm,
+        z_mm=top_height_mm - cable_lowest_height_mm,
+    )
+
+    return CableGuideGeometry(
+        guide_count=segment_counts(params)[CABLE_GUIDE_PART_NAME],
+        guide_angles_deg=layout.wheel_angles_deg,
+        cable_lowest_height_mm=cable_lowest_height_mm,
+        top_height_mm=top_height_mm,
+        arm_top_height_mm=arm_top_height_mm,
+        plate_thickness_mm=plate_thickness_mm,
+        plate_inner_y_mm=plate_inner_y_mm,
+        plate_inner_radius_mm=plate_inner_radius_mm,
+        plate_outer_radius_mm=plate_outer_radius_mm,
+        skirt_inner_y_mm=skirt_inner_y_mm,
+        skirt_outer_radius_mm=skirt_outer_radius_mm,
+        crossing_inner_radius_mm=crossing_inner_radius_mm,
+        crossing_channel_bottom_mm=crossing_channel_bottom_mm,
+        crossing_top_height_mm=crossing_top_height_mm,
+        passage_center_radius_mm=passage_center_radius_mm,
+        passage_arc_deg=passage_arc_deg,
+        passage_spacing_mm=passage_spacing_mm,
+        passage_diameter_mm=channel_mm,
+        window_bottom_height_mm=window_bottom_height_mm,
+        window_top_height_mm=window_top_height_mm,
+        window_width_mm=window_width_mm,
+        channel_inner_radius_mm=channel_inner_radius_mm,
+        channel_outer_radius_mm=channel_outer_radius_mm,
+        channel_width_mm=channel_mm,
+        wall_thickness_mm=wall_mm,
+        routes=routes,
+        routes_outer_y_mm=routes_outer_y_mm,
+        mount_bolt_radii_mm=mount_bolt_radii_mm,
+        mount_bolt_y_mm=mount_bolt_y_mm,
+        terminal_pad_inner_y_mm=terminal_pad_inner_y_mm,
+        terminal_pad_outer_y_mm=terminal_pad_outer_y_mm,
+        terminal_pad_bottom_height_mm=terminal_pad_bottom_height_mm,
+        terminal_pad_inner_radius_mm=terminal_pad_inner_radius_mm,
+        terminal_pad_outer_radius_mm=terminal_pad_outer_radius_mm,
+        terminal_bolt_radius_mm=terminal_bolt_radius_mm,
+        terminal_bolt_y_mm=terminal_bolt_y_mm,
+        estop_bolt_height_mm=estop_bolt_height_mm,
+        estop_bolt_y_mm=estop_bolt_y_mm,
+        estop_lead_out_height_mm=estop_lead_out_height_mm,
+        estop_lead_out_y_mm=routes[-1].center_y_mm,
+        through_hole_diameter_mm=joint.through_hole_diameter_mm,
+        insert_bore_diameter_mm=joint.insert_outer_diameter_mm,
+        insert_bore_depth_mm=joint.insert_length_mm,
+        boss_diameter_mm=boss_diameter_mm,
+        envelope=envelope,
+        bore_diameters_mm=tuple(
+            sorted(
+                {
+                    joint.through_hole_diameter_mm,
+                    joint.insert_outer_diameter_mm,
+                    channel_mm,
+                }
+            )
+        ),
+    )
+
+
+def _vertical_bore_between(
+    build123d: Any,
+    *,
+    radius_mm: float,
+    y_mm: float,
+    diameter_mm: float,
+    z_range: tuple[float, float],
+) -> Any:
+    """局所座標の `(radius, y)` に立てた鉛直の丸穴。"""
+    z_min, z_max = z_range
+    align = (build123d.Align.CENTER, build123d.Align.CENTER, build123d.Align.CENTER)
+    return build123d.Location(
+        (radius_mm, y_mm, (z_min + z_max) / 2.0)
+    ) * build123d.Cylinder(diameter_mm / 2.0, z_max - z_min, align=align)
+
+
+def _radial_bore_at_y(
+    build123d: Any,
+    *,
+    y_mm: float,
+    height_mm: float,
+    radius_range_mm: tuple[float, float],
+    diameter_mm: float,
+) -> Any:
+    """局所座標で半径方向に開ける穴（⚠️ 角度ではなく `y` で位置を与える）。"""
+    near_mm, far_mm = radius_range_mm
+    align = (build123d.Align.CENTER, build123d.Align.CENTER, build123d.Align.CENTER)
+    return (
+        build123d.Location(((near_mm + far_mm) / 2.0, y_mm, height_mm))
+        * build123d.Rotation(0, 90, 0)
+        * build123d.Cylinder(diameter_mm / 2.0, abs(far_mm - near_mm), align=align)
+    )
+
+
+def _build_cable_guide(geometry: CableGuideGeometry) -> Any:
+    """配線ガイド1点のソリッドを組み立てる（局所座標。⚠️ 角度を焼き付けない）。
+
+    参照は**幾何セレクタ**（座標と範囲）で明示的に組み立てる。⚠️ 生成名を一切
+    使わない（`_build_leg` / `_build_motor_arm` と同じ規律）。
+    """
+    build123d = _require_shape_library()
+    overshoot_mm = _TOOL_OVERSHOOT_MM
+
+    # 板（アームの上面に座り、缶の底の面までを占める）。
+    body = _box_between(
+        build123d,
+        (geometry.plate_inner_radius_mm, geometry.plate_outer_radius_mm),
+        (geometry.plate_inner_y_mm, geometry.terminal_pad_outer_y_mm),
+        (geometry.arm_top_height_mm, geometry.top_height_mm),
+    )
+    # 裾（通路を持つ。⚠️ アームの側面には触れず、耳の外側を通る）。
+    body += _box_between(
+        build123d,
+        (geometry.plate_inner_radius_mm, geometry.skirt_outer_radius_mm),
+        (geometry.skirt_inner_y_mm, geometry.routes_outer_y_mm),
+        (geometry.cable_lowest_height_mm, geometry.arm_top_height_mm),
+    )
+    # 渡り（⚠️ **中央部の通し穴へ向かう区間**。要件 7.6 の経路の残り半分であり、
+    # ⚠️ **バッテリトレイの外周の手前で終わる**——その先は自由空間である）。
+    body += _box_between(
+        build123d,
+        (geometry.crossing_inner_radius_mm, geometry.plate_inner_radius_mm),
+        (geometry.skirt_inner_y_mm, geometry.routes_outer_y_mm),
+        (geometry.cable_lowest_height_mm, geometry.crossing_top_height_mm),
+    )
+    # 端子台の座の肉（⚠️ **裾と重ねる**——面で接するだけでは1つの立体にならない）。
+    # ⚠️ 肉はねじ穴のまわりだけである（アダプタの工具の筋を空けておく）。
+    body += _box_between(
+        build123d,
+        (geometry.terminal_pad_inner_radius_mm, geometry.terminal_pad_outer_radius_mm),
+        (geometry.terminal_pad_inner_y_mm, geometry.terminal_pad_outer_y_mm),
+        (geometry.terminal_pad_bottom_height_mm, geometry.arm_top_height_mm),
+    )
+
+    # 3系統の通路（鉛直の区間。⚠️ 上の口は缶の底の面に開き、端子台の座と接する）。
+    for route in geometry.routes:
+        body -= _box_between(
+            build123d,
+            (geometry.channel_inner_radius_mm, geometry.channel_outer_radius_mm),
+            (route.inner_y_mm, route.outer_y_mm),
+            (
+                geometry.crossing_channel_bottom_mm,
+                geometry.top_height_mm + overshoot_mm,
+            ),
+        )
+    # 3系統の通路（渡りの区間。⚠️ **系統ごとに壁で隔てたまま内側へ運ぶ**——
+    # ⚠️ **経路はどこでも合流しない**（通し穴も窓も系統ごとに1つである）。
+    # ⚠️ 内端だけが開いており、外側は塞がっている（非常停止の座ぐりが載る肉を
+    # 残すためでもある）。
+    for route in geometry.routes:
+        body -= _box_between(
+            build123d,
+            (
+                geometry.crossing_inner_radius_mm - overshoot_mm,
+                geometry.channel_outer_radius_mm,
+            ),
+            (route.inner_y_mm, route.outer_y_mm),
+            (
+                geometry.crossing_channel_bottom_mm,
+                geometry.crossing_top_height_mm,
+            ),
+        )
+
+    # 留めねじの貫通穴（⚠️ アームの上面のインサートへ入る）。
+    for radius_mm in geometry.mount_bolt_radii_mm:
+        body -= _vertical_bore_between(
+            build123d,
+            radius_mm=radius_mm,
+            y_mm=geometry.mount_bolt_y_mm,
+            diameter_mm=geometry.through_hole_diameter_mm,
+            z_range=(
+                geometry.arm_top_height_mm - overshoot_mm,
+                geometry.top_height_mm + overshoot_mm,
+            ),
+        )
+
+    # 端子台の座のねじ穴（⚠️ **袋穴である**——座の肉を突き抜けない）。
+    for y_mm in geometry.terminal_bolt_y_mm:
+        body -= _vertical_bore_between(
+            build123d,
+            radius_mm=geometry.terminal_bolt_radius_mm,
+            y_mm=y_mm,
+            diameter_mm=geometry.insert_bore_diameter_mm,
+            z_range=(
+                geometry.top_height_mm - geometry.insert_bore_depth_mm,
+                geometry.top_height_mm + overshoot_mm,
+            ),
+        )
+
+    # 非常停止の取付ねじ穴（⚠️ **袋穴である**——通路を貫かない）。
+    for y_mm in geometry.estop_bolt_y_mm:
+        body -= _radial_bore_at_y(
+            build123d,
+            y_mm=y_mm,
+            height_mm=geometry.estop_bolt_height_mm,
+            radius_range_mm=(
+                geometry.skirt_outer_radius_mm - geometry.insert_bore_depth_mm,
+                geometry.skirt_outer_radius_mm + overshoot_mm,
+            ),
+            diameter_mm=geometry.insert_bore_diameter_mm,
+        )
+    # 非常停止の配線の引き出し（⚠️ **`supply` の通路へだけ開く**）。
+    body -= _radial_bore_at_y(
+        build123d,
+        y_mm=geometry.estop_lead_out_y_mm,
+        height_mm=geometry.estop_lead_out_height_mm,
+        radius_range_mm=(
+            geometry.channel_outer_radius_mm,
+            geometry.skirt_outer_radius_mm + overshoot_mm,
+        ),
+        diameter_mm=geometry.channel_width_mm,
+    )
+    return body
+
+
+def build_cable_guides(
+    params: ResolvedParams, layout: ChassisLayout
+) -> tuple[BuiltPart, ...]:
+    """配線ガイドを全点構築する（要件 4.6, 7.6, 7.7, 8.4, 8.7）。
+
+    ⚠️ **検査が先である**（design.md `#### Shapes`）。⚠️ 3点は**同一形状**であり、
+    据え付けの角度だけが異なる（`build_drive_base` のアームと同じ扱い）。
+
+    Args:
+        params: `config.load_params()` の戻り値。
+        layout: `layout.derive_layout()` の戻り値。
+
+    Returns:
+        `("cable_guide_1", …)` の順の構築済み部品。
+
+    Raises:
+        GeometryError: 幾何が成立しない場合、または外接箱が造形可能寸法に
+            収まらない場合。
+        ParameterError: 材料が上流の許可一覧に無い場合。
+        CadUnavailableError: 形状ライブラリが導入されていない場合。
+    """
+    geometry = cable_guide_geometry(params, layout)
+    check_material(params.printing)
+
+    violations = check_envelope(
+        CABLE_GUIDE_PART_NAME, geometry.envelope, params.printing
+    )
+    if violations:
+        detail = "、".join(
+            f"軸 {violation.axis} が {violation.envelope_mm}mm で"
+            f"上限 {violation.limit_mm}mm を {violation.excess_mm}mm 超過"
+            for violation in violations
+        )
+        raise GeometryError(
+            f"{CABLE_GUIDE_PART_NAME} の外接箱が造形可能寸法に収まらない"
+            f"（{detail}）。⚠️ 経路を1本にまとめて解決する問題ではない"
+            "（決定 8: 系統ごとに別経路。要件 7.7）。"
+        )
+
+    solid = _build_cable_guide(geometry)
+    return tuple(
+        BuiltPart(
+            name=f"{CABLE_GUIDE_PART_NAME}_{index}",
+            solid=solid,
+            metrics=measure_part(f"{CABLE_GUIDE_PART_NAME}_{index}", solid),
+        )
+        for index in range(1, geometry.guide_count + 1)
+    )
+
+
+# ---------------------------------------------------------------------------
 # 組立の順序が幾何的に成立すること（要件 7.14 / design.md 決定 4b「組立の順序」）
 #
 # ## ⚠️ 「組み上がった状態で干渉しない」ことは、組み上げられることを意味しない
@@ -3653,6 +4964,7 @@ ASSEMBLY_ORDER: Final[tuple[str, ...]] = (
     ADAPTER_SEGMENT_PART_NAME,
     BOARD_DECK_PART_NAME,
     CATCH_DECK_PART_NAME,
+    CABLE_GUIDE_PART_NAME,
 )
 """design.md「組立手順」が記録する据え付けの順序（要件 7.14）。
 
@@ -3665,6 +4977,9 @@ ASSEMBLY_ORDER: Final[tuple[str, ...]] = (
 差し込む。掴み面は縁の**下**にあり、缶を上から落とし込んで留めることはできない）。
 ⚠️ **段は缶より後である**（手順 11: 段は切り取った開口より大きく、缶を段の上から
 被せることはできない）。
+⚠️ **配線ガイドは最後である**（手順 13）。⚠️ **真上から降ろせない**
+——缶の側壁は上へ広がっており、ガイドの真上をいずれ横切る。ガイドはアームの上面へ
+**半径方向へ差し込んで**据える（`assembly_steps`）。
 """
 
 _AXIAL_APPROACH: Final[tuple[float, float, float]] = (0.0, 0.0, 1.0)
@@ -3758,6 +5073,8 @@ def assembly_steps(
       沿って半径方向に差し込む
     - **アダプタ断片**: 断片の二等分線の外向き（要件 6.6。缶を据えたまま
       半径方向に差し込む）
+    - **配線ガイド**: その輪の取付角の外向き。⚠️ **真上から降ろせない**——缶の
+      側壁は上へ広がっており、ガイドの真上をいずれ横切る（`ASSEMBLY_ORDER`）
 
     Args:
         params: `config.load_params()` の戻り値。
@@ -3806,6 +5123,10 @@ def assembly_steps(
             ]
         elif base_name == BATTERY_TRAY_PART_NAME:
             approaches = [_radial_approach(tray.arm_angle_deg)] * len(members)
+        elif base_name == CABLE_GUIDE_PART_NAME:
+            approaches = [
+                _radial_approach(angle_deg) for angle_deg in layout.wheel_angles_deg
+            ]
         elif base_name == ADAPTER_SEGMENT_PART_NAME:
             approaches = [
                 _radial_approach(start_deg + adapter.segment_span_deg / 2.0)
@@ -3904,8 +5225,8 @@ def _placed_machine_parts(
 ) -> dict[str, object]:
     """機体を構成する部品を**機体座標へ据え付けて**名前で引ける形にする。
 
-    ⚠️ **アームは据え付けの角度へ回す**——`build_drive_base` は3本に**同一の
-    ソリッド**を返すため、回さずに並べると3本が重なる。⚠️ **整備スタンドの脚は
+    ⚠️ **アームと配線ガイドは据え付けの角度へ回す**——どちらも点数ぶん**同一の
+    ソリッド**を返すため、回さずに並べると重なる。⚠️ **整備スタンドの脚は
     機体の部品ではなく**、脚の局所座標で構築されている（要件 5.3）ため除く。
     """
     build123d = _require_shape_library()
@@ -3914,7 +5235,9 @@ def _placed_machine_parts(
         if part.name.startswith(f"{SERVICE_STAND_PART_NAME}_"):
             continue
         solid = part.solid
-        if part.name.startswith(f"{MOTOR_ARM_PART_NAME}_"):
+        if part.name.startswith(
+            (f"{MOTOR_ARM_PART_NAME}_", f"{CABLE_GUIDE_PART_NAME}_")
+        ):
             index = int(part.name.rsplit("_", 1)[1])
             solid = build123d.Rotation(0, 0, layout.wheel_angles_deg[index - 1]) * solid
         placed[part.name] = solid

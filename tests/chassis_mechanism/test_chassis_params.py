@@ -52,6 +52,7 @@ from chassis_mechanism.params import (
     BatterySpec,
     BoardSpec,
     BracketMeasurements,
+    CableParams,
     ChassisParams,
     ClearanceLimits,
     HubSpec,
@@ -199,6 +200,15 @@ def make_board(**overrides: object) -> BoardSpec:
     return BoardSpec(**values)  # type: ignore[arg-type]
 
 
+def make_cable(**overrides: object) -> CableParams:
+    values: dict[str, object] = {
+        "channel_width_mm": 9.0,
+        "wall_thickness_mm": 2.5,
+    }
+    values.update(overrides)
+    return CableParams(**values)  # type: ignore[arg-type]
+
+
 def make_power(**overrides: object) -> PowerParams:
     """電源系のヘルパ。**既定はすべて未決（`None`）**である。
 
@@ -280,6 +290,7 @@ def make_params(**overrides: object) -> ChassisParams:
         "adapter": make_adapter(),
         "battery": make_battery(),
         "board": make_board(),
+        "cable": make_cable(),
         "power": make_power(),
         "stand": make_stand(),
         "joint_local": make_joint_local(),
@@ -299,6 +310,7 @@ COMPONENT_TYPES: dict[str, type] = {
     "adapter": AdapterSpec,
     "battery": BatterySpec,
     "board": BoardSpec,
+    "cable": CableParams,
     "power": PowerParams,
     "stand": StandSpec,
     "joint_local": LocalJointLimits,
@@ -349,8 +361,13 @@ class _SyntheticExtendedRoot:
 # ---------------------------------------------------------------------------
 
 
-def test_twelve_component_groups_are_aggregated_by_one_root() -> None:
-    """design.md `#### Params` の12群が `ChassisParams` に1つだけ集約される。"""
+def test_thirteen_component_groups_are_aggregated_by_one_root() -> None:
+    """design.md `#### Params` の各群が `ChassisParams` に1つだけ集約される。
+
+    ⚠️ タスク 3.5 が配線ガイドの寸法（`cable`）を足したため12群から13群になった
+    ——群を足したこと自体をここで見る（気付かずに増えれば設定ファイルの単一の正が
+    黙って広がる）。
+    """
     root_fields = [field.name for field in fields(ChassisParams)]
     assert root_fields == [
         "bracket",
@@ -362,6 +379,7 @@ def test_twelve_component_groups_are_aggregated_by_one_root() -> None:
         "adapter",
         "battery",
         "board",
+        "cable",
         "power",
         "stand",
         "joint_local",
@@ -598,6 +616,8 @@ POSITIVE_LENGTH_CASES = [
     (make_board, "component_height_mm"),
     (make_board, "standoff_height_mm"),
     (make_board, "mass_g"),
+    (make_cable, "channel_width_mm"),
+    (make_cable, "wall_thickness_mm"),
     (make_board, "hold_height_mm"),
     (make_stand, "support_span_mm"),
     (make_stand, "lift_height_mm"),
