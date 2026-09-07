@@ -1,0 +1,55 @@
+/* 最小限のレイアウトと、図の色の定義。CSS フレームワークを使わない。 */
+
+:root {
+  /* 画面の地色と文字色 */
+  --surface-color: #ffffff;
+  --surface-muted-color: #f4f4f5;
+  --text-color: #1a1a1a;
+  --border-color: #d4d4d8;
+
+  /* 図の骨格 */
+  --figure-background-color: #ffffff;
+  --axis-color: #52525b;
+  --grid-line-color: #e4e4e7;
+
+  /* 格子点の色。RegionCell.fillKey をそのままクラス名に写す（要件 2.2 / 2.5） */
+  --cell-catchable-band-1-color: #cfe8d5;
+  --cell-catchable-band-2-color: #9ed2ac;
+  --cell-catchable-band-3-color: #6bb984;
+  --cell-catchable-band-4-color: #3d9d5e;
+  --cell-not-catchable-color: #e8d5cf;
+  --cell-not-evaluated-color: #e4e4e7;
+  --cell-not-evaluated-stroke-color: #a1a1aa;
+
+  /* 軌跡アニメーション */
+  --track-line-color: #3f6cb3;
+  --track-head-color: #1f3f73;
+  --track-invalid-color: #a1a1aa;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--surface-color);
+  color: var(--text-color);
+  font-family: system-ui, sans-serif;
+  line-height: 1.6;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  max-width: 72rem;
+  margin: 0 auto;
+  padding: 1rem;
+}
+
+svg {
+  background: var(--figure-background-color);
+  max-width: 100%;
+  height: auto;
+}

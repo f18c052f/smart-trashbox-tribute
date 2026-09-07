@@ -14,7 +14,7 @@
 
 - [ ] 1. 基盤: プロジェクト骨組みと共有部品
 
-- [ ] 1.1 表示レイヤのプロジェクトを追加し、ビルドとテストが動く状態にする
+- [x] 1.1 表示レイヤのプロジェクトを追加し、ビルドとテストが動く状態にする
   - 開発PC のブラウザ向けに、実行時依存を持たない TypeScript プロジェクトを新設する。**実行時依存の欄は空のまま維持する**
   - 型検査を厳格設定にし、コンパイル出力をブラウザが直接読める ES モジュールとする。バンドラ・フレームワーク・CSS フレームワークを導入しない
   - テストランナーは Node.js 組み込みのものを使い、コンパイル済みの出力に対して実行する。実験的機能に依存しない
@@ -211,3 +211,13 @@
 
 **全 52 の受入基準がいずれかのタスクに対応している。** 意図的に先送りした要件は無い
 （実装しないと決めた事項は `design.md` の「先送り事項」に列挙してある）。
+
+## Implementation Notes
+
+> 実装中に判明した、後続タスクへ影響する事項を 1 行ずつ記録する。
+
+- **1.1**: 相対 import は必ず拡張子付き（`./schema.js`）で書く。`module: ES2022` と `moduleResolution: Node16` は TS5110 で併用できず `Node10` を採用したため、拡張子なし相対 import が型検査を通ってしまいブラウザで壊れる。`viz/tests/scaffold.test.ts` がコンパイル出力の相対参照をすべて検査して塞いでいる
+- **1.1**: design.md の `test` スクリプト字句 `tsc && node --test dist/tests` は Node v24.18.0 / Windows で `Cannot find module` となり動かない。実装は `tsc && node --test dist/tests/*.test.js` を採用済み。**design.md 側（Technology Stack / Directory Structure）の記述同期が未了**
+- **1.1**: `devDependencies` は typescript 1 個のみという制約のため `@types/node` を入れられない。テストが使う Node 組み込み API の型は `viz/tests/node-builtins.d.ts` へ手書きで足す運用とする（型宣言のみ。実装ロジックを置かない）
+- **1.1**: 本シェルに `python` が無い（WSL 側のツール）。`viz` のビルド・テストを Python に依存させない。静的配信の確認は別途 WSL 側で `python -m http.server` を使う
+- **1.1**: `.kiro/**/*.md` は CRLF。`sed -i` は CR を落とすため、編集後に改行コードを CRLF へ戻すか、CR を保つ編集手段を用いる
