@@ -109,6 +109,22 @@ __all__ = [
     "CONTACT_BEARING_AREA_FORMULA",
     "FASTENER_LENGTH_FORMULA",
     "ADAPTER_OUTER_DIAMETER_FORMULA",
+    "DECK_RISER_OUTER_DIAMETER_FORMULA",
+    "DECK_RISE_FORMULAS",
+    "DECK_OUTER_DIAMETER_FORMULA",
+    "DECK_COLLAR_LENGTH_FORMULA",
+    "DECK_SEAT_BEARING_AREA_FORMULA",
+    "BATTERY_TRAY_EAR_LENGTH_FORMULA",
+    "deck_riser_outer_diameter_mm",
+    "board_deck_rise_mm",
+    "catch_deck_rise_mm",
+    "board_deck_outer_diameter_mm",
+    "catch_deck_outer_diameter_mm",
+    "deck_collar_length_mm",
+    "battery_tray_ear_length_mm",
+    "BATTERY_TRAY_ARM_INDEX",
+    "BATTERY_TRAY_JOINT_NAME_TEMPLATE",
+    "DECK_SEAT_JOINT_NAME",
     "ANNULAR_PART_NAMES",
     "PHASE_PART_NAMES",
     "ASSUMPTIONS",
@@ -285,18 +301,155 @@ ADAPTER_OUTER_DIAMETER_FORMULA: Final[str] = (
 （`required_segment_count`）はこの外径を入力とする。
 """
 
-ANNULAR_PART_NAMES: Final[tuple[str, ...]] = ("adapter_segment",)
-"""円環部品の名（上流 `required_segment_count` で分割数を導出する。要件 2.1）。"""
+DECK_RISER_OUTER_DIAMETER_FORMULA: Final[str] = "base.hub_outer_diameter_mm"
+"""段積み土台の立ち上がり（riser）の外径の導出式（要件 7.10）。
+
+⚠️ **手で選んだ径ではない。** 立ち上がりは中央部（ハブ板）の上面に立ち、
+アダプタの床の内縁——`shapes` で `hub_outer_diameter_mm / 2 +
+_JOINT_FIT_CLEARANCE_MM`——に半径方向で掴まれる。したがって外径は中央部の外径
+そのものであり、⚠️ **アダプタが中央部を掴むのと同じ嵌め合い隙間**で段が
+掴まれる。別の数を置けば、掴む面が消えるか、アダプタの床と食い合う。
+
+⚠️ **段が下から上へ抜けられる道はこの径の内側しかない**（要件 6.7 /
+`test_chassis_invariants.py::test_the_centre_stays_open_for_the_deck_stack_that_rises_inside_the_can`）
+——アダプタの床は `z` 方向にハブ板の上面から缶の底までを環として塞いでおり、
+その内縁より外側から立ち上げることはできない。
+"""
+
+DECK_RISE_FORMULAS: Final[tuple[str, str]] = (
+    "trash_can.bottom_thickness_mm + board.can_clearance_mm",
+    "board_deck_rise + board.deck_thickness_mm + board.standoff_height_mm "
+    "+ board.component_height_mm + board.cooling_gap_mm + deck_collar_length_mm",
+)
+"""基板デッキと受け止めデッキの、**缶の底の面からの立ち上がり高さ**の導出式。
+
+⚠️ **絶対高さではなく缶の底からの高さである。** 缶の内径は高さで変わる
+（要件 7.11）ため、段の外形を決めるのに要るのは「缶の底から何 mm 上か」だけで
+あり、⚠️ この量は駆動ベースの高さに依存しない——だからこそ `segment_counts` が
+`ChassisLayout` 無しで段の分割数を導ける。
+
+- **基板デッキ**: 切り取りで残る縁（厚さ `bottom_thickness_mm`）の上面へ、
+  隙間ぶんだけ載せた高さ。⚠️ **これより低くはできない**——縁と食い合う。
+  低いほど重心が下がる（要件 7.8, 7.9）ため、成立する最小をそのまま採る
+- **受け止めデッキ**: 基板の板厚 ＋ スタンドオフ ＋ 部品の高さ ＋ 放熱の隙間
+  ＋ **重ね代**。⚠️ **放熱の隙間（要件 7.5）はここで形になる**——段の下面と
+  部品の頭の間に残る空気の道そのものである
+
+⚠️ **重ね代を足すのを忘れない（本 Spec が一度落とした落とし穴である）。**
+受け止めデッキは板だけではなく、板から `deck_collar_length_mm` ぶん**下へ
+垂れる筒**を持つ。板の下面を「部品の頭 ＋ 放熱の隙間」に置くと、⚠️ **筒が
+その帯を突き抜けて部品の居場所へ入り込む**——半径 `catch_tube` の環では
+頭上が重ね代ぶん低くなり、放熱の隙間はその環で負になる。⚠️ **それでも
+「取付面が足りている」という判定は通ってしまう**（塞がれた面積を数えた
+ままになるため）。⚠️ **したがって基準は板の下面ではなく筒の下端である。**
+"""
+
+DECK_OUTER_DIAMETER_FORMULA: Final[str] = (
+    "2 * (trash_can.bottom_outer_diameter_mm / 2 - trash_can.bottom_thickness_mm "
+    "+ rise_mm * tan(trash_can.taper_deg) - board.can_clearance_mm)"
+)
+"""段の外径の導出式（要件 7.11）。
+
+⚠️ **その段の高さにおける缶の内径から導く。** 缶はテーパーで上へ広がるため、
+使える径は段ごとに異なる。⚠️ **段の下面の高さで測る**——段は板厚ぶんの
+z 方向の広がりを持ち、缶が上へ広がる以上、⚠️ **最も細いのは下面である**。
+上面で測ると、下面が側壁へ食い込む形を「収まっている」と述べることになる。
+
+⚠️ **底の外径・肉厚・テーパー角は上流が正である**（要件 1.3）。本 Spec 側が
+持つのは隙間（`board.can_clearance_mm`）だけである。
+"""
+
+DECK_COLLAR_LENGTH_FORMULA: Final[str] = (
+    "BOSS_DIAMETER_FACTOR * (BOSS_DIAMETER_FACTOR * joint.insert_outer_diameter_mm)"
+)
+"""段どうしが噛み合う筒の**重ね代**（mm）の導出式（要件 2.6, 2.9, 7.10）。
+
+受け止めデッキの筒は基板デッキの立ち上がりの**内側へ差し込まれ**、半径方向の
+ボルトが両者を留める（`ARM_JOINT_LAP_LENGTH_FORMULA` と同じ考え方であり、
+違うのは座が円周へ並ぶことである）。重ね代は座の外径の2倍——⚠️ **座の環
+（直径 `boss_diameter`）が重ねている帯に載りきり、上下に半径ぶんずつの肉が
+残る**ために要る長さである。
+"""
+
+DECK_SEAT_BEARING_AREA_FORMULA: Final[str] = (
+    "pi * DECK_RISER_OUTER_DIAMETER * adapter.wall_thickness_mm"
+)
+"""段積み土台↔アダプタの拘束の当たり面の導出式（要件 7.10）。
+
+⚠️ **締結部品を持たない接合部である**（`CONTACT_BEARING_AREA_FORMULA` と同じ
+分類）。立ち上がりの外周がアダプタの床の内縁に全周で掴まれ、⚠️ **半径方向の
+拘束を面で受ける**。当たり面はその円筒帯——立ち上がりの外径 × 床の厚さ——で
+あり、ボルト座の式は適用できない。
+
+⚠️ **鉛直方向の荷重はこの面が受けているのではない。** 段積み土台の重量は
+立ち上がりの下端の環がハブ板の上面へ**圧縮で**渡しており（A-5 が求める
+「樹脂を圧縮のみで使う」そのものである）、⚠️ **これは締結でも継手でもない**
+ため接合部として記録しない（法線が積層方向を向く**継手**を作らない、という
+要件 2.8 は、面で押し合う圧縮の座を禁じてはいない）。
+
+⚠️ **この面積の検査を「段が外れないことの根拠」と読み違えない**
+（`CONTACT_BEARING_AREA_FORMULA` の警告と同じ）。持ち上げ方向を止めているのは
+この面ではなく、段が缶の中に落ち込んでいることと自重である。⚠️ **持ち上げ
+方向の拘束は現在この Spec に無い**——組立手順が「缶を外してから段を抜く」
+順序を持つことでしか担保されていない。
+"""
+
+BATTERY_TRAY_EAR_LENGTH_FORMULA: Final[str] = (
+    "bolt_count * BOSS_DIAMETER_FACTOR * joint.insert_outer_diameter_mm"
+)
+"""バッテリトレイがモータ取付部を挟む**耳**の半径方向の長さ（mm）の導出式。
+
+`ARM_JOINT_LAP_LENGTH_FORMULA` と同じ形である——接合面の法線は接線方向
+`y` であり、ボルト座はその面の**半径方向**へ一列に並ぶ。⚠️ **耳は二股
+（fork）より外側の、アームが中実である帯にしか置けない**（二股の中は中央部の
+舌と既存のボルトが占めている）。
+"""
+
+BATTERY_TRAY_ARM_INDEX: Final[int] = 1
+"""バッテリトレイを受け持つモータ取付部の番号（⚠️ **1本だけである**）。
+
+⚠️ **手で選んだ点数ではなく、造形可能寸法から従属する。** 耳はアームの二股
+より外へ出た帯（`shapes.BatteryTrayGeometry.ear_inner_radius_mm` 以遠）にしか
+置けないため、3本すべてへ腕を伸ばすトレイは差し渡しが造形面を超え、
+`check_envelope` が通さない。1本で受けたトレイは、ポケットの上端の縁が
+中央部の下面へ当たることで
+片持ちの回転を止める（⚠️ **その当たりは圧縮であり継手ではない**）。
+
+⚠️ **穴は3本すべてのアームに開ける。** 1本だけに開けるとアームが別部品に
+なり、組立で取り違えたときに気付けない（3本は同一形状であり交換可能である、
+という `shapes.build_drive_base` の性質を崩さない）。
+"""
+
+BATTERY_TRAY_JOINT_NAME_TEMPLATE: Final[str] = "motor_arm_{index}__battery_tray"
+"""バッテリトレイ↔モータ取付部の接合部の名（⚠️ 名の組み立てはここ1箇所である）。"""
+
+DECK_SEAT_JOINT_NAME: Final[str] = "adapter__board_deck"
+"""段積み土台↔アダプタの拘束の名（⚠️ 締結部品を持たない）。"""
+
+ANNULAR_PART_NAMES: Final[tuple[str, ...]] = (
+    "adapter_segment",
+    "board_deck",
+    "catch_deck",
+)
+"""円環部品の名（上流 `required_segment_count` で分割数を導出する。要件 2.1）。
+
+⚠️ **段（デッキ）も円環部品である**（design.md `#### Shapes` の部品表 /
+要件 7.13）。外形は缶の内径から導かれる円であり、位相を持たない——分割は
+円周方向の等分で成立する。
+"""
 
 PHASE_PART_NAMES: Final[tuple[str, ...]] = (
     "hub_plate",
     "motor_arm",
     "battery_tray",
-    "board_tray",
     "cable_guide",
     "service_stand",
 )
 """位相が決まっている部品の名（分割数は輪数・脚数から従属する。要件 2.1）。
+
+⚠️ **`board_tray` はもう無い。** 底を抜いた缶の内側へ段を通す決定（design.md
+決定 4b）により、基板は円環の段（`board_deck`）が持つ——⚠️ **位相の部品として
+残しておくと、存在しない部品の点数が一覧に出続ける。**
 
 ⚠️ **これらを円環として近似しない。** 円環の等分に載せると、造形面を狭めた
 瞬間に過大な分割数が「正しい導出」の顔をして返る（research.md の Decision）。
@@ -339,6 +492,29 @@ ASSUMPTIONS: Final[tuple[str, ...]] = (
     "アーム↔付属金属ブラケットの接合部は、BracketMeasurements に取付フランジの"
     "厚さが無いため導出できない（要件 1.6 の実測が済んでいない）。⚠️ 推定値で"
     "埋めず、実測が入った時点で1家族として足す。",
+    "要件 7.1, 7.2（バッテリの最下部保持と着脱）: バッテリトレイはモータ取付部を"
+    "両側から挟む耳で留める。⚠️ 耳が載れるのはアームのうち二股より外・ブラケット"
+    "取付長穴より外の中実の帯だけであり、3本すべてへ腕を伸ばすトレイは差し渡しが"
+    "造形面を超える——⚠️ **受け持つアームが1本であることは手で選んだ点数ではなく、"
+    "check_envelope から従属する**（BATTERY_TRAY_ARM_INDEX）。ボルトは両方の耳と"
+    "アームを貫き、⚠️ **向こう側の耳の肉（battery.tray_wall_thickness_mm）は"
+    "上流 insert_length_mm より薄い**ためナットで受ける（insert_count == 0）。"
+    "⚠️ 足りない座を黙って浅く作らない。",
+    "要件 7.10（段積み土台）: 段は底を抜いた缶の内側を通る。⚠️ 立ち上がりが下から"
+    "上へ抜けられる道はアダプタの床の内縁の内側しかなく、外径は中央部の外径"
+    "そのものである（DECK_RISER_OUTER_DIAMETER_FORMULA）。段↔アダプタは"
+    "⚠️ **締結部品を持たない拘束**であり（整備スタンドの谷と同じ分類）、"
+    "鉛直の荷重は立ち上がりの下端の環が中央部の上面へ圧縮で渡す。"
+    "⚠️ **持ち上げ方向を止める締結は無い**——段は缶の中に落ち込んでおり、"
+    "抜くには缶を外して上から引き上げる。この限界を当たり面の下限で"
+    "覆い隠さない（DECK_SEAT_BEARING_AREA_FORMULA の警告）。",
+    "要件 7.4（基板の取付箇所）: ⚠️ **スタンドオフとそのインサートは本一覧に"
+    "現れない。** 基板の取付は搭載物の固定であって構造の接合部ではなく、締結の軸は"
+    "積層方向である——要件 2.8 が禁じる接合部としては記録できない（そこを通るのは"
+    "基板の自重だけであり、モータ反力も構造荷重も通らない）。⚠️ **そのぶん要件 2.10 の"
+    "調達一覧には欠けがある**: タスク 5.5 は shapes.DeckStackGeometry."
+    "mount_boss_angles_deg の本数をスタンドオフとインサートの員数として明示的に"
+    "足すこと。",
     "当たり面は寸法パラメータから解析的に算出した値である（design.md #### Joints"
     "Risks）。⚠️ joints は build123d を import できないため形状から採れない。"
     "実形状との一致は test_chassis_invariants.py（cad extra、タスク 4.4）が検査する。",
@@ -831,6 +1007,73 @@ def _adapter_outer_diameter_mm(params: ResolvedParams) -> float:
     )
 
 
+def deck_riser_outer_diameter_mm(params: ResolvedParams) -> float:
+    """段積み土台の立ち上がりの外径（`DECK_RISER_OUTER_DIAMETER_FORMULA`）。"""
+    return params.chassis.base.hub_outer_diameter_mm
+
+
+def board_deck_rise_mm(params: ResolvedParams) -> float:
+    """基板デッキの下面の、缶の底の面からの高さ（mm、`DECK_RISE_FORMULAS[0]`）。"""
+    return params.trash_can.bottom_thickness_mm + params.chassis.board.can_clearance_mm
+
+
+def catch_deck_rise_mm(params: ResolvedParams) -> float:
+    """受け止めデッキの**板の下面**の、缶の底の面からの高さ（`DECK_RISE_FORMULAS[1]`）。
+
+    ⚠️ **重ね代を含む。** 基準は板の下面ではなく、そこから重ね代ぶん下へ垂れる
+    **筒の下端**が「部品の頭 ＋ 放熱の隙間」を空けることである（`DECK_RISE_FORMULAS`
+    の警告）。板の高さはその結果として決まる。
+    """
+    board = params.chassis.board
+    return (
+        board_deck_rise_mm(params)
+        + board.deck_thickness_mm
+        + board.standoff_height_mm
+        + board.component_height_mm
+        + board.cooling_gap_mm
+        + deck_collar_length_mm(params)
+    )
+
+
+def _deck_outer_diameter_mm(params: ResolvedParams, rise_mm: float) -> float:
+    """缶の底から `rise_mm` の高さに置く段の外径（`DECK_OUTER_DIAMETER_FORMULA`）。
+
+    Raises:
+        GeometryError: 隙間を引いた結果が正でない場合（段が残らない）。
+    """
+    can = params.trash_can
+    clearance_mm = params.chassis.board.can_clearance_mm
+    radius_mm = (
+        can.bottom_outer_diameter_mm / _BOTH_SIDES
+        - can.bottom_thickness_mm
+        + rise_mm * math.tan(math.radians(can.taper_deg))
+        - clearance_mm
+    )
+    if radius_mm <= 0.0:
+        raise GeometryError(
+            f"缶の底から {rise_mm!r}mm の高さで段の半径が {radius_mm!r}mm になり、"
+            f"段が残らない（bottom_outer_diameter_mm="
+            f"{can.bottom_outer_diameter_mm!r}、bottom_thickness_mm="
+            f"{can.bottom_thickness_mm!r}、board.can_clearance_mm={clearance_mm!r}）。"
+        )
+    return _BOTH_SIDES * radius_mm
+
+
+def board_deck_outer_diameter_mm(params: ResolvedParams) -> float:
+    """基板デッキの外径（mm、要件 7.11）。"""
+    return _deck_outer_diameter_mm(params, board_deck_rise_mm(params))
+
+
+def catch_deck_outer_diameter_mm(params: ResolvedParams) -> float:
+    """受け止めデッキの外径（mm、要件 7.11）。"""
+    return _deck_outer_diameter_mm(params, catch_deck_rise_mm(params))
+
+
+def deck_collar_length_mm(params: ResolvedParams) -> float:
+    """段どうしが噛み合う筒の重ね代（mm、`DECK_COLLAR_LENGTH_FORMULA`）。"""
+    return BOSS_DIAMETER_FACTOR * _boss_diameter_mm(params)
+
+
 def segment_counts(params: ResolvedParams) -> Mapping[str, int]:
     """部品ごとの分割数を、部品の種類に応じた導出で返す（要件 2.1）。
 
@@ -868,7 +1111,15 @@ def segment_counts(params: ResolvedParams) -> Mapping[str, int]:
             _adapter_outer_diameter_mm(params), params.printing
         ),
         "battery_tray": _UNSPLIT_SEGMENT_COUNT,
-        "board_tray": _UNSPLIT_SEGMENT_COUNT,
+        # ⚠️ 段の外径は「缶の底から何 mm 上か」だけで決まり、駆動ベースの高さに
+        # 依存しない（`DECK_RISE_FORMULAS`）。だからここで `ChassisLayout` を
+        # 要求せずに分割数を導ける。
+        "board_deck": required_segment_count(
+            board_deck_outer_diameter_mm(params), params.printing
+        ),
+        "catch_deck": required_segment_count(
+            catch_deck_outer_diameter_mm(params), params.printing
+        ),
         "cable_guide": chassis.base.wheel_count,
         "service_stand": chassis.stand.leg_count,
     }
@@ -1050,6 +1301,45 @@ def _arm_bolt_count(layout: ChassisLayout, params: ResolvedParams) -> int:
     )
 
 
+def _battery_tray_face_width_mm(
+    layout: ChassisLayout, params: ResolvedParams
+) -> float:
+    """バッテリトレイの耳がボルト座を並べられる半径方向の幅（mm）。
+
+    ⚠️ **アームのうち二股より外の帯だけである。** 二股の中は中央部の舌と
+    `hub_plate__motor_arm_*` のボルトが占めており、⚠️ **そこへ座を重ねると
+    既存の締結と食い合う**。したがって使える幅はアームの長さから重ね代を
+    引いた残りである。
+    """
+    return layout.arm_length_mm - arm_joint_lap_length_mm(layout, params)
+
+
+def _battery_tray_bolt_count(layout: ChassisLayout, params: ResolvedParams) -> int:
+    """バッテリトレイ↔モータ取付部のボルト本数（要件 2.9, 2.10, 7.1）。"""
+    return _bolt_count(
+        name=BATTERY_TRAY_JOINT_NAME_TEMPLATE.format(index=BATTERY_TRAY_ARM_INDEX),
+        # ⚠️ モータ反力を受ける接合部ではない（受けるのはバッテリの重量である）
+        # ため、課す下限は上流の下限である。
+        minimum_bearing_area_mm2=params.joint.min_bearing_area_mm2,
+        pad_area_mm2=_bolt_bearing_area_mm2(params),
+        face_width_mm=_battery_tray_face_width_mm(layout, params),
+        boss_diameter_mm=_boss_diameter_mm(params),
+        floor_count=MIN_BOLTS_PER_FASTENED_JOINT,
+    )
+
+
+def battery_tray_ear_length_mm(
+    layout: ChassisLayout, params: ResolvedParams
+) -> float:
+    """トレイの耳の半径方向の長さ（mm、`BATTERY_TRAY_EAR_LENGTH_FORMULA`）。
+
+    ⚠️ **形（`shapes`）とここが同じ本数を読む**（`arm_joint_lap_length_mm` と
+    同じ規律）。別々に数えれば、下限を上げたときに座だけが増えて耳が伸びない、
+    という食い違いが黙って残る。
+    """
+    return _battery_tray_bolt_count(layout, params) * _boss_diameter_mm(params)
+
+
 def arm_joint_lap_length_mm(layout: ChassisLayout, params: ResolvedParams) -> float:
     """ハブ板の舌がアームの二股へ差し込まれる半径方向の長さ（mm）。
 
@@ -1067,6 +1357,16 @@ def arm_joint_lap_length_mm(layout: ChassisLayout, params: ResolvedParams) -> fl
         GeometryError: ボルト座が接合面の半径方向の幅に並ばない場合。
     """
     return _arm_bolt_count(layout, params) * _boss_diameter_mm(params)
+
+
+def _deck_member_name(base_name: str, index: int, count: int) -> str:
+    """分割数に応じた部材名を返す（⚠️ 名の規約は `shapes.part_names` と同じ）。
+
+    分割しない部品は番号を持たず、分割する部品は 1 から始まる連番を持つ。
+    ⚠️ **接合部の部材名が存在しない部品を指さないための対応である**——
+    段の分割数は缶の内径から従属し、1 にも複数にもなりうる（要件 7.13）。
+    """
+    return base_name if count == _UNSPLIT_SEGMENT_COUNT else f"{base_name}_{index}"
 
 
 def _fastened_joint(
@@ -1143,6 +1443,9 @@ def derive_joints(
     | 中央部↔モータ取付部 | `layout.wheel_angles_deg` | モータ反力（本 Spec の下限） | 接線方向 `y` |
     | 中央部↔アダプタ断片 | `segment_counts()["adapter_segment"]` | ゴミ箱の質量（上流の下限） | 半径方向 `x` |
     | アダプタ↔ゴミ箱 | 1（`retention_point_count` 本の締結） | ゴミ箱の質量（上流の下限） | 半径方向 `x` |
+    | モータ取付部↔バッテリトレイ | 1（`BATTERY_TRAY_ARM_INDEX`） | バッテリの質量（上流の下限） | 接線方向 `y` |
+    | アダプタ↔基板デッキ | 1（締結部品を持たない） | 段の半径方向の拘束（上流の下限） | 半径方向 `x` |
+    | 基板デッキ↔受け止めデッキ | `segment_counts()["catch_deck"]` | 段の質量と投擲の衝撃（上流の下限） | 半径方向 `x` |
     | 整備スタンド↔ホイール | `stand.leg_count` | モータ反力（本 Spec の下限） | 接線方向 `y` |
 
     ⚠️ **中央部↔モータ取付部は、ハブ板の舌をアームの二股が挟む形である**
@@ -1254,6 +1557,90 @@ def derive_joints(
             params=params,
             insert_backed=False,
         )
+    )
+
+    # ⚠️ 要件 7.1, 7.2: バッテリトレイはモータ取付部の側面を**両側から挟んで**
+    # 留める。接合面の法線は接線方向 `y` であり、座は半径方向に並ぶ。
+    # ⚠️ **インサートで受けない**（`insert_backed=False`）——ボルトはアームを
+    # 貫き、反対側の耳の外面でナットが受ける。⚠️ 反対側の耳の肉
+    # （tray_wall_thickness_mm）は上流の insert_length_mm より薄く、
+    # **足りない座を黙って浅く作らない**（`adapter__trash_can` と同じ理由）。
+    specs.append(
+        _fastened_joint(
+            name=BATTERY_TRAY_JOINT_NAME_TEMPLATE.format(
+                index=BATTERY_TRAY_ARM_INDEX
+            ),
+            members=(f"motor_arm_{BATTERY_TRAY_ARM_INDEX}", "battery_tray"),
+            # 手前の耳 ＋ アームの幅 ＋ 向こうの耳（ナットで受ける）。
+            stack_thickness_mm=(
+                _BOTH_SIDES * chassis.battery.tray_wall_thickness_mm
+                + base.arm_width_mm
+            ),
+            face_width_mm=_battery_tray_face_width_mm(layout, params),
+            minimum_bearing_area_mm2=upstream_floor_mm2,
+            print_normal_axis=_TANGENTIAL_NORMAL_AXIS,
+            # ⚠️ ダボを置かない。耳がアームを両側から挟む形そのものが位置決めで
+            # あり、ダボはアームの側面へ穴を増やすだけである（要件 2.7）。
+            dowel_count=_NO_DOWELS,
+            floor_count=MIN_BOLTS_PER_FASTENED_JOINT,
+            params=params,
+            insert_backed=False,
+        )
+    )
+
+    # ⚠️ 要件 7.10: 段積み土台↔アダプタ。**締結部品を持たない拘束**であり、
+    # 立ち上がりの外周がアダプタの床の内縁に全周で掴まれる
+    # （`DECK_SEAT_BEARING_AREA_FORMULA`）。
+    board_deck_name = _deck_member_name("board_deck", 1, counts["board_deck"])
+    deck_seat_area_mm2 = (
+        math.pi
+        * deck_riser_outer_diameter_mm(params)
+        * adapter.wall_thickness_mm
+    )
+    check_joint(params.joint, deck_seat_area_mm2)
+    specs.append(
+        JointSpec(
+            name=DECK_SEAT_JOINT_NAME,
+            members=("adapter", board_deck_name),
+            bolt_count=_NO_BOLTS,
+            bolt_length_mm=0.0,
+            insert_count=_NO_BOLTS,
+            dowel_count=_NO_DOWELS,
+            bearing_area_mm2=deck_seat_area_mm2,
+            print_normal_axis=_RADIAL_NORMAL_AXIS,
+            min_bearing_area_mm2=upstream_floor_mm2,
+        )
+    )
+
+    # ⚠️ 要件 7.10, 7.13: 段どうし。受け止めデッキの筒が基板デッキの立ち上がりの
+    # **内側へ差し込まれ**、半径方向のボルトが留める。件数は受け止めデッキの
+    # 分割数そのものである（⚠️ 断片ごとに独立して留まる——1つの断片が
+    # 隣の断片に支えられる形にしない）。
+    catch_deck_count = counts["catch_deck"]
+    specs.extend(
+        _fastened_joint(
+            name=(
+                f"{board_deck_name}__"
+                f"{_deck_member_name('catch_deck', index, catch_deck_count)}"
+            ),
+            members=(
+                board_deck_name,
+                _deck_member_name("catch_deck", index, catch_deck_count),
+            ),
+            # ボルトは立ち上がりの肉を貫き、受け止めデッキの筒のインサートへ入る。
+            stack_thickness_mm=chassis.board.deck_thickness_mm,
+            face_width_mm=(
+                math.pi * deck_riser_outer_diameter_mm(params) / catch_deck_count
+            ),
+            minimum_bearing_area_mm2=upstream_floor_mm2,
+            print_normal_axis=_RADIAL_NORMAL_AXIS,
+            # ⚠️ ダボを置かない。筒が筒へ入る嵌め合いそのものが同軸を与えており、
+            # ダボは同じ位置決めを二重に主張するだけである（要件 2.7）。
+            dowel_count=_NO_DOWELS,
+            floor_count=MIN_BOLTS_PER_FASTENED_JOINT,
+            params=params,
+        )
+        for index in range(1, catch_deck_count + 1)
     )
 
     # ⚠️ 要件 5.6: 台上での保持。締結部品を持たない拘束であり、一覧へ何も足さない。

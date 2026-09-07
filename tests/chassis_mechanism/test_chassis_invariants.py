@@ -34,15 +34,30 @@ from catch_mechanism import check_envelope
 from chassis_mechanism.config import load_params
 from chassis_mechanism.joints import derive_joints
 from chassis_mechanism.layout import derive_layout
+from chassis_mechanism.errors import GeometryError
+from chassis_mechanism.joints import DECK_SEAT_JOINT_NAME
 from chassis_mechanism.shapes import (
+    BATTERY_TRAY_PART_NAME,
+    BOARD_DECK_PART_NAME,
+    CATCH_DECK_PART_NAME,
     MIN_HAND_ACCESS_MM,
+    SERVICE_STAND_PART_NAME,
     StandGeometry,
     adapter_geometry,
+    battery_tray_geometry,
     build_parts,
+    deck_stack_geometry,
     drive_base_geometry,
     stand_geometry,
     stand_inputs,
 )
+
+_BOTH_SIDES_MM = 2
+"""量が中心線の**両側**に効くことを表す係数（⚠️ 寸法ではない）。
+
+`shapes._BOTH_SIDES` と同じ趣旨であり、テスト側で改めて置く（テストは実装の
+私的な名前を読まない）。
+"""
 
 try:  # pragma: no cover - 環境によって分岐する
     import build123d as _build123d
@@ -840,9 +855,9 @@ def test_a_joint_face_thinner_than_the_boss_cannot_realise_the_bearing_area(
     import dataclasses
     import math
 
-    from chassis_mechanism.shapes import _build_motor_arm
+    from chassis_mechanism.shapes import _build_motor_arm, battery_tray_geometry
 
-    params, _ = shipped
+    params, layout = shipped
     joint = _arm_joint(shipped)
     thin_thickness_mm = 6.0
     assert thin_thickness_mm < drive_base.boss_diameter_mm
@@ -854,7 +869,12 @@ def test_a_joint_face_thinner_than_the_boss_cannot_realise_the_bearing_area(
         arm_thickness_mm=thin_thickness_mm,
         bolt_height_mm=drive_base.underside_height_mm + thin_thickness_mm / 2.0,
     )
-    measured_mm2 = _measured_bolt_seat_area_mm2(_build_motor_arm(thin), thin)
+    # ⚠️ バッテリトレイの穴はアームの外側の帯（半径 114mm 以遠）にあり、
+    # ここで測る座（半径 64.6 / 73.8mm）とは重ならない。
+    tray = battery_tray_geometry(params, layout)
+    measured_mm2 = _measured_bolt_seat_area_mm2(
+        _build_motor_arm(thin, tray), thin
+    )
 
     # 帯へ切り取られた環の面積を、⚠️ **形からではなく初等幾何から**独立に出す。
     boss_radius_mm = drive_base.boss_diameter_mm / 2.0
@@ -2091,3 +2111,1085 @@ def test_the_opening_inner_diameter_is_not_a_bound_on_the_seat_bore(
     assert inner_radius_mm == pytest.approx(adapter.skirt_inner_radius_mm, abs=1e-6)
     assert 2.0 * adapter.outer_radius_mm < opening_mm
     assert 2.0 * inner_radius_mm < opening_mm
+
+
+# ---------------------------------------------------------------------------
+# 4. バッテリトレイと段積み土台（タスク 3.4 / 要件 7.1-7.5, 7.10-7.13, 8.3, 8.5）
+#
+# ⚠️ **段は底を抜いた缶の内側を通る**（design.md 決定 4b）。本節が実形状に対して
+# 固定するのは6つである。
+#
+#   - **缶の側壁と交わらない**こと、かつ段の外形が⚠️ **その高さの缶の内径から
+#     来ている**こと（要件 7.11）。⚠️ 缶の代用形状は**上流の採寸値だけ**で立てる
+#     ——段の導出値から作れば恒真の検査になる
+#   - 最上段が⚠️ **上流が定める緩衝材用の平面の最小径以上の平面**を持つこと
+#     （要件 7.12）。⚠️ **底を抜いて失われた平面はここが肩代わりする**
+#   - バッテリが⚠️ **全部品の中で最も低い搭載物**であること（要件 7.1）
+#   - バッテリが⚠️ **駆動ベースも段も分解せずに**抜けること（要件 7.2）。
+#     掃引した体積が他のどの部品とも交わらないことで示す
+#   - 放熱の隙間（要件 7.5）が⚠️ **実形状の2面の間に実在する**こと
+#   - `joints` が記録した当たり面が、⚠️ **実形状の座で実現している**こと
+#     （design.md `#### Joints` Risks。本タスクが足した3家族すべてについて）
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def deck(shipped: tuple[Any, Any]) -> Any:
+    params, layout = shipped
+    return deck_stack_geometry(params, layout)
+
+
+@pytest.fixture(scope="module")
+def tray(shipped: tuple[Any, Any]) -> Any:
+    params, layout = shipped
+    return battery_tray_geometry(params, layout)
+
+
+@pytest.fixture(scope="module")
+def catch_deck_solids(deck: Any, parts: dict[str, Any]) -> tuple[Any, ...]:
+    """構築済みの受け止めデッキの断片（⚠️ 機体座標。据え付けの回転は要らない）。"""
+    return tuple(
+        parts[
+            CATCH_DECK_PART_NAME
+            if deck.catch_segment_count == 1
+            else f"{CATCH_DECK_PART_NAME}_{index}"
+        ].solid
+        for index in range(1, deck.catch_segment_count + 1)
+    )
+
+
+@pytest.fixture(scope="module")
+def board_deck_solids(deck: Any, parts: dict[str, Any]) -> tuple[Any, ...]:
+    return tuple(
+        parts[
+            BOARD_DECK_PART_NAME
+            if deck.board_segment_count == 1
+            else f"{BOARD_DECK_PART_NAME}_{index}"
+        ].solid
+        for index in range(1, deck.board_segment_count + 1)
+    )
+
+
+def _union(solids: tuple[Any, ...]) -> Any:
+    """断片を1つの立体へ合わせる（⚠️ 段としての性質は組み上がりのものである）。"""
+    merged = solids[0]
+    for solid in solids[1:]:
+        merged = merged + solid
+    return merged
+
+
+def _bottomless_can(params: Any, adapter: Any, *, top_mm: float) -> Any:
+    """⚠️ **上流の採寸値だけで立てた、底を抜いたゴミ箱の代用形状。**
+
+    使うのは `trash_can` の底の外径・底の平面部径・肉厚・テーパー角と、
+    缶の底が載る高さ（アダプタの床の上面）だけである。⚠️ **段の導出値を1つも
+    使わない**——使えば「自分の値と自分の値が一致する」恒真の検査になる。
+
+    `_trash_can_model` との違いは高さの範囲だけであり、⚠️ **こちらは段の全高を
+    覆う**（段は缶の深いところまで登る）。
+    """
+    can = params.trash_can
+    floor_mm = adapter.floor_top_height_mm
+    outer_radius_mm = can.bottom_outer_diameter_mm / 2.0
+    slope = math.tan(math.radians(can.taper_deg))
+    wall = _cone_probe(outer_radius_mm, slope, (floor_mm, top_mm)) - _cone_probe(
+        outer_radius_mm - can.bottom_thickness_mm,
+        slope,
+        (floor_mm - _EPS_MM, top_mm + _EPS_MM),
+    )
+    lip_range = (floor_mm, floor_mm + can.bottom_thickness_mm)
+    lip = _full_cylinder(outer_radius_mm, lip_range) - _full_cylinder(
+        can.bottom_flat_diameter_mm / 2.0,
+        (lip_range[0] - _EPS_MM, lip_range[1] + _EPS_MM),
+    )
+    return wall + lip
+
+
+@requires_cad
+def test_no_deck_intersects_the_side_wall_of_the_can(
+    shipped: tuple[Any, Any],
+    adapter: Any,
+    deck: Any,
+    board_deck_solids: tuple[Any, ...],
+    catch_deck_solids: tuple[Any, ...],
+) -> None:
+    """⚠️ **どの段も缶の側壁と交わらない**（要件 7.11）。
+
+    缶の代用形状は**上流の採寸値だけ**で立てる。⚠️ **段の側の値から作らない**
+    ——作れば「自分の値と自分の値が一致する」恒真の検査になる。
+    """
+    params, _ = shipped
+    can = _bottomless_can(
+        params, adapter, top_mm=deck.catch_plate_top_height_mm + _EPS_MM
+    )
+    for index, solid in enumerate(board_deck_solids + catch_deck_solids):
+        assert _volume(solid & can) == 0.0, index
+
+    # ⚠️ 空振りでないこと: 隙間ぶんだけ太らせた段は側壁へ食い込む。
+    for solid, radius_mm, z_range in (
+        (
+            board_deck_solids[0],
+            deck.board_plate_radius_mm + deck.can_clearance_mm + _EPS_MM,
+            (deck.board_plate_bottom_height_mm, deck.board_plate_top_height_mm),
+        ),
+        (
+            catch_deck_solids[0],
+            deck.catch_plate_radius_mm + deck.can_clearance_mm + _EPS_MM,
+            (deck.catch_plate_bottom_height_mm, deck.catch_plate_top_height_mm),
+        ),
+    ):
+        grown = _full_cylinder(radius_mm, z_range)
+        assert _volume(grown & can) > 0.0, radius_mm
+
+
+@requires_cad
+def test_each_deck_outline_comes_from_the_can_diameter_at_its_own_height(
+    shipped: tuple[Any, Any],
+    adapter: Any,
+    deck: Any,
+    board_deck_solids: tuple[Any, ...],
+    catch_deck_solids: tuple[Any, ...],
+) -> None:
+    """⚠️ **段の外形はその段の下面の高さの缶の内径から来ている**（要件 7.11）。
+
+    缶はテーパーで上へ広がるため、段ごとに使える径が違う。⚠️ **両側から測る**
+    ——隙間より内側では材料があり、外側では無い。片側だけでは「ちょうど」を
+    言えない。⚠️ 期待値は**上流の採寸値だけ**から独立に組み立てる。
+    """
+    params, _ = shipped
+    can = params.trash_can
+    slope = math.tan(math.radians(can.taper_deg))
+    inner_at_bottom_mm = can.bottom_outer_diameter_mm / 2.0 - can.bottom_thickness_mm
+
+    for solids, bottom_mm, top_mm in (
+        (
+            board_deck_solids,
+            deck.board_plate_bottom_height_mm,
+            deck.board_plate_top_height_mm,
+        ),
+        (
+            catch_deck_solids,
+            deck.catch_plate_bottom_height_mm,
+            deck.catch_plate_top_height_mm,
+        ),
+    ):
+        expected_mm = (
+            inner_at_bottom_mm
+            + (bottom_mm - adapter.floor_top_height_mm) * slope
+            - params.chassis.board.can_clearance_mm
+        )
+        probe_height_mm = (bottom_mm + top_mm) / 2.0
+        total_mm3 = _material_inside_radius_mm3(solids, _PROBE_MM, probe_height_mm)
+        inside_mm3 = _material_inside_radius_mm3(
+            solids, expected_mm - _EPS_MM, probe_height_mm
+        )
+        outside_mm3 = _material_inside_radius_mm3(
+            solids, expected_mm + _EPS_MM, probe_height_mm
+        )
+        assert total_mm3 > 0.0
+        # ⚠️ 期待した半径の**外側**には材料が1つも無い。
+        assert outside_mm3 == pytest.approx(total_mm3, rel=1e-9), (
+            "段が期待した半径より外へ出ている（缶の内径からの導出と食い違う）"
+        )
+        # ⚠️ **外へ出ていないことだけでは足りない**——細すぎる段もそれを満たす。
+        # 期待した半径のすぐ内側には縁の材料があり、そこで欠けが出る。
+        assert inside_mm3 < total_mm3, (
+            "段が期待した半径に届いていない（縁がその手前で終わっている）"
+        )
+
+    # ⚠️ 2つの段の径は等しくない（缶が上へ広がることを検査が実際に見ている）。
+    assert deck.catch_plate_radius_mm > deck.board_plate_radius_mm
+
+
+@requires_cad
+def test_the_top_deck_carries_the_flat_the_upstream_liner_needs(
+    shipped: tuple[Any, Any], deck: Any, catch_deck_solids: tuple[Any, ...]
+) -> None:
+    """⚠️ **最上段は上流が定める最小径以上の平面を持つ**（要件 7.12）。
+
+    ⚠️ **底を抜いたことで失われた緩衝材の貼り付け面は、ここが肩代わりする**
+    （design.md 決定 4b）。⚠️ **最小径は上流 `retention` が正であり、本 Spec は
+    読むだけである**——数を書き写せば、上流が緩衝材の方針を変えたときに黙って
+    古い下限を主張し続ける。
+
+    平面であることは3つで示す。⚠️ **面積だけでは足りない**——穴だらけの環でも
+    面積は足りうる。
+
+      1. 上面より上に、その円の内側では材料が1つも無い（出っ張りが無い）
+      2. 上面のすぐ下は、その円の内側が**隙間なく**材料である（穴が無い）
+      3. 上面の高さに、法線が上を向く平面が実在し、面積が下限以上である
+    """
+    params, _ = shipped
+    top_mm = deck.catch_plate_top_height_mm
+    flat_radius_mm = params.retention.liner_flat_min_diameter_mm / 2.0
+    # ⚠️ 上流から読んでいる（本 Spec の設定ファイルの値ではない）。
+    assert flat_radius_mm == deck.liner_flat_min_diameter_mm / 2.0
+    assert deck.catch_plate_radius_mm >= flat_radius_mm
+
+    union = _union(catch_deck_solids)
+    above = union & _full_cylinder(flat_radius_mm, (top_mm + _EPS_MM, top_mm + _PROBE_MM))
+    assert _volume(above) == 0.0, "受け止め面より上に出っ張りがある"
+
+    slab = union & _full_cylinder(flat_radius_mm, (top_mm - _SLAB_MM, top_mm))
+    assert _volume(slab) == pytest.approx(
+        math.pi * flat_radius_mm**2 * _SLAB_MM, rel=1e-9
+    ), "受け止め面の直下に穴がある"
+
+    faces = _planar_faces_on_plane(union, (0.0, 0.0, 1.0), top_mm)
+    assert faces, "受け止め面に法線が上を向く平面が無い"
+    assert sum(float(face.area) for face in faces) >= math.pi * flat_radius_mm**2
+
+
+@requires_cad
+def test_a_hole_in_the_top_deck_breaks_the_liner_flat(
+    shipped: tuple[Any, Any], deck: Any, catch_deck_solids: tuple[Any, ...]
+) -> None:
+    """⚠️ **上の検査は実際に噛む。** 受け止め面に穴を開けると3つとも落ちる。
+
+    ⚠️ **空振りの検査を「満たしている」と読まないための対である。**
+    """
+    params, _ = shipped
+    top_mm = deck.catch_plate_top_height_mm
+    flat_radius_mm = params.retention.liner_flat_min_diameter_mm / 2.0
+    hole_radius_mm = flat_radius_mm / 4.0
+
+    holed = _union(catch_deck_solids) - _full_cylinder(
+        hole_radius_mm, (top_mm - _PROBE_MM, top_mm + _PROBE_MM)
+    )
+    slab = holed & _full_cylinder(flat_radius_mm, (top_mm - _SLAB_MM, top_mm))
+    assert _volume(slab) < math.pi * flat_radius_mm**2 * _SLAB_MM
+    faces = _planar_faces_on_plane(holed, (0.0, 0.0, 1.0), top_mm)
+    assert sum(float(face.area) for face in faces) < math.pi * deck.catch_plate_radius_mm**2
+
+
+@requires_cad
+def test_the_battery_is_the_lowest_mounted_item_on_the_machine(
+    shipped: tuple[Any, Any], tray: Any, parts: dict[str, Any]
+) -> None:
+    """⚠️ **バッテリは機体の最下部にある**（要件 7.1）。
+
+    ⚠️ **`build_parts` が返すすべてを見る。** 一部だけを見れば、後から足した
+    部品がバッテリより下へ潜っても気付けない。
+
+    ⚠️ **整備スタンドの脚だけは対象外である**——脚は機体が**載る**台であり、
+    機体が担ぐ搭載物ではない（要件 5.3）。⚠️ しかも脚は**脚の局所座標**で
+    構築されており（`shapes` モジュール docstring）、機体座標の高さを比べる
+    こと自体に意味が無い。除外した名前の集合を**その場で固定する**——
+    黙って増えれば、除外が抜け道になる。
+    """
+    _, _ = shipped
+    excluded = {name for name in parts if name.startswith(f"{SERVICE_STAND_PART_NAME}_")}
+    assert excluded == {f"{SERVICE_STAND_PART_NAME}_{index}" for index in (1, 2, 3)}
+
+    machine = {name: part for name, part in parts.items() if name not in excluded}
+    assert BATTERY_TRAY_PART_NAME in machine
+    tray_bottom_mm = float(
+        machine[BATTERY_TRAY_PART_NAME].solid.bounding_box().min.Z
+    )
+    assert tray_bottom_mm == pytest.approx(tray.floor_bottom_height_mm, abs=1e-6)
+
+    for name, part in machine.items():
+        if name == BATTERY_TRAY_PART_NAME:
+            continue
+        other_bottom_mm = float(part.solid.bounding_box().min.Z)
+        assert tray_bottom_mm < other_bottom_mm, name
+        # ⚠️ **バッテリそのもの**（トレイではなく中身）も他のどの部品より低い。
+        assert tray.battery_bottom_height_mm < other_bottom_mm, name
+
+    # ⚠️ 段へ上げていない（決定 4b が禁じた形をここで固定する）。
+    assert tray.battery_top_height_mm < min(
+        float(part.solid.bounding_box().min.Z)
+        for name, part in machine.items()
+        if name.startswith(BOARD_DECK_PART_NAME) or name.startswith(CATCH_DECK_PART_NAME)
+    )
+
+
+def _battery_box(tray: Any, *, lift_mm: float, reach_mm: float | None) -> Any:
+    """バッテリの外形（`reach_mm` を与えると引き抜く向きへ掃引した体積）。
+
+    ⚠️ **トレイの形から作らない。** 使うのはバッテリの寸法と座った高さだけで
+    あり、トレイの壁・縁・腕はどれも入らない。
+    """
+    from build123d import Rotation
+
+    near_mm = -tray.pocket_half_length_mm if reach_mm is None else -reach_mm
+    return Rotation(0, 0, tray.arm_angle_deg) * _box(
+        (near_mm, tray.pocket_half_length_mm),
+        (-tray.pocket_half_width_mm, tray.pocket_half_width_mm),
+        (
+            tray.battery_bottom_height_mm + lift_mm,
+            tray.battery_top_height_mm + lift_mm,
+        ),
+    )
+
+
+@requires_cad
+def test_the_battery_comes_out_without_taking_anything_apart(
+    shipped: tuple[Any, Any], tray: Any, parts: dict[str, Any]
+) -> None:
+    """⚠️ **駆動ベースも段も分解せずにバッテリを外せる**（要件 7.2）。
+
+    ⚠️ **経路を掃引した体積で示す。** 「向きが空いている」という論証では、
+    抜けている途中で当たる形を見落とす。掃引は「座った位置」と「抜け止めの縁を
+    越えて引き抜く帯」の和であり、⚠️ **他のどの部品とも交わってはならない**。
+
+    ⚠️ **整備スタンドの脚は対象外**（`test_the_battery_is_the_lowest_...` と
+    同じ理由——脚は機体の部品ではなく、脚の局所座標で構築されている）。
+    """
+    _, _ = shipped
+    sweep = _battery_box(tray, lift_mm=0.0, reach_mm=None) + _battery_box(
+        tray, lift_mm=tray.lift_height_mm, reach_mm=_PROBE_MM
+    )
+    for name, part in parts.items():
+        if name.startswith(f"{SERVICE_STAND_PART_NAME}_"):
+            continue
+        assert _volume(sweep & part.solid) == 0.0, name
+
+    # ⚠️ 空振りでないこと: 持ち上げずに引けば抜け止めの縁が止める（要件 7.3）。
+    blocked = _battery_box(tray, lift_mm=0.0, reach_mm=_PROBE_MM)
+    assert _volume(blocked & parts[BATTERY_TRAY_PART_NAME].solid) > 0.0
+
+
+@requires_cad
+def test_the_tray_holds_a_place_for_the_main_fuse_beside_the_battery(
+    shipped: tuple[Any, Any], tray: Any, parts: dict[str, Any]
+) -> None:
+    """⚠️ **主ヒューズをバッテリ直近へ置ける保持箇所がある**（要件 8.5）。
+
+    置き場は**バッテリのポケットと壁を共有する**位置にあり、⚠️ その内側は
+    空である（材料で埋まっていれば置き場ではない）。
+    """
+    from build123d import Rotation
+
+    params, _ = shipped
+    battery = params.chassis.battery
+    solid = parts[BATTERY_TRAY_PART_NAME].solid
+    bay = Rotation(0, 0, tray.arm_angle_deg) * _box(
+        (-tray.fuse_bay_half_length_mm, tray.fuse_bay_half_length_mm),
+        (tray.fuse_bay_inner_y_mm, tray.fuse_bay_outer_y_mm),
+        (tray.battery_bottom_height_mm, tray.fuse_bay_top_height_mm),
+    )
+    assert _volume(solid & bay) == 0.0, "ヒューズホルダの置き場が材料で埋まっている"
+    assert tray.fuse_bay_outer_y_mm - tray.fuse_bay_inner_y_mm == pytest.approx(
+        battery.fuse_holder_width_mm, abs=1e-9
+    )
+    assert _BOTH_SIDES_MM * tray.fuse_bay_half_length_mm == pytest.approx(
+        battery.fuse_holder_length_mm, abs=1e-9
+    )
+    # ⚠️ **バッテリ直近である**——ポケットの外壁1枚を隔てているだけ。
+    assert tray.fuse_bay_inner_y_mm == pytest.approx(
+        tray.outer_half_width_mm, abs=1e-9
+    )
+    # ⚠️ 空振りでないこと: 置き場のまわりには材料がある（空中に浮いていない）。
+    around = Rotation(0, 0, tray.arm_angle_deg) * _box(
+        (-tray.fuse_bay_wall_x_mm, tray.fuse_bay_wall_x_mm),
+        (tray.fuse_bay_outer_y_mm, tray.fuse_bay_wall_y_mm),
+        (tray.battery_bottom_height_mm, tray.fuse_bay_top_height_mm),
+    )
+    assert _volume(solid & around) > 0.0
+
+
+@requires_cad
+def test_the_cooling_gap_is_real_material_free_space_above_the_boards(
+    shipped: tuple[Any, Any],
+    deck: Any,
+    board_deck_solids: tuple[Any, ...],
+    catch_deck_solids: tuple[Any, ...],
+) -> None:
+    """⚠️ **放熱の隙間が実形状の2面の間に実在する**（要件 7.5）。
+
+    段の間の空きのうち、⚠️ **部品の頭より上の帯**が空気の道である。その帯には
+    どちらの段の材料も無く、⚠️ **厚みは `board.cooling_gap_mm` ちょうど**である。
+    """
+    params, _ = shipped
+    # ⚠️ **帯の上端は板の下面ではなく筒の下端である**——筒は板から重ね代ぶん
+    # 下へ垂れており、板で測れば空気の道を実際より広く述べることになる。
+    gap_range = (deck.component_top_height_mm, deck.catch_tube_bottom_height_mm)
+    assert gap_range[1] - gap_range[0] == pytest.approx(
+        params.chassis.board.cooling_gap_mm, abs=1e-9
+    )
+    # ⚠️ **立ち上がりの肉だけを除く。** 立ち上がりの内側も取付面であり、
+    # ⚠️ そこを最初から除くと、そこへ垂れてくる筒を見落とす（一度見落とした）。
+    band = _usable_region(deck, gap_range)
+    for solid in board_deck_solids + catch_deck_solids:
+        assert _volume(solid & band) == 0.0
+
+    # ⚠️ 空振りでないこと: 帯を上へ伸ばせば受け止めデッキの筒に当たる。
+    wider = _usable_region(
+        deck, (gap_range[0], gap_range[1] + deck.collar_length_mm)
+    )
+    assert sum(_volume(solid & wider) for solid in catch_deck_solids) > 0.0
+
+
+@requires_cad
+def test_the_board_deck_carries_a_mounting_point_for_every_board(
+    shipped: tuple[Any, Any], deck: Any, board_deck_solids: tuple[Any, ...]
+) -> None:
+    """⚠️ **モータドライバ3台・制御基板・電圧監視・5V 生成の取付箇所がある**
+    （要件 7.4）。
+
+    ⚠️ **座は袋穴である**——板を貫けば座が残らず、インサートが抜ける。
+    """
+    params, _ = shipped
+    board = params.chassis.board
+    assert deck.module_count == board.driver_count + 3
+    assert len(deck.mount_boss_angles_deg) == _BOTH_SIDES_MM * deck.module_count
+
+    top_mm = deck.board_plate_top_height_mm
+    bottom_mm = deck.board_plate_bottom_height_mm
+    for angle_deg in deck.mount_boss_angles_deg:
+        radians = math.radians(angle_deg)
+        centre = (
+            deck.mount_circle_radius_mm * math.cos(radians),
+            deck.mount_circle_radius_mm * math.sin(radians),
+        )
+        # 座の中は空である（穴が開いている）。
+        bore = _column(*centre) & _full_cylinder(
+            _PROBE_MM, (top_mm - deck.insert_bore_depth_mm + _EPS_MM, top_mm)
+        )
+        assert (
+            sum(_volume(solid & bore) for solid in board_deck_solids) == 0.0
+        ), angle_deg
+        # ⚠️ **袋穴である**——座の底より下には材料が残っている。
+        under = _column(*centre) & _full_cylinder(
+            _PROBE_MM,
+            (bottom_mm, top_mm - deck.insert_bore_depth_mm - _EPS_MM),
+        )
+        assert sum(_volume(solid & under) for solid in board_deck_solids) > 0.0, angle_deg
+
+
+@requires_cad
+def test_the_deck_stack_rises_through_the_opening_the_adapter_leaves(
+    shipped: tuple[Any, Any],
+    adapter: Any,
+    deck: Any,
+    board_deck_solids: tuple[Any, ...],
+    adapter_parts: tuple[Any, ...],
+) -> None:
+    """⚠️ **段は中央部の真上から立ち上がり、アダプタの床の内縁に掴まれる**
+    （要件 7.10 / `joints.DECK_SEAT_BEARING_AREA_FORMULA`）。
+
+    立ち上がりの外径は⚠️ **中央部の外径そのもの**であり、アダプタが中央部を
+    掴むのと同じ嵌め合い隙間で段が掴まれる。
+    """
+    params, _ = shipped
+    assert deck.riser_outer_radius_mm == pytest.approx(
+        params.chassis.base.hub_outer_diameter_mm / 2.0, abs=1e-9
+    )
+    assert deck.riser_bottom_height_mm == pytest.approx(
+        adapter.floor_bottom_height_mm, abs=1e-9
+    )
+    # 段はアダプタと触れ合わない（嵌め合い隙間ぶん離れている）。
+    for solid in board_deck_solids:
+        for other in adapter_parts:
+            assert _volume(solid & other) == 0.0
+
+    # ⚠️ 空振りでないこと: 隙間ぶん太らせた立ち上がりはアダプタの床へ当たる。
+    grown = _full_cylinder(
+        adapter.skirt_inner_radius_mm + _EPS_MM,
+        (adapter.floor_bottom_height_mm, adapter.floor_top_height_mm),
+    )
+    assert sum(_volume(grown & other) for other in adapter_parts) > 0.0
+
+
+@requires_cad
+def test_no_two_assembled_parts_interfere(
+    shipped: tuple[Any, Any], parts: dict[str, Any]
+) -> None:
+    """組み上がり状態でどの2部品も干渉しない（要件 9.1）。
+
+    ⚠️ **アームは据え付けの角度へ回してから比べる**——`build_drive_base` は
+    3本に**同一のソリッド**を返すため、回さずに比べると自分自身と重なる。
+    ⚠️ 整備スタンドの脚は機体の部品ではなく、脚の局所座標で構築されている
+    （`test_the_battery_is_the_lowest_...` と同じ理由で対象外）。
+    """
+    import itertools
+
+    placed = dict(_placed_drive_base(shipped, parts))
+    for name, part in parts.items():
+        if name.startswith(f"{SERVICE_STAND_PART_NAME}_") or name in placed:
+            continue
+        placed[name] = part.solid
+
+    for left, right in itertools.combinations(sorted(placed), 2):
+        assert _volume(placed[left] & placed[right]) == 0.0, (left, right)
+
+    # ⚠️ 空振りでないこと: 段を缶の底の高さまで下げれば、アダプタの床と当たる。
+    lowered = placed[BOARD_DECK_PART_NAME].moved(
+        __import__("build123d").Location((0.0, 0.0, -20.0))
+    )
+    assert _volume(lowered & placed["adapter_segment_1"]) > 0.0
+
+
+@requires_cad
+def test_each_new_fragment_fits_the_build_volume_and_matches_its_declared_envelope(
+    shipped: tuple[Any, Any], deck: Any, tray: Any, parts: dict[str, Any]
+) -> None:
+    """段とトレイの外接箱が造形可能寸法に収まり、宣言と一致する（要件 2.2, 7.13）。
+
+    ⚠️ **点数は `joints.segment_counts()` が正である**（要件 2.1）。ここで数え
+    直さない。⚠️ **宣言した外接箱と実形状が一致すること**が、「収まっている」と
+    いう判定が実物について述べたものである条件である。
+    """
+    from catch_mechanism import Envelope
+
+    from chassis_mechanism.joints import segment_counts
+
+    params, _ = shipped
+    counts = segment_counts(params)
+    assert deck.board_segment_count == counts[BOARD_DECK_PART_NAME]
+    assert deck.catch_segment_count == counts[CATCH_DECK_PART_NAME]
+    for base_name in (BATTERY_TRAY_PART_NAME, BOARD_DECK_PART_NAME, CATCH_DECK_PART_NAME):
+        built = [
+            name
+            for name in parts
+            if name == base_name or name.startswith(f"{base_name}_")
+        ]
+        assert len(built) == counts[base_name], base_name
+
+    declared = {
+        BATTERY_TRAY_PART_NAME: tray.envelope,
+        **{
+            (
+                BOARD_DECK_PART_NAME
+                if deck.board_segment_count == 1
+                else f"{BOARD_DECK_PART_NAME}_{index + 1}"
+            ): envelope
+            for index, envelope in enumerate(deck.board_envelopes)
+        },
+        **{
+            (
+                CATCH_DECK_PART_NAME
+                if deck.catch_segment_count == 1
+                else f"{CATCH_DECK_PART_NAME}_{index + 1}"
+            ): envelope
+            for index, envelope in enumerate(deck.catch_envelopes)
+        },
+    }
+    for name, envelope in declared.items():
+        measured = parts[name].metrics.bbox_mm
+        for value, expected in zip(
+            measured, (envelope.x_mm, envelope.y_mm, envelope.z_mm), strict=True
+        ):
+            assert value == pytest.approx(expected, abs=1e-6), name
+        assert (
+            check_envelope(
+                name,
+                Envelope(x_mm=measured[0], y_mm=measured[1], z_mm=measured[2]),
+                params.printing,
+            )
+            == ()
+        ), name
+        assert parts[name].metrics.solid_count == 1, name
+
+
+# ---------------------------------------------------------------------------
+# 4b. 記録された当たり面が実形状で実現している（design.md `#### Joints` Risks）
+#
+# ⚠️ **本タスクが足した3家族すべてについて測る。** 解析式が実形状から離れて
+# いれば、「下限を満たす」という判定は形について何も言っていない。
+# ---------------------------------------------------------------------------
+
+
+def _tangential_boss_region(
+    solid: Any, *, angle_deg: float, radius_mm: float, height_mm: float, probe_mm: float
+) -> Any:
+    """接線方向のボルトの軸に同軸な円筒で、座の範囲だけを切り出す。
+
+    ⚠️ **生成名を使わない**（`_boss_region` と同じ規律）。違いは、据え付けの
+    角度へ回してから切り出すことだけである。
+    """
+    from build123d import Align, Cylinder, Location, Rotation
+
+    return solid & (
+        Rotation(0, 0, angle_deg)
+        * Location((radius_mm, 0.0, height_mm))
+        * Rotation(90, 0, 0)
+        * Cylinder(probe_mm, _PROBE_MM, align=(Align.CENTER, Align.CENTER, Align.CENTER))
+    )
+
+
+def _measured_tray_seat_area_mm2(solid: Any, tray: Any) -> float:
+    """トレイの耳の当たり面を、⚠️ **構築したソリッドから**測る。
+
+    ⚠️ **測る面はボルト頭が当たる側**（`-y` の耳の外面）である。向こう側は
+    ナットが当たる面であり、両者を足すと二重に数える。
+    """
+    radians = math.radians(tray.arm_angle_deg)
+    normal = (math.sin(radians), -math.cos(radians), 0.0)
+    total_mm2 = 0.0
+    for radius_mm in tray.bolt_radii_mm:
+        region = _tangential_boss_region(
+            solid,
+            angle_deg=tray.arm_angle_deg,
+            radius_mm=radius_mm,
+            height_mm=tray.bolt_height_mm,
+            probe_mm=tray.boss_diameter_mm / 2.0,
+        )
+        faces = _planar_faces_on_plane(region, normal, tray.web_outer_y_mm)
+        assert faces, f"半径 {radius_mm}mm の座に、ボルト頭が当たる平面が無い"
+        total_mm2 += sum(float(face.area) for face in faces)
+    return total_mm2
+
+
+@requires_cad
+def test_the_measured_tray_seat_area_matches_the_bearing_area_recorded_by_joints(
+    shipped: tuple[Any, Any], tray: Any, parts: dict[str, Any]
+) -> None:
+    """⚠️ 記録された当たり面が、構築したトレイの耳の実面積と一致する（要件 2.9）。"""
+    params, layout = shipped
+    joint = next(
+        spec
+        for spec in derive_joints(layout, params)
+        if spec.name == f"motor_arm_{tray.arm_index}__battery_tray"
+    )
+    measured_mm2 = _measured_tray_seat_area_mm2(
+        parts[BATTERY_TRAY_PART_NAME].solid, tray
+    )
+    assert measured_mm2 == pytest.approx(joint.bearing_area_mm2, rel=1e-9)
+    assert measured_mm2 >= joint.min_bearing_area_mm2
+    assert measured_mm2 >= params.joint.min_bearing_area_mm2
+    # ⚠️ **ナットで受ける**（インサートの居場所が無い）。
+    assert joint.insert_count == 0
+    assert joint.bolt_count > 0
+
+
+@requires_cad
+def test_an_ear_thinner_than_the_boss_cannot_realise_the_tray_bearing_area(
+    shipped: tuple[Any, Any], tray: Any, parts: dict[str, Any]
+) -> None:
+    """⚠️ **この検査は実際に噛む。** 耳が座の外径より低ければ環は載りきらない。
+
+    ⚠️ `battery_tray_geometry` は座の外径を下回るアームの厚さを構築前に拒否
+    するため、薄い耳は「作れない」——それでも⚠️ **測る手口が薄さを見抜くこと**は
+    示せなければならない。ここでは構築済みのソリッドを帯へ切り取り、
+    **測るためだけに**薄い耳を作る。
+    """
+    _, _ = shipped
+    thin_mm = tray.boss_diameter_mm / 2.0
+    assert thin_mm < tray.boss_diameter_mm
+    thinned = parts[BATTERY_TRAY_PART_NAME].solid & _box(
+        (-_PROBE_MM, _PROBE_MM),
+        (-_PROBE_MM, _PROBE_MM),
+        (tray.bolt_height_mm - thin_mm / 2.0, tray.bolt_height_mm + thin_mm / 2.0),
+    )
+    measured_mm2 = _measured_tray_seat_area_mm2(thinned, tray)
+    full_mm2 = (
+        tray.bolt_count
+        * math.pi
+        / 4.0
+        * (tray.boss_diameter_mm**2 - tray.through_hole_diameter_mm**2)
+    )
+    assert measured_mm2 < full_mm2
+    assert measured_mm2 > 0.0
+
+
+def _cylindrical_faces_at_radius(solid: Any, radius_mm: float) -> list[Any]:
+    """機体の軸に同軸で、半径が `radius_mm` の円筒面を選ぶ。
+
+    ⚠️ **生成名を使わない**（`_planar_faces_on_plane` と同じ規律）。条件は
+    「円筒であること」と「面の中心が軸からその距離にあること」だけである。
+    """
+    from build123d import GeomType
+
+    selected: list[Any] = []
+    for face in solid.faces():
+        if face.geom_type != GeomType.CYLINDER:
+            continue
+        centre = face.center()
+        if abs(math.hypot(float(centre.X), float(centre.Y)) - radius_mm) > 1e-6:
+            continue
+        selected.append(face)
+    return selected
+
+
+def _measured_deck_seat_area_mm2(
+    solids: tuple[Any, ...], adapter: Any, deck: Any
+) -> float:
+    """段がアダプタの床に掴まれる帯の面積を、⚠️ **構築したソリッドから**測る。
+
+    ⚠️ **`joints.DECK_SEAT_BEARING_AREA_FORMULA` を再計算した値を返さない。**
+    面積は OCCT の面から採る。
+    """
+    band = _full_cylinder(
+        _PROBE_MM,
+        (adapter.floor_bottom_height_mm, adapter.floor_top_height_mm),
+    )
+    total_mm2 = 0.0
+    for solid in solids:
+        region = solid & band
+        if _volume(region) == 0.0:
+            continue
+        total_mm2 += sum(
+            float(face.area)
+            for face in _cylindrical_faces_at_radius(region, deck.riser_outer_radius_mm)
+        )
+    return total_mm2
+
+
+@requires_cad
+def test_the_measured_deck_seat_band_matches_the_bearing_area_recorded_by_joints(
+    shipped: tuple[Any, Any],
+    adapter: Any,
+    deck: Any,
+    board_deck_solids: tuple[Any, ...],
+) -> None:
+    """⚠️ 段↔アダプタの拘束の当たり面が、実形状の円筒帯と一致する（要件 2.9）。
+
+    ⚠️ **締結部品を持たない拘束である**（整備スタンドの谷と同じ分類）。数える
+    のはボルト座の環ではなく、立ち上がりの外周がアダプタの床の厚さぶん掴まれて
+    いる帯である。
+    """
+    params, layout = shipped
+    joint = next(
+        spec
+        for spec in derive_joints(layout, params)
+        if spec.name == DECK_SEAT_JOINT_NAME
+    )
+    measured_mm2 = _measured_deck_seat_area_mm2(board_deck_solids, adapter, deck)
+    assert measured_mm2 == pytest.approx(joint.bearing_area_mm2, rel=1e-9)
+    assert measured_mm2 >= joint.min_bearing_area_mm2
+    assert joint.bolt_count == 0
+    assert joint.insert_count == 0
+
+
+@requires_cad
+def test_a_riser_that_misses_the_adapter_floor_realises_no_seat_band(
+    shipped: tuple[Any, Any], adapter: Any, deck: Any, board_deck_solids: tuple[Any, ...]
+) -> None:
+    """⚠️ **この検査は実際に噛む。** 立ち上がりが細ければ帯は消える。
+
+    ⚠️ 掴む面は「その半径にある円筒面」であり、半径が変われば**面積が減るのでは
+    なく無くなる**——`deck_stack_geometry` が嵌め合い隙間との一致を構築前に
+    拒否するのはそのためである（面積の検査だけでは、段が中心を失ったことを
+    「面積が足りない」としか言えない）。
+    """
+    _, _ = shipped
+    shrunk = tuple(
+        solid
+        - _full_cylinder(
+            deck.riser_outer_radius_mm,
+            (deck.riser_bottom_height_mm - _EPS_MM, deck.riser_top_height_mm + _EPS_MM),
+        )
+        + _full_cylinder(
+            deck.riser_outer_radius_mm - 1.0,
+            (deck.riser_bottom_height_mm, deck.riser_top_height_mm),
+        )
+        for solid in board_deck_solids
+    )
+    assert _measured_deck_seat_area_mm2(shrunk, adapter, deck) == 0.0
+
+
+@requires_cad
+def test_the_measured_deck_to_deck_seat_area_matches_the_bearing_area_recorded_by_joints(
+    shipped: tuple[Any, Any], deck: Any, board_deck_solids: tuple[Any, ...]
+) -> None:
+    """⚠️ 段どうしの締結の当たり面が、実形状の座ぐりの実面積と一致する（要件 2.9）。
+
+    ⚠️ **測るのは基板デッキ側**（ボルト頭が当たる座ぐりの底）である。相手側は
+    インサート座であり、面積は一致しない。
+    """
+    params, layout = shipped
+    joints = {spec.name: spec for spec in derive_joints(layout, params)}
+    for index, angles_deg in enumerate(deck.deck_bolt_angles_deg, start=1):
+        name = f"{BOARD_DECK_PART_NAME}__{CATCH_DECK_PART_NAME}_{index}"
+        joint = joints[name]
+        measured_mm2 = _measured_radial_seat_area_mm2(
+            board_deck_solids,
+            angles_deg=angles_deg,
+            height_mm=deck.deck_bolt_height_mm,
+            face_radius_mm=(
+                deck.riser_outer_radius_mm - deck.deck_spotface_depth_mm
+            ),
+            boss_diameter_mm=deck.boss_diameter_mm,
+        )
+        assert measured_mm2 == pytest.approx(joint.bearing_area_mm2, rel=1e-9), name
+        assert measured_mm2 >= joint.min_bearing_area_mm2
+        assert measured_mm2 >= params.joint.min_bearing_area_mm2
+
+
+@requires_cad
+def test_a_deck_bolt_seat_left_on_the_raw_wall_realises_no_bearing_face(
+    shipped: tuple[Any, Any], deck: Any, catch_deck_solids: tuple[Any, ...]
+) -> None:
+    """⚠️ **この検査は実際に噛む。** 座ぐりを削らなければ平面は実現しない。
+
+    受け止めデッキの筒には座ぐりが無い（インサート座だけである）。⚠️ **同じ
+    手口でその面を測ると、ボルト頭が当たる平面は1つも出てこない**——立ち上がり
+    側で面が出るのは、座ぐりを実際に削っているからである。
+    """
+    _, _ = shipped
+    for index, angles_deg in enumerate(deck.deck_bolt_angles_deg):
+        for angle_deg in angles_deg:
+            radians = math.radians(angle_deg)
+            normal = (math.cos(radians), math.sin(radians), 0.0)
+            region = _radial_boss_region(
+                catch_deck_solids[index],
+                angle_deg=angle_deg,
+                height_mm=deck.deck_bolt_height_mm,
+                radius_mm=deck.boss_diameter_mm / 2.0 + _EPS_MM,
+            )
+            assert _volume(region) > 0.0, "筒に材料が無い（検査が空振りしている）"
+            assert (
+                _planar_faces_on_plane(
+                    region, normal, deck.catch_tube_outer_radius_mm
+                )
+                == []
+            )
+
+
+@requires_cad
+def test_the_deck_bolt_reaches_an_insert_seat_in_the_catch_deck_tube(
+    shipped: tuple[Any, Any], deck: Any, catch_deck_solids: tuple[Any, ...]
+) -> None:
+    """⚠️ **記録されたインサートは実形状の袋穴へ入る**（要件 2.6）。
+
+    ⚠️ **袋穴である**——筒を突き抜けていれば、インサートは反対側へ抜ける。
+    """
+    _, _ = shipped
+    for index, angles_deg in enumerate(deck.deck_bolt_angles_deg):
+        for angle_deg in angles_deg:
+            seat = _radial_bore_probe(
+                angle_deg=angle_deg,
+                height_mm=deck.deck_bolt_height_mm,
+                radius_range_mm=(
+                    deck.catch_tube_outer_radius_mm - deck.insert_bore_depth_mm + _EPS_MM,
+                    deck.catch_tube_outer_radius_mm - _EPS_MM,
+                ),
+                diameter_mm=deck.insert_bore_diameter_mm - _EPS_MM,
+            )
+            assert _volume(catch_deck_solids[index] & seat) == 0.0, angle_deg
+            beyond = _radial_bore_probe(
+                angle_deg=angle_deg,
+                height_mm=deck.deck_bolt_height_mm,
+                radius_range_mm=(
+                    deck.catch_tube_inner_radius_mm + _EPS_MM,
+                    deck.catch_tube_outer_radius_mm - deck.insert_bore_depth_mm - _EPS_MM,
+                ),
+                diameter_mm=deck.insert_bore_diameter_mm - _EPS_MM,
+            )
+            assert _volume(catch_deck_solids[index] & beyond) > 0.0, angle_deg
+
+
+def _radial_bore_probe(
+    *,
+    angle_deg: float,
+    height_mm: float,
+    radius_range_mm: tuple[float, float],
+    diameter_mm: float,
+) -> Any:
+    """半径方向の穴の**中身**を表すプローブ（材料が無いはずの体積）。"""
+    from build123d import Align, Cylinder, Location, Rotation
+
+    near_mm, far_mm = radius_range_mm
+    return (
+        Rotation(0, 0, angle_deg)
+        * Location(((near_mm + far_mm) / 2.0, 0.0, height_mm))
+        * Rotation(0, 90, 0)
+        * Cylinder(
+            diameter_mm / 2.0,
+            abs(far_mm - near_mm),
+            align=(Align.CENTER, Align.CENTER, Align.CENTER),
+        )
+    )
+
+
+@requires_cad
+def test_the_arm_carries_the_through_bore_the_tray_bolts_into(
+    shipped: tuple[Any, Any], tray: Any, parts: dict[str, Any]
+) -> None:
+    """⚠️ **記録された締結の相手側の穴がアームに実在する**（要件 2.10）。
+
+    ⚠️ **穴が無ければ、記録された締結はどこも通らない**（中央部がアダプタの
+    インサート座を持つのと同じ理由）。⚠️ **3本すべてに開いている**——1本だけに
+    開けるとアームが別部品になり、取り違えても気付けない。
+    """
+    _, _ = shipped
+    for index in (1, 2, 3):
+        arm = parts[f"motor_arm_{index}"].solid
+        for radius_mm in tray.bolt_radii_mm:
+            bore = _radial_bore_probe(
+                angle_deg=0.0,
+                height_mm=tray.bolt_height_mm,
+                radius_range_mm=(radius_mm - _EPS_MM, radius_mm + _EPS_MM),
+                diameter_mm=tray.through_hole_diameter_mm - _EPS_MM,
+            )
+            # ⚠️ **空振りでないこと**: 穴のすぐ脇（同じ半径で、穴の径の
+            # 外の高さ）にはアームの材料が残っている。穴の中だけを見て
+            # 「材料が無い」と言っても、⚠️ そもそもアームがそこに無い場合と
+            # 区別できない。
+            beside = _box(
+                (radius_mm - _EPS_MM, radius_mm + _EPS_MM),
+                (-_PROBE_MM, _PROBE_MM),
+                (
+                    tray.bolt_height_mm + tray.through_hole_diameter_mm,
+                    tray.bolt_height_mm + tray.through_hole_diameter_mm + _EPS_MM,
+                ),
+            )
+            assert _volume(arm & bore) == 0.0, (index, radius_mm)
+            assert _volume(arm & beside) > 0.0, "アームに材料が無い（空振り）"
+
+
+@requires_cad
+def test_the_can_never_covers_the_band_left_for_the_main_switch(
+    shipped: tuple[Any, Any], adapter: Any, deck: Any, parts: dict[str, Any]
+) -> None:
+    """⚠️ **メインスイッチを置ける帯が缶に覆われない**（要件 8.3）。
+
+    ⚠️ **位置を決めない**——`PowerParams` はタスク 5.6 まで未決であり、値が
+    入るまで形は何も作らない。ここが固定するのは「置ける場所が残っている」
+    ことだけである。
+
+      1. 帯は缶の底より下にある（缶はそこまで降りてこない）
+      2. 帯のなかで、アームの間・アダプタの外に**空いた体積**が実在する
+      3. 未決（`None`）なら形は何も足さない
+    """
+    params, layout = shipped
+    low_mm, high_mm = deck.switch_provision_band_mm
+    assert low_mm < high_mm
+    assert high_mm == pytest.approx(adapter.floor_top_height_mm, abs=1e-9)
+    assert params.chassis.power.main_switch_height_mm is None
+
+    can = _bottomless_can(
+        params, adapter, top_mm=deck.catch_plate_top_height_mm + _EPS_MM
+    )
+    assert _volume(can & _full_cylinder(_PROBE_MM, (0.0, high_mm))) == 0.0
+
+    # ⚠️ アームの間の空きは実在する（帯が名前だけの存在でないこと）。
+    from build123d import Rotation
+
+    free_angle_deg = layout.wheel_angles_deg[0] + 360.0 / (
+        _BOTH_SIDES_MM * len(layout.wheel_angles_deg)
+    )
+    pocket = Rotation(0, 0, free_angle_deg) * _box(
+        (adapter.outer_radius_mm + _EPS_MM, adapter.outer_radius_mm + 20.0),
+        (-10.0, 10.0),
+        (low_mm, high_mm),
+    )
+    assert _volume(pocket) > 0.0
+    for name, part in parts.items():
+        if name.startswith(f"{SERVICE_STAND_PART_NAME}_"):
+            continue
+        assert _volume(pocket & part.solid) == 0.0, name
+
+
+@requires_cad
+def test_a_switch_height_outside_the_band_is_rejected(
+    shipped: tuple[Any, Any], deck: Any
+) -> None:
+    """⚠️ **帯の外の高さは拒否される**（要件 8.3）。
+
+    ⚠️ 未決を未決のまま持てることと、決まった値を検査できることは別である
+    ——タスク 5.6 が高さを決めたとき、缶に覆われる高さを黙って通さない。
+    """
+    import dataclasses
+
+    params, layout = shipped
+    for height_mm in (
+        deck.switch_provision_band_mm[0] - 1.0,
+        deck.switch_provision_band_mm[1] + 1.0,
+    ):
+        bad = dataclasses.replace(
+            params,
+            chassis=dataclasses.replace(
+                params.chassis,
+                power=dataclasses.replace(
+                    params.chassis.power, main_switch_height_mm=height_mm
+                ),
+            ),
+        )
+        with pytest.raises(GeometryError) as excinfo:
+            deck_stack_geometry(bad, layout)
+        assert "main_switch_height_mm" in str(excinfo.value)
+
+    # ⚠️ 帯の中なら通る（拒否が高さそのものではなく帯を見ていること）。
+    good = dataclasses.replace(
+        params,
+        chassis=dataclasses.replace(
+            params.chassis,
+            power=dataclasses.replace(
+                params.chassis.power,
+                main_switch_height_mm=sum(deck.switch_provision_band_mm) / 2.0,
+            ),
+        ),
+    )
+    assert deck_stack_geometry(good, layout).switch_provision_band_mm == (
+        deck.switch_provision_band_mm
+    )
+
+
+def _usable_region(deck: object, z_range: tuple[float, float]) -> object:
+    """基板デッキの**取付に使える領域**を、その高さの帯で切り出したプローブ。
+
+    ⚠️ **立ち上がりの肉だけを除く。** 立ち上がりの内側（筒の中）も取付面で
+    あり、⚠️ **そこを最初から除いてしまうと、そこへ落ちてくる材料を見落とす**
+    ——実際に一度見落とした（受け止めデッキの筒は立ち上がりの内側にある）。
+    """
+    z_min, z_max = z_range
+    outer = _full_cylinder(deck.board_plate_radius_mm, (z_min, z_max))  # type: ignore[attr-defined]
+    riser_wall = _full_cylinder(
+        deck.riser_outer_radius_mm, (z_min - _EPS_MM, z_max + _EPS_MM)  # type: ignore[attr-defined]
+    ) - _full_cylinder(
+        deck.riser_inner_radius_mm, (z_min - _PROBE_MM, z_max + _PROBE_MM)  # type: ignore[attr-defined]
+    )
+    return outer - riser_wall
+
+
+@requires_cad
+def test_nothing_intrudes_into_the_component_envelope_above_the_board_deck(
+    shipped: tuple[Any, Any],
+    deck: Any,
+    board_deck_solids: tuple[Any, ...],
+    catch_deck_solids: tuple[Any, ...],
+) -> None:
+    """⚠️ **約束した搭載部品の居場所に、どの部品も入り込まない**（要件 7.4, 7.5）。
+
+    `usable_area_mm2` は「基板デッキの上面のうち取付に使える面積」であり、
+    ⚠️ **その面の上に `standoff + component_height` の高さが空いていて初めて
+    意味を持つ**。⚠️ **塞がれた面積を数えれば、要る面積に足りない段が
+    「足りている」という顔で通る**——決定 4b の「1段で足りる」の唯一の根拠が
+    その数である以上、ここは実形状で見なければならない。
+
+    ⚠️ **立ち上がりの内側も取付面である**ため、プローブは立ち上がりの**肉**
+    だけを除く（内側を最初から除くと、そこへ垂れてくる筒を見落とす）。
+    """
+    _, _ = shipped
+    envelope = _usable_region(
+        deck, (deck.board_plate_top_height_mm, deck.component_top_height_mm)
+    )
+    for solid in board_deck_solids + catch_deck_solids:
+        assert _volume(solid & envelope) == 0.0
+
+    # ⚠️ 空振りでないこと: 筒を重ね代ぶん下へ伸ばした形は、⚠️ **ちょうど
+    # 環の体積ぶん**居場所を奪う（板の下面で高さを決めた設計がこれである）。
+    dropped = _full_cylinder(
+        deck.catch_tube_outer_radius_mm,
+        (
+            deck.catch_tube_bottom_height_mm - deck.collar_length_mm,
+            deck.catch_tube_bottom_height_mm,
+        ),
+    ) - _full_cylinder(
+        deck.catch_tube_inner_radius_mm,
+        (
+            deck.catch_tube_bottom_height_mm - deck.collar_length_mm - _EPS_MM,
+            deck.catch_tube_bottom_height_mm + _EPS_MM,
+        ),
+    )
+    intrusion_mm3 = _volume(dropped & envelope)
+    overlap_mm = deck.component_top_height_mm - (
+        deck.catch_tube_bottom_height_mm - deck.collar_length_mm
+    )
+    assert intrusion_mm3 == pytest.approx(
+        math.pi
+        * (deck.catch_tube_outer_radius_mm**2 - deck.catch_tube_inner_radius_mm**2)
+        * overlap_mm,
+        rel=1e-9,
+    )
+    assert intrusion_mm3 > 0.0
+
+    # ⚠️ **奪われる取付面は要る面積との差より大きい**——だからこの落とし穴は
+    # 「余裕のうち」では済まない（塞がれた環を引くと 19,600 を下回る）。
+    shadow_area_mm2 = math.pi * (
+        deck.catch_tube_outer_radius_mm**2 - deck.catch_tube_inner_radius_mm**2
+    )
+    assert deck.usable_area_mm2 - shadow_area_mm2 < deck.required_area_mm2

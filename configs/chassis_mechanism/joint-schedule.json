@@ -99,6 +99,76 @@
       "print_normal_axis": "x"
     },
     {
+      "bearing_area_mm2": 114.793795562,
+      "bolt_count": 2,
+      "bolt_length_mm": 59.7,
+      "dowel_count": 0,
+      "insert_count": 0,
+      "members": [
+        "motor_arm_1",
+        "battery_tray"
+      ],
+      "min_bearing_area_mm2": 60.0,
+      "name": "motor_arm_1__battery_tray",
+      "print_normal_axis": "y"
+    },
+    {
+      "bearing_area_mm2": 1130.973355292,
+      "bolt_count": 0,
+      "bolt_length_mm": 0.0,
+      "dowel_count": 0,
+      "insert_count": 0,
+      "members": [
+        "adapter",
+        "board_deck"
+      ],
+      "min_bearing_area_mm2": 60.0,
+      "name": "adapter__board_deck",
+      "print_normal_axis": "x"
+    },
+    {
+      "bearing_area_mm2": 114.793795562,
+      "bolt_count": 2,
+      "bolt_length_mm": 16.7,
+      "dowel_count": 0,
+      "insert_count": 2,
+      "members": [
+        "board_deck",
+        "catch_deck_1"
+      ],
+      "min_bearing_area_mm2": 60.0,
+      "name": "board_deck__catch_deck_1",
+      "print_normal_axis": "x"
+    },
+    {
+      "bearing_area_mm2": 114.793795562,
+      "bolt_count": 2,
+      "bolt_length_mm": 16.7,
+      "dowel_count": 0,
+      "insert_count": 2,
+      "members": [
+        "board_deck",
+        "catch_deck_2"
+      ],
+      "min_bearing_area_mm2": 60.0,
+      "name": "board_deck__catch_deck_2",
+      "print_normal_axis": "x"
+    },
+    {
+      "bearing_area_mm2": 114.793795562,
+      "bolt_count": 2,
+      "bolt_length_mm": 16.7,
+      "dowel_count": 0,
+      "insert_count": 2,
+      "members": [
+        "board_deck",
+        "catch_deck_3"
+      ],
+      "min_bearing_area_mm2": 60.0,
+      "name": "board_deck__catch_deck_3",
+      "print_normal_axis": "x"
+    },
+    {
       "bearing_area_mm2": 1024.0,
       "bolt_count": 0,
       "bolt_length_mm": 0.0,
@@ -158,21 +228,33 @@
       "count": 6,
       "designation": "M3",
       "kind": "bolt",
+      "length_mm": 16.7
+    },
+    {
+      "count": 6,
+      "designation": "M3",
+      "kind": "bolt",
       "length_mm": 38.7
     },
     {
-      "count": 3,
+      "count": 2,
+      "designation": "M3",
+      "kind": "bolt",
+      "length_mm": 59.7
+    },
+    {
+      "count": 5,
       "designation": "M3",
       "kind": "nut",
       "length_mm": null
     },
     {
-      "count": 12,
+      "count": 18,
       "designation": "M3",
       "kind": "insert",
       "length_mm": 5.7
     }
   ],
-  "parameters_digest": "sha256:23911e92a958cdaa5b8fabd5707d74de7617a49ef726d97ebb049dffeb6bc6cf",
+  "parameters_digest": "sha256:d7d505da40e5965c5d06b7e3918328addae0cb3950fb0702c57e6dc948924fdd",
   "schema_version": "1.0"
 }

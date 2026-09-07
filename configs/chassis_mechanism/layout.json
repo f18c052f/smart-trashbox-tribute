@@ -29,8 +29,8 @@
   "provenance": "assumed",
   "schema_version": "1.0",
   "tipping": {
-    "accel_limit_mm_s2": 9211.481730166,
-    "cog_height_mm": 71.967741935,
+    "accel_limit_mm_s2": 8663.918946037,
+    "cog_height_mm": 76.516129032,
     "is_pass_criterion": false,
     "note": "転倒余裕は未実測の推定であり、⚠️ 合否条件ではない（要件 3.5 / 3.4 の決定1 条件4）。未達を理由に設計を変えず、実測と性能値の決定は m2-motion-validation が持つ。搭載物の質量と保持高さは仮値であり、合成重心の見積もりもその上に載っている。"
   },

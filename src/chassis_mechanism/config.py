@@ -70,6 +70,7 @@ from catch_mechanism import (
     JointPolicy,
     PrintingConstraints,
     Provenance,
+    RetentionParams,
     TrashCanMeasurements,
 )
 from catch_mechanism import (
@@ -189,12 +190,18 @@ class ResolvedParams:
         joint: 上流の継手方針。⚠️ `chassis.joint_local` の下限はこの下限以上で
             なければならず、その突き合わせは `_resolve_params` が済ませている。
         trash_can: 上流のゴミ箱の採寸値。
+        retention: 上流の保持方針。⚠️ **底の抜き取り（`bottom_modification`）と
+            緩衝材用の平面の最小径（`liner_flat_min_diameter_mm`）を持つ**——
+            底を抜いたことで失われた平面の義務は最上段のデッキへ移っており
+            （要件 7.12 / design.md 決定 4b）、その下限は上流が正である。
+            ⚠️ **値を本 Spec 側へ書き写さない**（要件 1.3）。
     """
 
     chassis: ChassisParams
     printing: PrintingConstraints
     joint: JointPolicy
     trash_can: TrashCanMeasurements
+    retention: RetentionParams
 
 
 def _read_document(path: Path) -> object:
@@ -407,6 +414,7 @@ def _resolve_params(chassis: ChassisParams, label: str) -> ResolvedParams:
         printing=upstream.printing,
         joint=upstream.joint,
         trash_can=upstream.trash_can,
+        retention=upstream.retention,
     )
 
 

@@ -608,7 +608,17 @@ class BatterySpec:
         tray_wall_thickness_mm: トレイの肉厚（mm）。
         hold_height_mm: 保持高さ（mm）。接地点（床）を原点とする、搭載物の重心
             高さの設計値である。⚠️ バッテリは**機体の最下部**へ保持する
-            （要件 7.1）。
+            （要件 7.1）。⚠️ **トレイが実際に与える収まりの中に無ければならない**
+            ——`shapes.battery_tray_geometry` が電池のポケットの上下端と突き合わせ、
+            外れていれば `GeometryError` で拒否する（記録された保持高さと実物の
+            置き場所が黙って食い違うことを防ぐ）。⚠️ **検証はポケットの範囲を
+            見るだけであり、中央を強制しない。** 出荷値がポケットの中央
+            （床に座った電池の重心）を採っているのは、⚠️ **合成重心の見積もり
+            （要件 7.8）が実物と一致するほうが良いからであって、検証に迫られた
+            からではない**——範囲の中であれば別の値も通る。
+        fuse_holder_length_mm: 主ヒューズホルダの保持箇所の長さ（mm、要件 8.5）。
+            ⚠️ **ヒューズそのものの仕様ではなく、トレイに空ける置き場の内寸**である。
+        fuse_holder_width_mm: 主ヒューズホルダの保持箇所の幅（mm、要件 8.5）。
 
     Raises:
         ParameterError: いずれかの寸法・質量・高さが正の有限値でない場合。
@@ -620,6 +630,8 @@ class BatterySpec:
     mass_g: float
     tray_wall_thickness_mm: float
     hold_height_mm: float
+    fuse_holder_length_mm: float
+    fuse_holder_width_mm: float
 
     def __post_init__(self) -> None:
         """全不変条件を検証し、違反時は違反項目名と値を添えて拒否する。"""
@@ -629,15 +641,29 @@ class BatterySpec:
         _require_positive_finite(self.mass_g, "mass_g")
         _require_positive_finite(self.tray_wall_thickness_mm, "tray_wall_thickness_mm")
         _require_positive_finite(self.hold_height_mm, "hold_height_mm")
+        _require_positive_finite(
+            self.fuse_holder_length_mm, "fuse_holder_length_mm"
+        )
+        _require_positive_finite(self.fuse_holder_width_mm, "fuse_holder_width_mm")
 
 
 @dataclass(frozen=True, slots=True)
 class BoardSpec:
     """基板トレイと搭載する基板類の寸法（要件 7.4, 7.5, 7.8）。
 
+    ⚠️ **段は缶の内側へ通す**（要件 7.10 / design.md 決定 4b）。缶はテーパーで
+    上へ広がるため段の使える径は高さごとに異なり、外形は本群の値と上流の採寸値
+    から導出される（要件 7.11）——⚠️ **段の外径そのものを寸法パラメータとして
+    持たない**。
+
     Attributes:
-        deck_x_mm: デッキの X 方向寸法（mm）。
-        deck_y_mm: デッキの Y 方向寸法（mm）。
+        deck_x_mm: 基板群を並べるために要る取付面の X 方向寸法（mm）。
+        deck_y_mm: 基板群を並べるために要る取付面の Y 方向寸法（mm）。
+            ⚠️ **段は円形であるため、この2つは「必要な取付面の面積」として効く**
+            （design.md 決定 4b が「必要な 19,600mm^2 に対して1段で足りる」と
+            面積で述べているのと同じ読み方である）。⚠️ 内接する長方形として
+            読まない——Ø182 に一辺 140 の正方形は入らず、決定 4b はその読み方を
+            採っていない。
         standoff_height_mm: スタンドオフの高さ（mm）。
         driver_count: モータドライバの台数。1 以上（要件 7.4 は3台を要求するが、
             台数そのものは設定値である）。
@@ -646,6 +672,21 @@ class BoardSpec:
             意味し、設定として成立する。
         mass_g: 基板類とトレイの質量（g）。
         hold_height_mm: 保持高さ（mm）。接地点（床）を原点とする。
+            ⚠️ **基板デッキが実際に与える収まりの中に無ければならない**
+            ——`shapes.deck_stack_geometry` がスタンドオフの上端と部品の高さから
+            範囲を作り、外れていれば `GeometryError` で拒否する。
+        deck_thickness_mm: 段の板厚（mm、要件 7.10, 7.13）。⚠️ **立ち上がりの
+            肉厚でもある**——段どうしを留める半径方向のインサートがこの肉に
+            入るため、上流 `JointPolicy.insert_length_mm` を超えていなければ
+            ならない（`validate_against_upstream` が検証する）。
+        component_height_mm: 基板面から数えた搭載部品の高さ（mm、要件 7.5）。
+            ⚠️ **最上段の高さを決める量である**——受け止めデッキの下面は
+            「基板面 ＋ 部品の高さ ＋ 放熱の隙間」の上に来る。
+        can_clearance_mm: 段とゴミ箱の間に残す隙間（mm、要件 7.11）。半径方向
+            （側壁との間）と鉛直方向（切り取りで残る縁の上面との間）の双方に
+            同じ量を使う——⚠️ **同じ物理（薄い PP 成形品の真円度と反りを逃がす
+            こと）に別の数を割り当てない**。0 は「隙間を取らない」を意味し、
+            設定として成立する。
 
     Raises:
         ParameterError: 寸法・質量・高さが正の有限値でない場合、隙間が負もしくは
@@ -659,6 +700,9 @@ class BoardSpec:
     cooling_gap_mm: float
     mass_g: float
     hold_height_mm: float
+    deck_thickness_mm: float
+    component_height_mm: float
+    can_clearance_mm: float
 
     def __post_init__(self) -> None:
         """全不変条件を検証し、違反時は違反項目名と値を添えて拒否する。"""
@@ -669,6 +713,9 @@ class BoardSpec:
         _require_nonneg_finite(self.cooling_gap_mm, "cooling_gap_mm")
         _require_positive_finite(self.mass_g, "mass_g")
         _require_positive_finite(self.hold_height_mm, "hold_height_mm")
+        _require_positive_finite(self.deck_thickness_mm, "deck_thickness_mm")
+        _require_positive_finite(self.component_height_mm, "component_height_mm")
+        _require_nonneg_finite(self.can_clearance_mm, "can_clearance_mm")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1040,9 +1087,21 @@ class ChassisParams:
             joint_policy: 上流 `catch_mechanism` の継手方針。
 
         Raises:
-            ParameterError: 上流の下限より緩い値を持つ場合。
+            ParameterError: 上流の下限より緩い値を持つ場合、または段の板厚が
+                上流のインサート長を収めきれない場合。
         """
         self.joint_local.validate_against_upstream(joint_policy)
+        # ⚠️ 段どうしの締結は半径方向であり、インサートは**段の肉の中**へ入る
+        # （要件 2.6 / 決定 3）。板厚が上流のインサート長以下だと、記録された
+        # インサートは肉を突き抜ける——⚠️ **足りない座を黙って浅く作らない**
+        # （`shapes` の adapter が同じ理由で座を浅くしないのと同じ規律）。
+        if self.board.deck_thickness_mm <= joint_policy.insert_length_mm:
+            raise ParameterError(
+                f"board.deck_thickness_mm={self.board.deck_thickness_mm!r} は "
+                f"上流 JointPolicy.insert_length_mm="
+                f"{joint_policy.insert_length_mm!r} より大きくなければならない"
+                "（段どうしを留める半径方向のインサートが段の肉に収まらない）。"
+            )
 
     def mass_items(self) -> tuple[MassItem, ...]:
         """搭載物の質量と保持高さを並べて返す（要件 7.8）。

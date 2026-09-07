@@ -52,8 +52,20 @@ from chassis_mechanism.config import (
 )
 from chassis_mechanism.errors import ConsistencyError, GeometryError, ParameterError
 from chassis_mechanism.joints import (
+    ASSUMPTIONS,
+    BATTERY_TRAY_ARM_INDEX,
+    BOSS_DIAMETER_FACTOR,
+    DECK_SEAT_JOINT_NAME,
     DEFAULT_JOINT_SCHEDULE_PATH,
     FASTENER_KINDS,
+    LAYER_NORMAL_AXIS,
+    battery_tray_ear_length_mm,
+    board_deck_outer_diameter_mm,
+    board_deck_rise_mm,
+    catch_deck_outer_diameter_mm,
+    catch_deck_rise_mm,
+    deck_collar_length_mm,
+    deck_riser_outer_diameter_mm,
     FastenerLine,
     FastenerSchedule,
     JointSpec,
@@ -156,6 +168,14 @@ def test_joint_names_are_derived_from_the_geometry_and_the_dimensions() -> None:
             for index in range(1, counts["adapter_segment"] + 1)
         )
         + ("adapter__trash_can",)
+        + (
+            f"motor_arm_{BATTERY_TRAY_ARM_INDEX}__battery_tray",
+            DECK_SEAT_JOINT_NAME,
+        )
+        + tuple(
+            f"board_deck__catch_deck_{index}"
+            for index in range(1, counts["catch_deck"] + 1)
+        )
         + tuple(
             f"service_stand_{index}__wheel_{index}"
             for index in range(1, params.chassis.stand.leg_count + 1)
@@ -1071,19 +1091,31 @@ def test_the_schedule_carries_nut_rows_for_the_insert_free_joint() -> None:
     schedule = derive_fastener_schedule(derive_layout(params), params)
     retention = _named(schedule.joints, "adapter__trash_can")
 
+    tray = _named(
+        schedule.joints, f"motor_arm_{BATTERY_TRAY_ARM_INDEX}__battery_tray"
+    )
     nut_lines = [line for line in schedule.lines if line.kind == "nut"]
     assert len(nut_lines) == 1
-    assert nut_lines[0].count == retention.bolt_count
+    # ⚠️ **インサートで受けない接合部は1つとは限らない。** ゴミ箱のクランプ
+    # （相手が購入部品）とバッテリトレイの締結（向こう側の耳の肉が上流の
+    # インサート長より薄い）の2つがあり、⚠️ **ナットの行はその総和でなければ
+    # ならない**——片方だけを数えると、買い忘れが「一覧が正しい」という顔をして
+    # 残る。
+    assert nut_lines[0].count == retention.bolt_count + tray.bolt_count
+    assert retention.insert_count == 0
+    assert tray.insert_count == 0
     assert nut_lines[0].length_mm is None
     assert nut_lines[0].designation == params.joint.bolt_designation
 
     insert_lines = [line for line in schedule.lines if line.kind == "insert"]
     assert len(insert_lines) == 1
     assert insert_lines[0].count == sum(spec.insert_count for spec in schedule.joints)
-    # ⚠️ 保持の3本はインサートの合計に含まれない。
+    # ⚠️ **インサートで受けない接合部のボルトは、インサートの合計に含まれない。**
+    # 数えるのは「ボルトの総数 − ナットで受けるボルトの総数」であり、
+    # ⚠️ 名指しした1つを引くのではない（家族が増えたときに黙って合わなくなる）。
     assert insert_lines[0].count == sum(
         spec.bolt_count for spec in schedule.joints
-    ) - retention.bolt_count
+    ) - nut_lines[0].count
 
 
 def test_more_retention_points_move_both_the_bolts_and_the_nuts() -> None:
@@ -1105,3 +1137,178 @@ def test_more_retention_points_move_both_the_bolts_and_the_nuts() -> None:
     assert _named(after.joints, "adapter__trash_can").bolt_count == 5
     assert _nuts(after) - _nuts(before) == 2
     assert _named(after.joints, "adapter__trash_can").insert_count == 0
+
+
+# ---------------------------------------------------------------------------
+# 9. バッテリトレイと段積み土台の家族（タスク 3.4 / 要件 7.1, 7.2, 7.10, 7.13）
+# ---------------------------------------------------------------------------
+
+
+def test_the_deck_rises_are_measured_from_the_can_bottom() -> None:
+    """⚠️ **段の高さは缶の底からの立ち上がりとして導かれる**（要件 7.11）。
+
+    ⚠️ **駆動ベースの高さに依存しない**——だからこそ `segment_counts` が
+    `ChassisLayout` 無しで段の分割数を導ける。
+    """
+    params = _params()
+    board = params.chassis.board
+    can = params.trash_can
+    assert board_deck_rise_mm(params) == pytest.approx(
+        can.bottom_thickness_mm + board.can_clearance_mm
+    )
+    # ⚠️ **重ね代を含む。** 受け止めデッキは板から重ね代ぶん下へ垂れる筒を
+    # 持ち、⚠️ **「部品の頭 ＋ 放熱の隙間」を空けるのは板ではなく筒の下端**で
+    # ある。重ね代を落とすと筒が搭載部品の居場所へ入り込む。
+    assert catch_deck_rise_mm(params) == pytest.approx(
+        board_deck_rise_mm(params)
+        + board.deck_thickness_mm
+        + board.standoff_height_mm
+        + board.component_height_mm
+        + board.cooling_gap_mm
+        + deck_collar_length_mm(params)
+    )
+    # ⚠️ 板だけを「部品の頭 ＋ 隙間」に置く式との差は、ちょうど重ね代である。
+    assert catch_deck_rise_mm(params) - deck_collar_length_mm(params) == pytest.approx(
+        board_deck_rise_mm(params)
+        + board.deck_thickness_mm
+        + board.standoff_height_mm
+        + board.component_height_mm
+        + board.cooling_gap_mm
+    )
+
+
+def test_the_deck_outer_diameters_come_from_the_can_at_those_heights() -> None:
+    """⚠️ **段の外径はその高さの缶の内径から導かれる**（要件 7.11）。"""
+    params = _params()
+    can = params.trash_can
+    clearance_mm = params.chassis.board.can_clearance_mm
+    slope = math.tan(math.radians(can.taper_deg))
+    for diameter_mm, rise_mm in (
+        (board_deck_outer_diameter_mm(params), board_deck_rise_mm(params)),
+        (catch_deck_outer_diameter_mm(params), catch_deck_rise_mm(params)),
+    ):
+        expected_mm = 2.0 * (
+            can.bottom_outer_diameter_mm / 2.0
+            - can.bottom_thickness_mm
+            + rise_mm * slope
+            - clearance_mm
+        )
+        assert diameter_mm == pytest.approx(expected_mm, abs=1e-9)
+    # ⚠️ 上の段のほうが太い（缶が上へ広がることを式が実際に見ている）。
+    assert catch_deck_outer_diameter_mm(params) > board_deck_outer_diameter_mm(params)
+
+
+def test_a_can_whose_taper_leaves_no_deck_is_rejected() -> None:
+    """⚠️ 隙間を引いて段が残らない採寸値は拒否される（黙って負の径を返さない）。"""
+    params = _params()
+    huge = replace(
+        params,
+        chassis=replace(
+            params.chassis,
+            board=replace(params.chassis.board, can_clearance_mm=1000.0),
+        ),
+    )
+    with pytest.raises(GeometryError) as excinfo:
+        board_deck_outer_diameter_mm(huge)
+    assert "can_clearance_mm" in str(excinfo.value)
+
+
+def test_the_riser_outer_diameter_is_the_hub_plate_outer_diameter() -> None:
+    """⚠️ 立ち上がりの外径は中央部の外径そのものである（要件 7.10）。"""
+    params = _params()
+    assert deck_riser_outer_diameter_mm(params) == params.chassis.base.hub_outer_diameter_mm
+
+
+def test_the_deck_collar_length_holds_the_bolt_seat_ring() -> None:
+    """⚠️ 重ね代は座の外径の2倍である（`DECK_COLLAR_LENGTH_FORMULA`）。"""
+    params = _params()
+    boss_mm = BOSS_DIAMETER_FACTOR * params.joint.insert_outer_diameter_mm
+    assert deck_collar_length_mm(params) == pytest.approx(
+        BOSS_DIAMETER_FACTOR * boss_mm
+    )
+    assert deck_collar_length_mm(params) > boss_mm
+
+
+def test_the_tray_ear_length_follows_the_bolt_count() -> None:
+    """⚠️ 耳の長さは本数 × 座の外径である（`BATTERY_TRAY_EAR_LENGTH_FORMULA`）。"""
+    params = _params()
+    layout = derive_layout(params)
+    tray_joint = _named(
+        derive_joints(layout, params),
+        f"motor_arm_{BATTERY_TRAY_ARM_INDEX}__battery_tray",
+    )
+    boss_mm = BOSS_DIAMETER_FACTOR * params.joint.insert_outer_diameter_mm
+    assert battery_tray_ear_length_mm(layout, params) == pytest.approx(
+        tray_joint.bolt_count * boss_mm
+    )
+
+
+def test_the_tray_joint_is_tangential_and_backed_by_nuts() -> None:
+    """⚠️ トレイの締結は接線方向であり、ナットで受ける（要件 2.6, 2.8）。"""
+    params = _params()
+    spec = _named(
+        derive_joints(derive_layout(params), params),
+        f"motor_arm_{BATTERY_TRAY_ARM_INDEX}__battery_tray",
+    )
+    assert spec.print_normal_axis != LAYER_NORMAL_AXIS
+    assert spec.insert_count == 0
+    assert spec.dowel_count == 0
+    assert spec.members == (f"motor_arm_{BATTERY_TRAY_ARM_INDEX}", "battery_tray")
+    # ⚠️ 積み上がりは「手前の耳 ＋ アームの幅 ＋ 向こうの耳」である。
+    assert spec.bolt_length_mm == pytest.approx(
+        2.0 * params.chassis.battery.tray_wall_thickness_mm
+        + params.chassis.base.arm_width_mm
+        + params.joint.insert_length_mm
+        + params.chassis.joint_local.fastener_length_margin_mm
+    )
+
+
+def test_the_deck_seat_joint_carries_no_fasteners() -> None:
+    """⚠️ 段↔アダプタは締結部品を持たない拘束である（要件 7.10）。"""
+    params = _params()
+    schedule = derive_fastener_schedule(derive_layout(params), params)
+    spec = _named(schedule.joints, DECK_SEAT_JOINT_NAME)
+    assert spec.bolt_count == 0
+    assert spec.insert_count == 0
+    assert spec.dowel_count == 0
+    assert spec.bolt_length_mm == 0.0
+    assert spec.print_normal_axis != LAYER_NORMAL_AXIS
+    assert spec.bearing_area_mm2 == pytest.approx(
+        math.pi
+        * deck_riser_outer_diameter_mm(params)
+        * params.chassis.adapter.wall_thickness_mm
+    )
+    assert spec.bearing_area_mm2 >= params.joint.min_bearing_area_mm2
+
+
+def test_the_deck_to_deck_joints_follow_the_upper_deck_split() -> None:
+    """⚠️ 段どうしの接合部の件数は上の段の分割数そのものである（要件 7.13）。"""
+    params = _params()
+    counts = segment_counts(params)
+    specs = derive_joints(derive_layout(params), params)
+    names = [
+        spec.name for spec in specs if spec.name.startswith("board_deck__catch_deck")
+    ]
+    assert len(names) == counts["catch_deck"]
+    for name in names:
+        spec = _named(specs, name)
+        assert spec.print_normal_axis != LAYER_NORMAL_AXIS
+        assert spec.insert_count == spec.bolt_count
+        assert spec.dowel_count == 0
+        assert spec.bolt_length_mm == pytest.approx(
+            params.chassis.board.deck_thickness_mm
+            + params.joint.insert_length_mm
+            + params.chassis.joint_local.fastener_length_margin_mm
+        )
+
+
+def test_the_assumptions_record_the_standoff_hardware_gap() -> None:
+    """⚠️ **要件 2.10 の欠けを記録として残す**（要件 11.7 / タスク 5.5 への申し送り）。
+
+    基板を留めるスタンドオフとインサートは接合部として記録できない（締結の軸が
+    積層方向である）。⚠️ **そのぶん締結部品一覧に現れない**ことを、
+    ⚠️ **一覧そのものではなく前提の記録に残す**——調達で気付くのでは遅い。
+    """
+    joined = "".join(ASSUMPTIONS)
+    assert "mount_boss_angles_deg" in joined
+    assert "5.5" in joined

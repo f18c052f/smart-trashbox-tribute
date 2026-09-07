@@ -174,6 +174,8 @@ def make_battery(**overrides: object) -> BatterySpec:
         "mass_g": 330.0,
         "tray_wall_thickness_mm": 3.0,
         "hold_height_mm": 20.0,
+        "fuse_holder_length_mm": 35.0,
+        "fuse_holder_width_mm": 12.0,
     }
     values.update(overrides)
     return BatterySpec(**values)  # type: ignore[arg-type]
@@ -188,6 +190,9 @@ def make_board(**overrides: object) -> BoardSpec:
         "cooling_gap_mm": 10.0,
         "mass_g": 260.0,
         "hold_height_mm": 90.0,
+        "deck_thickness_mm": 8.0,
+        "component_height_mm": 25.0,
+        "can_clearance_mm": 2.0,
     }
     values.update(overrides)
     return BoardSpec(**values)  # type: ignore[arg-type]
@@ -583,7 +588,11 @@ POSITIVE_LENGTH_CASES = [
     (make_battery, "length_mm"),
     (make_battery, "mass_g"),
     (make_battery, "hold_height_mm"),
+    (make_battery, "fuse_holder_length_mm"),
+    (make_battery, "fuse_holder_width_mm"),
     (make_board, "deck_x_mm"),
+    (make_board, "deck_thickness_mm"),
+    (make_board, "component_height_mm"),
     (make_board, "standoff_height_mm"),
     (make_board, "mass_g"),
     (make_board, "hold_height_mm"),
@@ -618,6 +627,7 @@ def test_non_positive_values_are_rejected_with_name_and_value(
         (make_clearance, "cable_lowest_offset_mm"),
         (make_clearance, "fastener_protrusion_mm"),
         (make_board, "cooling_gap_mm"),
+        (make_board, "can_clearance_mm"),
         (make_stand, "wheel_rotation_clearance_mm"),
         (make_joint_local, "fastener_length_margin_mm"),
     ],
@@ -636,6 +646,7 @@ def test_zero_is_allowed_where_zero_is_a_decision(
         (make_adapter, "seat_clearance_mm"),
         (make_clearance, "cable_lowest_offset_mm"),
         (make_board, "cooling_gap_mm"),
+        (make_board, "can_clearance_mm"),
         (make_joint_local, "fastener_length_margin_mm"),
     ],
 )

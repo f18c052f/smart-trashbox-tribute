@@ -38,13 +38,17 @@ from chassis_mechanism.shapes import (
     MIN_HAND_ACCESS_MM,
     PART_NAMES,
     AdapterGeometry,
+    BatteryTrayGeometry,
     BuiltPart,
+    DeckStackGeometry,
     DriveBaseGeometry,
     StandGeometry,
     StandInputs,
     adapter_geometry,
+    battery_tray_geometry,
     build_parts,
     build_service_stand_legs,
+    deck_stack_geometry,
     drive_base_geometry,
     measure_part,
     part_names,
@@ -500,7 +504,9 @@ from chassis_mechanism.errors import CadUnavailableError
 from chassis_mechanism.layout import derive_layout
 from chassis_mechanism.shapes import (
     adapter_geometry,
+    battery_tray_geometry,
     build_parts,
+    deck_stack_geometry,
     drive_base_geometry,
     part_names,
     stand_geometry,
@@ -512,6 +518,8 @@ layout = derive_layout(params)
 geometry = stand_geometry(stand_inputs(params, layout))
 drive_base = drive_base_geometry(params, layout)
 adapter = adapter_geometry(params, layout)
+deck = deck_stack_geometry(params, layout)
+tray = battery_tray_geometry(params, layout)
 
 report = {
     "stub_blocked_the_shape_library": blocked,
@@ -532,6 +540,15 @@ report = {
     "adapter_cut_radius_mm": adapter.cut_radius_mm,
     "adapter_lip_width_mm": adapter.lip_width_mm,
     "adapter_retention_bolt_count": adapter.retention_bolt_count,
+    "board_deck_radius_mm": deck.board_plate_radius_mm,
+    "catch_deck_radius_mm": deck.catch_plate_radius_mm,
+    "catch_segment_count": deck.catch_segment_count,
+    "deck_usable_area_mm2": deck.usable_area_mm2,
+    "liner_flat_min_diameter_mm": deck.liner_flat_min_diameter_mm,
+    "switch_provision_band_mm": list(deck.switch_provision_band_mm),
+    "tray_floor_bottom_height_mm": tray.floor_bottom_height_mm,
+    "tray_extraction_angle_deg": tray.extraction_angle_deg,
+    "tray_ear_outer_radius_mm": tray.ear_outer_radius_mm,
     "build_failed": False,
     "error_type": "",
     "message": "",
@@ -626,6 +643,20 @@ def test_geometry_is_available_and_building_fails_loudly_without_the_shape_libra
     assert report["adapter_cut_radius_mm"] == adapter.cut_radius_mm
     assert report["adapter_lip_width_mm"] == adapter.lip_width_mm
     assert report["adapter_retention_bolt_count"] == adapter.retention_bolt_count
+    # ⚠️ **段とトレイも算術だけで決まる**（上流の採寸値・テーパー角・分割数導出）。
+    # 成立条件——取付面が足りるか、放熱の隙間に座が収まるか、缶の口より下か——は
+    # すべてこの環境で評価済みであり、⚠️ CAD が無いことは「分からない」ではない。
+    deck = deck_stack_geometry(params, derive_layout(params))
+    tray = battery_tray_geometry(params, derive_layout(params))
+    assert report["board_deck_radius_mm"] == deck.board_plate_radius_mm
+    assert report["catch_deck_radius_mm"] == deck.catch_plate_radius_mm
+    assert report["catch_segment_count"] == deck.catch_segment_count
+    assert report["deck_usable_area_mm2"] == deck.usable_area_mm2
+    assert report["liner_flat_min_diameter_mm"] == deck.liner_flat_min_diameter_mm
+    assert tuple(report["switch_provision_band_mm"]) == deck.switch_provision_band_mm
+    assert report["tray_floor_bottom_height_mm"] == tray.floor_bottom_height_mm
+    assert report["tray_extraction_angle_deg"] == tray.extraction_angle_deg
+    assert report["tray_ear_outer_radius_mm"] == tray.ear_outer_radius_mm
     assert report["build_failed"] is True
     assert report["error_type"] == "CadUnavailableError"
     assert "cad" in report["message"]
@@ -770,7 +801,15 @@ def test_the_drive_base_is_a_central_plate_with_three_radial_arms(
     assert counts["motor_arm"] == params.chassis.base.wheel_count  # type: ignore[attr-defined]
     assert drive_base.wheel_angles_deg == layout.wheel_angles_deg  # type: ignore[attr-defined]
     assert drive_base.wheel_count == counts["motor_arm"]
-    assert PART_NAMES == ("hub_plate", "motor_arm", "adapter_segment", "service_stand")
+    assert PART_NAMES == (
+        "hub_plate",
+        "motor_arm",
+        "adapter_segment",
+        "battery_tray",
+        "board_deck",
+        "catch_deck",
+        "service_stand",
+    )
     assert part_names(params) == (  # type: ignore[arg-type]
         "hub_plate",
         "motor_arm_1",
@@ -779,6 +818,14 @@ def test_the_drive_base_is_a_central_plate_with_three_radial_arms(
         "adapter_segment_1",
         "adapter_segment_2",
         "adapter_segment_3",
+        "battery_tray",
+        # ⚠️ **基板デッキだけ番号を持たない。** 分割数は缶の内径から従属し
+        # （要件 7.13）、出荷の寸法では 1 である——`part_names` の規約では
+        # 分割しない部品は番号を持たない。番号の有無を手で決めていない。
+        "board_deck",
+        "catch_deck_1",
+        "catch_deck_2",
+        "catch_deck_3",
         "service_stand_1",
         "service_stand_2",
         "service_stand_3",
@@ -1545,3 +1592,524 @@ def test_the_retention_joint_needs_no_insert_in_the_seat_wall(
     )
     assert retention.insert_count == 0
     assert retention.bolt_count == adapter.retention_bolt_count
+
+
+# ---------------------------------------------------------------------------
+# バッテリトレイと段積み土台（タスク 3.4 / 要件 7.1-7.5, 7.10-7.13, 8.3, 8.5）
+#
+# ⚠️ **本節は形状ライブラリを要さない側である。** 実形状に対する不変条件は
+# `test_chassis_invariants.py` が持つ（design.md `#### Shapes`）。ここが固定
+# するのは、**形を作る前に決まる**数と成立条件である。
+# ---------------------------------------------------------------------------
+
+
+def _with_board(shipped: tuple[object, object], **changes: object) -> object:
+    """基板デッキの寸法パラメータだけを差し替えた `ResolvedParams` を作る。"""
+    import dataclasses
+
+    params, _ = shipped
+    return dataclasses.replace(
+        params,
+        chassis=dataclasses.replace(
+            params.chassis,  # type: ignore[attr-defined]
+            board=dataclasses.replace(params.chassis.board, **changes),  # type: ignore[attr-defined]
+        ),
+    )
+
+
+def _with_battery(shipped: tuple[object, object], **changes: object) -> object:
+    import dataclasses
+
+    params, _ = shipped
+    return dataclasses.replace(
+        params,
+        chassis=dataclasses.replace(
+            params.chassis,  # type: ignore[attr-defined]
+            battery=dataclasses.replace(params.chassis.battery, **changes),  # type: ignore[attr-defined]
+        ),
+    )
+
+
+@pytest.fixture(scope="module")
+def deck(shipped: tuple[object, object]) -> DeckStackGeometry:
+    params, layout = shipped
+    return deck_stack_geometry(params, layout)  # type: ignore[arg-type]
+
+
+@pytest.fixture(scope="module")
+def tray(shipped: tuple[object, object]) -> BatteryTrayGeometry:
+    params, layout = shipped
+    return battery_tray_geometry(params, layout)  # type: ignore[arg-type]
+
+
+def test_the_deck_geometry_needs_no_shape_library(
+    shipped: tuple[object, object], deck: DeckStackGeometry, tray: BatteryTrayGeometry
+) -> None:
+    """⚠️ 段とトレイの**全数値と成立条件**は形状ライブラリ無しで評価できる。
+
+    `stand_geometry` / `drive_base_geometry` / `adapter_geometry` と同じ規律で
+    ある（design.md「Allowed Dependencies」）。形が成立するかを知るために CAD を
+    要求しない。
+    """
+    source = ast.parse(SHAPES_SOURCE.read_text(encoding="utf-8"))
+    for node in ast.walk(source):
+        if isinstance(node, ast.FunctionDef) and node.name in {
+            "deck_stack_geometry",
+            "battery_tray_geometry",
+        }:
+            for inner in ast.walk(node):
+                assert not isinstance(inner, (ast.Import, ast.ImportFrom)), node.name
+    assert deck.board_plate_radius_mm > 0.0
+    assert tray.envelope.x_mm > 0.0
+
+
+def test_each_deck_height_is_derived_from_the_can_bottom_and_upstream_values(
+    shipped: tuple[object, object], deck: DeckStackGeometry
+) -> None:
+    """⚠️ **段の高さは缶の底の面から積み上げて決まる**（要件 7.10, 7.11）。
+
+    ⚠️ **どの段が何を担うかを数の並びとして固定する**（要件 7.10 が「各段の
+    高さと担当する搭載物を記録する」ことを求めている）。
+
+      - 基板デッキ: 缶の底 ＋ 缶の肉厚（残る縁）＋ 隙間 の高さに下面がある
+      - 受け止めデッキ: 基板面 ＋ 部品の高さ ＋ 放熱の隙間 の上に下面がある
+    """
+    params, _ = shipped
+    board = params.chassis.board  # type: ignore[attr-defined]
+    can = params.trash_can  # type: ignore[attr-defined]
+    adapter = adapter_geometry(params, derive_layout(params))  # type: ignore[arg-type]
+
+    assert deck.can_bottom_height_mm == pytest.approx(adapter.floor_top_height_mm)
+    assert deck.board_plate_bottom_height_mm == pytest.approx(
+        deck.can_bottom_height_mm + can.bottom_thickness_mm + board.can_clearance_mm
+    )
+    assert deck.board_plate_top_height_mm == pytest.approx(
+        deck.board_plate_bottom_height_mm + board.deck_thickness_mm
+    )
+    assert deck.board_plane_height_mm == pytest.approx(
+        deck.board_plate_top_height_mm + board.standoff_height_mm
+    )
+    assert deck.component_top_height_mm == pytest.approx(
+        deck.board_plane_height_mm + board.component_height_mm
+    )
+    # ⚠️ **「部品の頭 ＋ 放熱の隙間」を空けるのは板ではなく筒の下端である。**
+    # 板だけで高さを決めると、筒が重ね代ぶん下へ垂れて搭載部品の居場所を奪う。
+    assert deck.catch_tube_bottom_height_mm == pytest.approx(
+        deck.component_top_height_mm + board.cooling_gap_mm
+    )
+    assert deck.catch_plate_bottom_height_mm == pytest.approx(
+        deck.catch_tube_bottom_height_mm + deck.collar_length_mm
+    )
+    assert deck.riser_top_height_mm == pytest.approx(deck.catch_plate_bottom_height_mm)
+    # ⚠️ 段は缶の口より下に収まる（受け止め面が缶の外へ出ない）。
+    assert deck.catch_plate_top_height_mm < deck.can_mouth_height_mm
+
+
+def test_each_deck_outline_follows_the_can_diameter_at_its_own_height(
+    shipped: tuple[object, object], deck: DeckStackGeometry
+) -> None:
+    """⚠️ **段の外形はその高さの缶の内径から導かれる**（要件 7.11）。
+
+    ⚠️ **缶はテーパーで上へ広がるため、2つの段の径は等しくない。** 期待値は
+    上流の採寸値だけから独立に組み立てる（`joints` の式を再実行しない）。
+    """
+    import math
+
+    params, _ = shipped
+    can = params.trash_can  # type: ignore[attr-defined]
+    clearance_mm = params.chassis.board.can_clearance_mm  # type: ignore[attr-defined]
+    slope = math.tan(math.radians(can.taper_deg))
+    inner_at_bottom_mm = can.bottom_outer_diameter_mm / 2.0 - can.bottom_thickness_mm
+
+    for radius_mm, bottom_mm in (
+        (deck.board_plate_radius_mm, deck.board_plate_bottom_height_mm),
+        (deck.catch_plate_radius_mm, deck.catch_plate_bottom_height_mm),
+    ):
+        expected_mm = (
+            inner_at_bottom_mm
+            + (bottom_mm - deck.can_bottom_height_mm) * slope
+            - clearance_mm
+        )
+        assert radius_mm == pytest.approx(expected_mm, abs=1e-9)
+        assert deck.can_inner_radius_mm(bottom_mm) == pytest.approx(
+            radius_mm + clearance_mm, abs=1e-9
+        )
+    assert deck.catch_plate_radius_mm > deck.board_plate_radius_mm
+
+
+def test_the_deck_split_comes_from_the_upstream_segment_derivation(
+    shipped: tuple[object, object], deck: DeckStackGeometry
+) -> None:
+    """⚠️ 段が造形可能寸法を超えれば上流の分割数導出に従って分割する（要件 7.13）。"""
+    from catch_mechanism import required_segment_count
+
+    from chassis_mechanism.joints import (
+        board_deck_outer_diameter_mm,
+        catch_deck_outer_diameter_mm,
+        segment_counts,
+    )
+
+    params, _ = shipped
+    counts = segment_counts(params)  # type: ignore[arg-type]
+    assert deck.board_segment_count == counts["board_deck"]
+    assert deck.catch_segment_count == counts["catch_deck"]
+    assert counts["board_deck"] == required_segment_count(
+        board_deck_outer_diameter_mm(params), params.printing  # type: ignore[arg-type]
+    )
+    assert counts["catch_deck"] == required_segment_count(
+        catch_deck_outer_diameter_mm(params), params.printing  # type: ignore[arg-type]
+    )
+    # ⚠️ 出荷の寸法では、上の段だけが分割される（分割が名ばかりでないこと）。
+    assert deck.board_segment_count == 1
+    assert deck.catch_segment_count > 1
+
+
+def test_a_narrower_printer_splits_the_lower_deck_too(
+    shipped: tuple[object, object]
+) -> None:
+    """⚠️ 造形面を狭めれば下の段も分割される（分割数が導出であること。要件 2.1）。"""
+    import dataclasses
+
+    from chassis_mechanism.joints import segment_counts
+
+    params, layout = shipped
+    # ⚠️ **駆動ベースが成立する範囲で狭める。** 120mm まで狭めると中央部が
+    # 先に造形可能寸法を超え、⚠️ 段の分割について何も言えなくなる。
+    narrow = dataclasses.replace(
+        params,
+        printing=dataclasses.replace(
+            params.printing, build_x_mm=160.0, build_y_mm=160.0  # type: ignore[attr-defined]
+        ),
+    )
+    counts = segment_counts(narrow)
+    assert counts["board_deck"] > 1
+    assert deck_stack_geometry(narrow, layout).board_segment_count == counts[  # type: ignore[arg-type]
+        "board_deck"
+    ]
+
+
+def test_the_riser_outer_diameter_is_the_hub_plate_diameter(
+    shipped: tuple[object, object], deck: DeckStackGeometry
+) -> None:
+    """⚠️ **立ち上がりの外径は中央部の外径そのものである**（要件 7.10）。
+
+    段が下から上へ抜けられる道はアダプタの床の内縁の内側しかなく、その内縁は
+    中央部の外径に嵌め合い隙間を足したものである。⚠️ **別の数を置けば、掴む面が
+    消えるか床と食い合う。**
+    """
+    params, layout = shipped
+    adapter = adapter_geometry(params, layout)  # type: ignore[arg-type]
+    assert deck.riser_outer_radius_mm == pytest.approx(
+        params.chassis.base.hub_outer_diameter_mm / 2.0  # type: ignore[attr-defined]
+    )
+    assert adapter.skirt_inner_radius_mm > deck.riser_outer_radius_mm
+    assert deck.riser_inner_radius_mm == pytest.approx(
+        deck.riser_outer_radius_mm - deck.deck_thickness_mm
+    )
+
+
+def test_the_board_deck_offers_at_least_the_mounting_area_the_boards_need(
+    shipped: tuple[object, object], deck: DeckStackGeometry
+) -> None:
+    """⚠️ **取付面が要る面積以上ある**（要件 7.4 / design.md 決定 4b）。
+
+    決定 4b は「必要な 19,600mm^2 に対して1段で足りる」と**面積で**述べている。
+    ⚠️ **内接する長方形として読まない**——Ø182 に一辺 140 の正方形は入らず、
+    決定 4b はその読み方を採っていない。
+    """
+    params, _ = shipped
+    board = params.chassis.board  # type: ignore[attr-defined]
+    assert deck.required_area_mm2 == pytest.approx(board.deck_x_mm * board.deck_y_mm)
+    assert deck.usable_area_mm2 >= deck.required_area_mm2
+
+
+def test_a_deck_too_small_for_the_boards_is_rejected(
+    shipped: tuple[object, object]
+) -> None:
+    """⚠️ 取付面が足りない寸法は拒否される（黙って狭い段を作らない）。"""
+    _, layout = shipped
+    bigger = _with_board(shipped, deck_x_mm=300.0, deck_y_mm=300.0)
+    with pytest.raises(GeometryError) as excinfo:
+        deck_stack_geometry(bigger, layout)  # type: ignore[arg-type]
+    assert "deck_x_mm" in str(excinfo.value)
+
+
+def test_the_bolt_between_the_decks_sits_in_the_middle_of_the_overlap(
+    shipped: tuple[object, object], deck: DeckStackGeometry
+) -> None:
+    """⚠️ **段どうしのボルトは重ね代の中央にある**（要件 2.9）。
+
+    重ね代は座の外径の2倍であり（`joints.DECK_COLLAR_LENGTH_FORMULA`）、中央に
+    置けば座の環の上下に半径ぶんずつの肉が残る。⚠️ **部品の頭との関係で置かない**
+    ——重ね代の外へ出た座は、どちらの筒にも載らない。
+    """
+    _, _ = shipped
+    assert deck.deck_bolt_height_mm == pytest.approx(
+        deck.catch_plate_bottom_height_mm - deck.collar_length_mm / 2.0
+    )
+    assert (
+        deck.catch_tube_bottom_height_mm + deck.boss_diameter_mm / 2.0
+        <= deck.deck_bolt_height_mm
+        <= deck.catch_plate_bottom_height_mm - deck.boss_diameter_mm / 2.0
+    )
+    # ⚠️ 搭載部品の頭より十分に上にある（工具が水平に入る）。
+    assert deck.deck_bolt_height_mm > deck.component_top_height_mm
+
+
+def test_the_catch_deck_tube_may_not_reach_into_the_component_envelope(
+    shipped: tuple[object, object], deck: DeckStackGeometry
+) -> None:
+    """⚠️ **筒の下端が「部品の頭 ＋ 放熱の隙間」を空ける**（要件 7.4, 7.5）。
+
+    ⚠️ **これは一度落とした落とし穴である。** 板の下面だけを「部品の頭 ＋
+    隙間」に置くと、筒が重ね代ぶん下へ垂れて搭載部品の居場所へ入り込み、
+    ⚠️ **それでも取付面の見積もりは塞がれた面積を数えたまま「足りている」と
+    述べる**。ここが発火するのは `joints.catch_deck_rise_mm` が重ね代を
+    落としたときである。
+    """
+    import dataclasses
+
+    params, layout = shipped
+    assert deck.catch_tube_bottom_height_mm == pytest.approx(
+        deck.component_top_height_mm + deck.cooling_gap_mm
+    )
+
+    # ⚠️ 空振りでないこと: 重ね代を伸ばせば（＝板の高さを据え置いたまま筒だけ
+    # 下げれば）筒は部品の居場所へ落ちてくる。段の板厚を通じて重ね代を動かせない
+    # ため、上流のインサート外径を太らせて重ね代を伸ばす。
+    thicker = dataclasses.replace(
+        params,
+        joint=dataclasses.replace(
+            params.joint,  # type: ignore[attr-defined]
+            insert_outer_diameter_mm=params.joint.insert_outer_diameter_mm * 1.4,  # type: ignore[attr-defined]
+        ),
+    )
+    # 重ね代が伸びれば板も一緒に上がるため、正しい式のままでは発火しない。
+    assert deck_stack_geometry(thicker, layout).catch_tube_bottom_height_mm == (  # type: ignore[arg-type]
+        pytest.approx(deck.component_top_height_mm + deck.cooling_gap_mm)
+    )
+
+
+def test_the_recorded_board_hold_height_must_match_what_the_deck_gives(
+    shipped: tuple[object, object], deck: DeckStackGeometry
+) -> None:
+    """⚠️ 記録された保持高さが段の与える収まりの中にある（要件 7.8）。
+
+    ⚠️ **記録と実物の置き場所が食い違えば、合成重心の見積もりは実機と別の機体に
+    ついて述べる。**
+    """
+    params, layout = shipped
+    hold_mm = params.chassis.board.hold_height_mm  # type: ignore[attr-defined]
+    assert deck.board_plane_height_mm <= hold_mm <= deck.component_top_height_mm
+
+    for bad_mm in (deck.board_plane_height_mm - 1.0, deck.component_top_height_mm + 1.0):
+        with pytest.raises(GeometryError) as excinfo:
+            deck_stack_geometry(_with_board(shipped, hold_height_mm=bad_mm), layout)  # type: ignore[arg-type]
+        assert "hold_height_mm" in str(excinfo.value)
+
+
+def test_the_top_deck_must_clear_the_upstream_liner_flat_minimum(
+    shipped: tuple[object, object], deck: DeckStackGeometry
+) -> None:
+    """⚠️ **最上段の平面の下限は上流が正である**（要件 7.12）。
+
+    ⚠️ **本 Spec は読むだけである**——数を書き写せば、上流が緩衝材の方針を
+    変えたときに黙って古い下限を主張し続ける。
+    """
+    from catch_mechanism import load_params as upstream_load_params
+
+    params, layout = shipped
+    upstream = upstream_load_params().retention
+    assert deck.liner_flat_min_diameter_mm == upstream.liner_flat_min_diameter_mm
+    assert params.retention.liner_flat_min_diameter_mm == (  # type: ignore[attr-defined]
+        upstream.liner_flat_min_diameter_mm
+    )
+    assert 2.0 * deck.catch_plate_radius_mm >= deck.liner_flat_min_diameter_mm
+
+    # ⚠️ 下限が上がれば形の側が拒否する（下限が飾りでないこと）。
+    import dataclasses
+
+    demanding = dataclasses.replace(
+        params,
+        retention=dataclasses.replace(
+            params.retention,  # type: ignore[attr-defined]
+            liner_flat_min_diameter_mm=4.0 * deck.catch_plate_radius_mm,
+        ),
+    )
+    with pytest.raises(GeometryError) as excinfo:
+        deck_stack_geometry(demanding, layout)  # type: ignore[arg-type]
+    assert "liner_flat_min_diameter_mm" in str(excinfo.value)
+
+
+def test_the_deck_stack_carries_a_mounting_point_for_every_board(
+    shipped: tuple[object, object], deck: DeckStackGeometry
+) -> None:
+    """⚠️ **モータドライバ3台＋制御基板＋電圧監視＋5V 生成**（要件 7.4）。
+
+    ⚠️ 台数が設定値なのはドライバだけである。残り3枚は要件が名指しで挙げて
+    おり、⚠️ **設定で減らせる形にしない**。
+    """
+    params, _ = shipped
+    assert deck.module_count == params.chassis.board.driver_count + 3  # type: ignore[attr-defined]
+    assert len(deck.mount_boss_angles_deg) == 2 * deck.module_count
+    assert len(set(deck.mount_boss_angles_deg)) == len(deck.mount_boss_angles_deg)
+    assert deck.insert_bore_diameter_mm == params.joint.insert_outer_diameter_mm  # type: ignore[attr-defined]
+    assert deck.insert_bore_depth_mm == params.joint.insert_length_mm  # type: ignore[attr-defined]
+    assert deck.insert_bore_depth_mm < deck.deck_thickness_mm
+
+
+def test_more_drivers_add_more_mounting_points(shipped: tuple[object, object]) -> None:
+    """⚠️ ドライバを増やせば取付箇所が増える（設定から導出であること）。"""
+    _, layout = shipped
+    more = _with_board(shipped, driver_count=4)
+    assert (
+        deck_stack_geometry(more, layout).module_count  # type: ignore[arg-type]
+        == deck_stack_geometry(*shipped).module_count + 1  # type: ignore[arg-type]
+    )
+
+
+def test_the_battery_sits_below_the_drive_base_and_comes_out_sideways(
+    shipped: tuple[object, object], tray: BatteryTrayGeometry
+) -> None:
+    """⚠️ **バッテリは中央部の下に吊られ、半径方向へ引き抜ける**（要件 7.1, 7.2）。"""
+    params, layout = shipped
+    battery = params.chassis.battery  # type: ignore[attr-defined]
+    base = drive_base_geometry(params, layout)  # type: ignore[arg-type]
+
+    assert tray.tray_top_height_mm == pytest.approx(base.underside_height_mm)
+    assert tray.battery_top_height_mm < tray.tray_top_height_mm
+    assert tray.battery_top_height_mm - tray.battery_bottom_height_mm == pytest.approx(
+        battery.height_mm
+    )
+    assert tray.floor_bottom_height_mm < tray.battery_bottom_height_mm
+    assert (
+        tray.floor_bottom_height_mm
+        > params.chassis.clearance.min_ground_clearance_mm  # type: ignore[attr-defined]
+    )
+    # ⚠️ 引き抜く向きにはモータ取付部が無い。
+    for angle_deg in layout.wheel_angles_deg:  # type: ignore[attr-defined]
+        assert abs(
+            (tray.extraction_angle_deg - angle_deg + 180.0) % 360.0 - 180.0
+        ) > 1e-6
+    # ⚠️ 記録された保持高さがポケットの中にある（要件 7.8）。
+    assert (
+        tray.battery_bottom_height_mm
+        <= battery.hold_height_mm
+        <= tray.battery_top_height_mm
+    )
+
+
+def test_an_even_wheel_count_leaves_no_way_to_pull_the_battery_out(
+    shipped: tuple[object, object]
+) -> None:
+    """⚠️ 真後ろが別のアームになる配置は拒否される（要件 7.2）。
+
+    ⚠️ **黙って作らない**——駆動ベースを分解せずに着脱できる経路が無い機体を
+    「作れた」と報告しないための対である。
+    """
+    import dataclasses
+
+    params, _ = shipped
+    four = dataclasses.replace(
+        params,
+        chassis=dataclasses.replace(
+            params.chassis,  # type: ignore[attr-defined]
+            base=dataclasses.replace(params.chassis.base, wheel_count=4),  # type: ignore[attr-defined]
+            stand=dataclasses.replace(params.chassis.stand, leg_count=4),  # type: ignore[attr-defined]
+        ),
+    )
+    layout = derive_layout(four)
+    with pytest.raises(GeometryError) as excinfo:
+        battery_tray_geometry(four, layout)
+    assert "wheel_count" in str(excinfo.value)
+
+
+def test_the_tray_ears_sit_on_the_solid_band_of_the_arm(
+    shipped: tuple[object, object], tray: BatteryTrayGeometry
+) -> None:
+    """⚠️ **耳は二股の外・長穴の外の中実の帯にしか載らない**（要件 2.9, 3.8）。
+
+    二股の中は中央部の舌と `hub_plate__motor_arm_*` のボルトが占めており、
+    ⚠️ 長穴の縁に掛かった座は当たり面にならない。
+    """
+    from chassis_mechanism.joints import battery_tray_ear_length_mm
+
+    params, layout = shipped
+    base = drive_base_geometry(params, layout)  # type: ignore[arg-type]
+    assert tray.ear_inner_radius_mm >= base.fork_root_radius_mm
+    assert tray.ear_inner_radius_mm >= base.slot_center_radius_mm + base.slot_length_mm / 2.0
+    assert tray.ear_outer_radius_mm <= base.arm_outer_radius_mm
+    assert tray.ear_outer_radius_mm - tray.ear_inner_radius_mm == pytest.approx(
+        battery_tray_ear_length_mm(layout, params), abs=1e-9  # type: ignore[arg-type]
+    )
+    # ⚠️ ボルトの本数と並びは `joints` が正である（形の側で数え直さない）。
+    assert len(tray.bolt_radii_mm) == tray.bolt_count
+    for near_mm, far_mm in zip(tray.bolt_radii_mm, tray.bolt_radii_mm[1:], strict=False):
+        assert far_mm - near_mm == pytest.approx(tray.boss_diameter_mm, abs=1e-9)
+
+
+def test_the_tray_holds_the_main_fuse_beside_the_battery(
+    shipped: tuple[object, object], tray: BatteryTrayGeometry
+) -> None:
+    """⚠️ 主ヒューズをバッテリ直近へ置ける保持箇所がある（要件 8.5）。"""
+    params, layout = shipped
+    battery = params.chassis.battery  # type: ignore[attr-defined]
+    assert tray.fuse_bay_outer_y_mm - tray.fuse_bay_inner_y_mm == pytest.approx(
+        battery.fuse_holder_width_mm
+    )
+    assert 2.0 * tray.fuse_bay_half_length_mm == pytest.approx(
+        battery.fuse_holder_length_mm
+    )
+    assert tray.fuse_bay_inner_y_mm == pytest.approx(tray.outer_half_width_mm)
+
+    huge = _with_battery(shipped, fuse_holder_length_mm=400.0)
+    with pytest.raises(GeometryError) as excinfo:
+        battery_tray_geometry(huge, layout)  # type: ignore[arg-type]
+    assert "fuse_holder_length_mm" in str(excinfo.value)
+
+
+def test_the_main_switch_provision_is_a_band_and_not_a_position(
+    shipped: tuple[object, object], deck: DeckStackGeometry
+) -> None:
+    """⚠️ **位置は決めない。決まっていないことを未決のまま持つ**（要件 8.1, 8.3）。
+
+    ⚠️ タスク 5.6 が `power.main_switch_position` と
+    `power.main_switch_height_mm` を決める。本タスクが与えるのは「缶を載せても
+    外から届く高さの帯」だけであり、⚠️ **もっともらしい既定値を置かない**。
+    """
+    params, layout = shipped
+    power = params.chassis.power  # type: ignore[attr-defined]
+    assert power.main_switch_present is True
+    assert power.main_switch_position is None
+    assert power.main_switch_height_mm is None
+
+    base = drive_base_geometry(params, layout)  # type: ignore[arg-type]
+    low_mm, high_mm = deck.switch_provision_band_mm
+    assert low_mm == pytest.approx(base.underside_height_mm)
+    assert high_mm == pytest.approx(deck.can_bottom_height_mm)
+    assert low_mm < high_mm
+
+
+def test_the_deck_geometry_is_deterministic(shipped: tuple[object, object]) -> None:
+    """同一の寸法パラメータからの再導出は同一の値を返す（要件 1.12）。"""
+    params, layout = shipped
+    assert deck_stack_geometry(params, layout) == deck_stack_geometry(params, layout)  # type: ignore[arg-type]
+    assert battery_tray_geometry(params, layout) == battery_tray_geometry(  # type: ignore[arg-type]
+        params, layout
+    )
+
+
+@requires_cad
+def test_the_deck_and_tray_solids_are_deterministic(
+    shipped: tuple[object, object]
+) -> None:
+    """同一の寸法パラメータからの再構築は同一の形状指標を返す（要件 1.12）。"""
+    from chassis_mechanism.shapes import build_battery_tray, build_deck_stack
+
+    params, layout = shipped
+    for builder in (build_battery_tray, build_deck_stack):
+        first = builder(params, layout)  # type: ignore[arg-type]
+        second = builder(params, layout)  # type: ignore[arg-type]
+        assert tuple(part.metrics for part in first) == tuple(
+            part.metrics for part in second
+        )
