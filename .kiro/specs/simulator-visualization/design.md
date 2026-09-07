@@ -311,7 +311,7 @@ viz/
 - `sweep.axes[]` = `{ name, unit, values[] }`。`values` の要素は数値または文字列
 - `sweep.catch_ratio_threshold` は `null` になりうる（試行 1 回の掃引）
 - `cells[]` = `{ axis_values[], status, success_ratio, metrics, not_evaluated_reason }`
-- `calibration.notice` は較正済みの場合 `null` になりうる
+- `calibration.notice` は**未較正のときのみ存在する**。較正済み（`m1_calibrated` / `m2_calibrated`）では上流が**キー自体を省略する**（`src/trajectory_sim/serialize.py` の `_calibration_to_dict`）
 
 ### 列挙値（上流の値をそのまま用いる。翻訳表は `format.ts` が持つ）
 
@@ -530,7 +530,7 @@ export interface CellResult {
 
 export interface Calibration {
   readonly stage: CalibrationStage;
-  readonly notice: string | null;
+  readonly notice?: string | null;
 }
 
 export interface SampleEntry {

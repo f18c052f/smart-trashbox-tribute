@@ -65,10 +65,14 @@ export interface CellResult {
   readonly not_evaluated_reason: NotEvaluatedReason | null;
 }
 
-/** 較正情報。較正済みの場合 `notice` は `null` になりうる。 */
+/**
+ * 較正情報。`notice` は未較正のときのみ存在する。
+ * 較正済み（`m1_calibrated` / `m2_calibrated`）では上流が**キー自体を省略する**
+ * （`src/trajectory_sim/serialize.py` の `_calibration_to_dict`）。
+ */
 export interface Calibration {
   readonly stage: CalibrationStage;
-  readonly notice: string | null;
+  readonly notice?: string | null;
 }
 
 /** 観測サンプル 1 点。 */
