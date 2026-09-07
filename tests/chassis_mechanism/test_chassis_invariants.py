@@ -41,6 +41,11 @@ from chassis_mechanism.shapes import (
     ADAPTER_SEGMENT_PART_NAME,
     ASSEMBLY_ORDER,
     BATTERY_TRAY_PART_NAME,
+    BuiltPart,
+    assembled_interferences,
+    assembled_parts,
+    part_envelopes,
+    part_masses,
     CABLE_GUIDE_PART_NAME,
     BOARD_DECK_PART_NAME,
     CATCH_DECK_PART_NAME,
@@ -4171,3 +4176,203 @@ def test_closing_either_new_opening_blocks_the_harness_path(
     assert sum(_volume(probe & blocked_deck) for probe in probes) > 0.0
     board_deck = _build_board_deck(deck, 0, guide)
     assert sum(_volume(probe & board_deck) for probe in probes) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# 12. 関門が実形状について述べていること（タスク 3.6 / 要件 1.12, 2.2, 2.3,
+#     2.9, 4.4, 7.9, 9.1）
+#
+# ⚠️ **関門は形状ライブラリを要さない側にある**（`shapes.check_before_build`）。
+# それが正しいためには、⚠️ **関門が読む宣言と実形状が一致していなければならない**
+# ——本節はその突き合わせを実ソリッドに対して行う。
+# ---------------------------------------------------------------------------
+
+
+def _tray_seat_probe(tray: Any) -> Any:
+    """回り止めの座として数える範囲（ポケットの足跡とヒューズ置き場）を切り出す箱。
+
+    ⚠️ **解析式が数える範囲と同じ2つの箱である**（`battery_tray_geometry` の
+    `seat_bearing_area_mm2`）。腕と耳の帯は含めない——中央部の下面は半径
+    `hub_radius_mm` で切れており、⚠️ **一部しか当たらない帯を面積へ足さない**。
+    """
+    pocket = _box(
+        (-tray.outer_half_length_mm, tray.outer_half_length_mm),
+        (-tray.outer_half_width_mm, tray.outer_half_width_mm),
+        (tray.tray_top_height_mm - _PROBE_MM, tray.tray_top_height_mm + _PROBE_MM),
+    )
+    fuse_bay = _box(
+        (-tray.fuse_bay_wall_x_mm, tray.fuse_bay_wall_x_mm),
+        (tray.outer_half_width_mm, tray.fuse_bay_wall_y_mm),
+        (tray.tray_top_height_mm - _PROBE_MM, tray.tray_top_height_mm + _PROBE_MM),
+    )
+    return pocket + fuse_bay
+
+
+def _measured_tray_anti_rotation_seat_mm2(solid: Any, tray: Any) -> float:
+    """トレイの上端が中央部の下面へ当たる面の**実面積**（mm^2）。"""
+    clipped = solid & _tray_seat_probe(tray)
+    faces = _planar_faces_on_plane(clipped, (0.0, 0.0, 1.0), tray.tray_top_height_mm)
+    assert faces, "ポケットの縁の上端に、上を向いた平面が1つも無い"
+    return sum(float(face.area) for face in faces)
+
+
+@requires_cad
+def test_the_measured_anti_rotation_seat_matches_the_area_the_geometry_records(
+    shipped: tuple[Any, Any], tray: Any, parts: dict[str, Any]
+) -> None:
+    """⚠️ 回り止めの座の当たり面が、実形状の面積と一致する（要件 2.9）。
+
+    ポケットの縁の上端は中央部（ハブ板）の下面へ**圧縮で**当たり、トレイが
+    締結のボルトを軸に回ろうとするのを止めている。⚠️ **他のどの接合部の家族にも
+    当たり面の検査があるのに、ここだけ無かった**（タスク 3.2 が 3.6 へ残した
+    申し送り）。
+
+    ⚠️ **`joints` の `JointSpec` としては持てない**——この面の法線はトレイの
+    造形姿勢で積層方向（`z`）を向いており、`JointSpec` は要件 2.8 に従って
+    その軸を拒否する。⚠️ **姿勢を偽らずに**、当たり面の下限だけを課している。
+    """
+    params, _ = shipped
+    measured_mm2 = _measured_tray_anti_rotation_seat_mm2(
+        parts[BATTERY_TRAY_PART_NAME].solid, tray
+    )
+    assert measured_mm2 == pytest.approx(tray.seat_bearing_area_mm2, rel=1e-9)
+    assert measured_mm2 >= params.joint.min_bearing_area_mm2
+    # ⚠️ **座は中央部の下面の内側にある**（外へはみ出した縁は蓋を持たない）。
+    drive_base = drive_base_geometry(*shipped)
+    corner_mm = math.hypot(tray.outer_half_length_mm, tray.fuse_bay_wall_y_mm)
+    assert corner_mm <= drive_base.hub_radius_mm
+
+
+@requires_cad
+def test_a_tray_wall_too_thin_cannot_realise_the_anti_rotation_seat(
+    shipped: tuple[Any, Any], tray: Any, parts: dict[str, Any]
+) -> None:
+    """⚠️ **空振りでないこと**: 壁が薄ければ縁の上端は当たり面にならない。
+
+    ⚠️ 出荷の壁厚（3.0mm）で 756mm^2 ある座は、⚠️ **測る手口が薄さを見抜く**
+    ことを示せなければ「壁がどれだけ薄くても通る検査」と区別できない。ここでは
+    構築済みのソリッドから縁の外側の帯だけを削り、**測るためだけに**薄い縁を
+    作って、同じ手口が下限を割ることを見る。
+    """
+    params, _ = shipped
+    thin_mm = 0.2
+    assert thin_mm < tray.wall_thickness_mm
+    shaved = parts[BATTERY_TRAY_PART_NAME].solid - _box(
+        (-tray.outer_half_length_mm + thin_mm, tray.outer_half_length_mm - thin_mm),
+        (-tray.outer_half_width_mm + thin_mm, tray.fuse_bay_wall_y_mm - thin_mm),
+        (tray.tray_top_height_mm - _INSET_MM, tray.tray_top_height_mm + _PROBE_MM),
+    )
+    measured_mm2 = _measured_tray_anti_rotation_seat_mm2(shaved, tray)
+    assert measured_mm2 < params.joint.min_bearing_area_mm2
+    # ⚠️ **削っていない側は通る**（この反例が下限そのものを疑っていない証拠）。
+    assert (
+        _measured_tray_anti_rotation_seat_mm2(
+            parts[BATTERY_TRAY_PART_NAME].solid, tray
+        )
+        >= params.joint.min_bearing_area_mm2
+    )
+
+
+@requires_cad
+def test_every_declared_envelope_matches_the_solid_the_gate_lets_through(
+    shipped: tuple[Any, Any], parts: dict[str, Any]
+) -> None:
+    """⚠️ 関門が読む外接箱が、**実形状の外接箱と一致する**（要件 2.2, 2.3）。
+
+    `check_before_build` は形状ライブラリを要さずに造形可能寸法を判定する。
+    ⚠️ **その判定が実物について述べたものであるためには、宣言と実形状が一致して
+    いなければならない**——一致しなければ、関門は「収まっている」と言いながら
+    造形できない断片を通す。
+    """
+    params, layout = shipped
+    declared = dict(part_envelopes(params, layout))
+    assert set(declared) == set(parts)
+    for name, envelope in declared.items():
+        size = parts[name].solid.bounding_box().size
+        for axis, measured_mm, declared_mm in (
+            ("x", size.X, envelope.x_mm),
+            ("y", size.Y, envelope.y_mm),
+            ("z", size.Z, envelope.z_mm),
+        ):
+            # ⚠️ **宣言は実形状を覆う**（下回れば、関門は造形できない断片を通す）。
+            assert measured_mm <= declared_mm + 1e-6, (name, axis)
+            if name != HUB_PLATE_PART_NAME:
+                # ⚠️ 中央部以外は**ぴったり一致**する（緩い宣言を黙って許さない）。
+                assert measured_mm == pytest.approx(declared_mm, abs=1e-6), (name, axis)
+        assert check_envelope(name, envelope, params.printing) == (), name
+
+    # ⚠️ **中央部だけは保守側に広く宣言している**——舌の先端が描く円をそのまま
+    # 採っており、3方向の舌の間では実形状がその円の内側に退く（`build_drive_base`
+    # の「中央部の外接箱は舌の張り出しを含む」）。⚠️ **緩さを数値で固定する**：
+    # 黙って広がれば、いつか「収まらないのに収まっている」と読める側へ倒れる。
+    hub_size = parts[HUB_PLATE_PART_NAME].solid.bounding_box().size
+    hub_declared = declared[HUB_PLATE_PART_NAME]
+    assert hub_declared.x_mm == pytest.approx(156.8, abs=1e-6)
+    assert hub_size.X == pytest.approx(138.4, abs=1e-3)
+    assert hub_size.Y == pytest.approx(142.893, abs=1e-3)
+    assert hub_declared.x_mm - hub_size.X < 20.0
+
+
+@requires_cad
+def test_the_assembled_machine_has_no_interference_and_the_check_can_see_one(
+    shipped: tuple[Any, Any]
+) -> None:
+    """組み上がり状態でどの2部品も干渉しない（要件 9.1）。
+
+    ⚠️ **`assembled_parts` が据え付けを持つ**——アームと配線ガイドは点数ぶん
+    同一のソリッドであり、回さずに比べれば自分自身と重なる。⚠️ **ゴミ箱も
+    含まれる**（要件 9.1 の「搭載物との干渉」）。
+
+    ⚠️ **空振りでないこと**: 段を缶の底の高さまで下げれば、アダプタの床と当たる
+    ——⚠️ **同じ facility がそれを全件の値として返す**（例外にしない）。
+    """
+    from build123d import Location
+
+    params, layout = shipped
+    placed = assembled_parts(params, layout)
+    assert TRASH_CAN_PART_NAME in {part.name for part in placed}
+    assert not any(
+        part.name.startswith(f"{SERVICE_STAND_PART_NAME}_") for part in placed
+    )
+    assert assembled_interferences(placed) == ()
+
+    lowered = tuple(
+        part
+        if part.name != BOARD_DECK_PART_NAME
+        else BuiltPart(
+            name=part.name,
+            solid=part.solid.moved(Location((0.0, 0.0, -20.0))),
+            metrics=part.metrics,
+        )
+        for part in placed
+    )
+    violations = assembled_interferences(lowered)
+    assert violations, "段を 20mm 下げても干渉が出ないなら、この検査は何も見ていない"
+    assert all(violation.overlap_mm3 > 0.0 for violation in violations)
+    assert any(
+        BOARD_DECK_PART_NAME in (violation.left, violation.right)
+        for violation in violations
+    )
+
+
+@requires_cad
+def test_the_part_masses_come_from_the_measured_volumes_and_the_upstream_density(
+    shipped: tuple[Any, Any], parts: dict[str, Any]
+) -> None:
+    """質量の目安が**実形状の体積**と上流の材料密度から出る（要件 7.9）。
+
+    ⚠️ **寸法からの再計算ではない。** 体積は構築したソリッドから抽出した値で
+    あり、質量はそれを上流 `estimate_mass_g` へ渡した結果である。
+    """
+    params, layout = shipped
+    built = build_parts(params, layout)
+    masses = {mass.part_name: mass for mass in part_masses(built, params.printing)}
+    assert set(masses) == set(parts)
+    for name, part in parts.items():
+        measured_mm3 = float(part.solid.volume)
+        assert masses[name].volume_mm3 == pytest.approx(measured_mm3, rel=1e-12)
+        assert masses[name].mass_g == pytest.approx(
+            measured_mm3 / 1000.0 * params.printing.material_density_g_cm3, rel=1e-12
+        )
+    # ⚠️ **目安であって合否条件ではない**——それでも「0 グラムの部品」は形の破綻である。
+    assert min(mass.mass_g for mass in masses.values()) > 0.0

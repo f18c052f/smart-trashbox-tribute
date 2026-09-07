@@ -32,7 +32,11 @@ import pytest
 from catch_mechanism import Envelope, check_envelope
 
 from chassis_mechanism.config import load_params
-from chassis_mechanism.errors import CadUnavailableError, GeometryError
+from chassis_mechanism.errors import (
+    CadUnavailableError,
+    ClearanceError,
+    GeometryError,
+)
 from chassis_mechanism.layout import derive_layout
 from chassis_mechanism.shapes import (
     CABLE_ROUTE_NAMES,
@@ -47,6 +51,7 @@ from chassis_mechanism.shapes import (
     StandGeometry,
     StandInputs,
     adapter_geometry,
+    check_before_build,
     battery_tray_geometry,
     cable_guide_geometry,
     build_parts,
@@ -54,6 +59,7 @@ from chassis_mechanism.shapes import (
     deck_stack_geometry,
     drive_base_geometry,
     measure_part,
+    part_masses,
     part_names,
     stand_geometry,
     stand_inputs,
@@ -1902,7 +1908,7 @@ def test_the_board_deck_offers_at_least_the_mounting_area_the_boards_need(
     """
     params, _ = shipped
     board = params.chassis.board  # type: ignore[attr-defined]
-    assert deck.required_area_mm2 == pytest.approx(board.deck_x_mm * board.deck_y_mm)
+    assert deck.required_area_mm2 == pytest.approx(board.mount_area_mm2)
     assert deck.usable_area_mm2 >= deck.required_area_mm2
 
 
@@ -1911,10 +1917,10 @@ def test_a_deck_too_small_for_the_boards_is_rejected(
 ) -> None:
     """⚠️ 取付面が足りない寸法は拒否される（黙って狭い段を作らない）。"""
     _, layout = shipped
-    bigger = _with_board(shipped, deck_x_mm=300.0, deck_y_mm=300.0)
+    bigger = _with_board(shipped, mount_area_mm2=90000.0)
     with pytest.raises(GeometryError) as excinfo:
         deck_stack_geometry(bigger, layout)  # type: ignore[arg-type]
-    assert "deck_x_mm" in str(excinfo.value)
+    assert "board.mount_area_mm2" in str(excinfo.value)
 
 
 def test_the_bolt_between_the_decks_sits_in_the_middle_of_the_overlap(
@@ -2487,7 +2493,7 @@ def test_a_channel_too_wide_for_the_skirt_is_rejected(
     ⚠️ **要求する取付面も併せて下げる。** 通し穴は⚠️ **輪ごと・系統ごとに1つ**
     （9箇所）であり、通路を太らせると⚠️ **先に基板デッキの取付面の見積もりが
     尽きる**——下げずに測ると、この検査は裾の肉ではなく取付面の関門を測って
-    しまう（`deck_x_mm` を下げるのは⚠️ **測る対象を裾へ戻すため**であって、
+    しまう（`mount_area_mm2` を下げるのは⚠️ **測る対象を裾へ戻すため**であって、
     裾の条件を緩めるためではない）。
     """
     from dataclasses import replace
@@ -2500,8 +2506,7 @@ def test_a_channel_too_wide_for_the_skirt_is_rejected(
             fat.chassis,  # type: ignore[attr-defined]
             board=replace(
                 fat.chassis.board,  # type: ignore[attr-defined]
-                deck_x_mm=100.0,
-                deck_y_mm=100.0,
+                mount_area_mm2=10000.0,
             ),
         ),
     )
@@ -2886,3 +2891,362 @@ def test_the_guide_count_comes_from_the_joint_module(
     params, _ = shipped
     assert guide.guide_count == segment_counts(params)["cable_guide"]  # type: ignore[arg-type]
     assert guide.guide_count == params.chassis.base.wheel_count  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# 11. 検査を通らない形状の生成物を出さない関門（タスク 3.6 / 要件 1.12, 2.3,
+#     2.4, 4.4, 9.1）
+#
+# ⚠️ **関門は生成の「前」に立つ。** 作ってから捨てる実装は、書き出し（タスク
+# 3.7）が検査を飛ばした瞬間に無検査の生成物を出す。したがって本節の検査は
+# ⚠️ **形状ライブラリを要さない**——関門が落ちる設定では、CAD 非導入の環境でも
+# 同じ例外が同じ内容で出る。
+# ---------------------------------------------------------------------------
+
+
+def _too_low_for_the_floor(params: object) -> object:
+    """床との隙間が3部位で足りなくなる寸法パラメータを作る。
+
+    ⚠️ **成立する幾何のまま隙間だけを落とす。** 下限を上げるだけではバッテリ
+    トレイの下面がその下限を割り、`battery_tray_geometry` の側で先に落ちる
+    ——見たいのはその手前ではなく隙間の関門である。バッテリを薄くしてトレイの
+    下面を上げ、締結の突出量を（鉛直スタックが許す範囲で）伸ばす。
+    """
+    import dataclasses
+
+    chassis = params.chassis  # type: ignore[attr-defined]
+    return dataclasses.replace(
+        params,  # type: ignore[arg-type]
+        chassis=dataclasses.replace(
+            chassis,
+            clearance=dataclasses.replace(
+                chassis.clearance,
+                min_ground_clearance_mm=32.0,
+                fastener_protrusion_mm=29.0,
+            ),
+            battery=dataclasses.replace(
+                chassis.battery, height_mm=10.0, hold_height_mm=50.0
+            ),
+        ),
+    )
+
+
+def test_the_shipped_parameters_pass_the_gate(shipped: tuple[object, object]) -> None:
+    """⚠️ **出荷の寸法は関門を通る**（反例の対。関門そのものが空振りでない証拠）。"""
+    params, layout = shipped
+    assert check_before_build(params, layout) is None  # type: ignore[arg-type]
+
+
+def test_the_gate_lists_every_floor_clearance_shortfall(
+    shipped: tuple[object, object]
+) -> None:
+    """隙間の不足を**部位と不足量つきで全件**示して生成を止める（要件 4.4）。
+
+    ⚠️ **1件で打ち切らない。** 締結の突出量を伸ばして3部位（モータ胴体・
+    ブラケット・締結の下端）を同時に下限へ落とし、⚠️ **3件すべてが1回の失敗に
+    現れる**ことを固定する。下限を上回る2部位（ベース板下面・配線）は現れない。
+    """
+    params, _ = shipped
+    tripped = _too_low_for_the_floor(params)
+    # ⚠️ **幾何も引き直す。** 隙間の高さは鉛直スタック（`layout`）が持っており、
+    # 古い幾何のまま渡せば、変えたはずの締結の突出量が効かない。
+    layout = derive_layout(tripped)  # type: ignore[arg-type]
+    with pytest.raises(ClearanceError) as excinfo:
+        check_before_build(tripped, layout)  # type: ignore[arg-type]
+    message = str(excinfo.value)
+    for name in ("motor_body", "bracket", "fastener"):
+        assert name in message, name
+    # ⚠️ 下限を上回る2部位は現れない（見ていない部位と余裕のある部位を混同しない）。
+    assert "base_underside" not in message
+    assert "cable" not in message
+    # ⚠️ 不足量が部位ごとに出る（20.5mm ＝ 32.0 − 11.5、1.0mm ＝ 32.0 − 31.0）。
+    assert "20.5mm 下回る" in message
+    assert "1.0mm 下回る" in message
+
+
+def test_the_gate_stops_the_build_before_a_single_solid_is_made(
+    shipped: tuple[object, object]
+) -> None:
+    """⚠️ **関門は形状ライブラリより手前にある**（要件 2.3, 4.4）。
+
+    `build_parts` は隙間の不足を、⚠️ **ソリッドを1つも作らずに**拒否する
+    ——CAD 非導入の環境でも同じ失敗になることが、関門が生成の前に立っている
+    ことの証拠である（`CadUnavailableError` にならない）。
+    """
+    params, layout = shipped
+    tripped = _too_low_for_the_floor(params)
+    layout = derive_layout(tripped)  # type: ignore[arg-type]
+    with pytest.raises(ClearanceError):
+        build_parts(tripped, layout)  # type: ignore[arg-type]
+
+
+def test_the_gate_lists_every_build_volume_excess_of_every_part(
+    shipped: tuple[object, object]
+) -> None:
+    """造形可能寸法の超過を**部品・軸・超過量つきで全件**示す（要件 2.2, 2.3）。
+
+    ⚠️ **部品ごとに1件ずつ直す往復にしない。** 造形面の低い造形機を仮定すると、
+    ⚠️ **分割で逃げられない部品**（バッテリトレイ・整備スタンドの脚）と、
+    分割しても高さが縮まない段が同時に超過する——⚠️ **その全件が1回の失敗に
+    現れる**ことを固定する。
+
+    ⚠️ **一律に小さくしない。** 造形面を全軸で縮めると、上流の円環の分割数導出
+    （`required_segment_count`）が「どの分割数でも収まらない」として先に落ちる
+    ——見たいのはその手前ではなく本 Spec の関門である。
+    """
+    import dataclasses
+
+    params, layout = shipped
+    small = dataclasses.replace(
+        params,  # type: ignore[arg-type]
+        printing=dataclasses.replace(
+            params.printing, build_x_mm=160.0, build_z_mm=45.0  # type: ignore[attr-defined]
+        ),
+    )
+    with pytest.raises(GeometryError) as excinfo:
+        check_before_build(small, layout)  # type: ignore[arg-type]
+    message = str(excinfo.value)
+    # ⚠️ **断片ごとに1件**である（同じ部品の種類でも番号ごとに出る）。
+    for name in (
+        "battery_tray",
+        "board_deck_1",
+        "board_deck_2",
+        "board_deck_3",
+        "service_stand_1",
+        "service_stand_2",
+        "service_stand_3",
+    ):
+        assert name in message, name
+    # ⚠️ **同じ部品の複数の軸も全件**である（バッテリトレイは x と z の両方）。
+    assert "軸 x" in message
+    assert "軸 z" in message
+    assert "13.599999999999994mm 超過" in message
+    assert "30.900000000000006mm 超過" in message
+    # ⚠️ 見直す先が部品ごとに示される（家族ごとの例外を1つへまとめた代償を払わない）。
+    assert "バッテリの寸法か配置半径を見直すこと" in message
+
+
+def test_the_gate_refuses_a_material_outside_the_upstream_list(
+    shipped: tuple[object, object]
+) -> None:
+    """材料が上流の許可一覧に無ければ生成しない（要件 2.4）。"""
+    import dataclasses
+
+    from catch_mechanism import ParameterError as UpstreamParameterError
+
+    params, layout = shipped
+    # ⚠️ **上流の構築時検証を迂回した個体を作る**（`PrintingConstraints` は
+    # 許可外の材料では構築できない。`test_chassis_upstream_contract.py` と
+    # 同じ手口である）——⚠️ **関門が実際に `check_material` を通していること**を
+    # 見たいのであって、上流の型の検証を見たいのではない。
+    printing = dataclasses.replace(params.printing)  # type: ignore[attr-defined]
+    object.__setattr__(printing, "material", "ABS")
+    bypassed = dataclasses.replace(params, printing=printing)  # type: ignore[arg-type]
+    with pytest.raises(UpstreamParameterError) as excinfo:
+        check_before_build(bypassed, layout)  # type: ignore[arg-type]
+    assert "ABS" in str(excinfo.value)
+
+
+def test_the_gate_refuses_a_positioning_element_no_part_realises(
+    shipped: tuple[object, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """⚠️ **数え上げた位置決め要素をどの部品も実現していない一覧を拒否する。**
+
+    タスク 3.2 が残した申し送りそのものである——`joints` がダボを2本記録して
+    いるのに、⚠️ **どの部品にもダボ穴が無い**状態は、緑のまま通り抜けていた。
+    穴の一覧（`bore_diameters_mm`）に位置決め要素の径が現れない以上、
+    数えた要素は形の上のどこにも無い。
+    """
+    import dataclasses
+
+    from chassis_mechanism import joints as joints_module
+
+    params, layout = shipped
+    derived = joints_module.derive_joints(layout, params)  # type: ignore[arg-type]
+    with_dowels = tuple(
+        dataclasses.replace(joint, dowel_count=2)
+        if joint.name.startswith("hub_plate__motor_arm_")
+        else joint
+        for joint in derived
+    )
+    monkeypatch.setattr(
+        "chassis_mechanism.shapes.derive_joints",
+        lambda *_args, **_kwargs: with_dowels,
+    )
+    with pytest.raises(GeometryError) as excinfo:
+        check_before_build(params, layout)  # type: ignore[arg-type]
+    message = str(excinfo.value)
+    assert "hub_plate__motor_arm_1" in message
+    assert "dowel" in message
+
+
+def test_the_gate_carries_every_kind_of_violation_it_has_already_computed(
+    shipped: tuple[object, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """⚠️ **見えている違反を捨てない**——例外の型は1つでも、内容は捨てない。
+
+    関門は外接箱・床との隙間・要素の実現の3種を**先に全部**計算する。⚠️ 送出
+    できる例外の型は1つだけだが、⚠️ **既に手元にある他の種類の違反まで捨てれば、
+    1種類ずつ直しては再実行する往復**になる（関門が全件を1回で示す約束と矛盾する）。
+
+    ⚠️ **隙間の不足と要素の未実現を同時に起こす。** 送出されるのは
+    `ClearanceError` だが、⚠️ **ダボの未実現も同じメッセージに載る**。
+    """
+    import dataclasses
+
+    from chassis_mechanism import joints as joints_module
+
+    params, _ = shipped
+    tripped = _too_low_for_the_floor(params)
+    layout = derive_layout(tripped)  # type: ignore[arg-type]
+    derived = joints_module.derive_joints(layout, tripped)  # type: ignore[arg-type]
+    with_dowels = tuple(
+        dataclasses.replace(joint, dowel_count=2)
+        if joint.name.startswith("hub_plate__motor_arm_")
+        else joint
+        for joint in derived
+    )
+    monkeypatch.setattr(
+        "chassis_mechanism.shapes.derive_joints",
+        lambda *_args, **_kwargs: with_dowels,
+    )
+    with pytest.raises(ClearanceError) as excinfo:
+        check_before_build(tripped, layout)  # type: ignore[arg-type]
+    message = str(excinfo.value)
+    # ⚠️ 送出された型そのものの内容（隙間の不足）は全件出る。
+    assert "20.5mm 下回る" in message
+    # ⚠️ **捨てられていた側**——同じ失敗に併せて載る。
+    assert "hub_plate__motor_arm_1" in message
+    assert "dowel" in message
+
+
+def test_every_public_builder_passes_through_the_gate(shipped: tuple[object, object]) -> None:
+    """⚠️ **関門を迂回できる入口が無い**（要件 2.3, 4.4 / タスク 3.7 の前提）。
+
+    公開されている構築関数の**すべて**が、本体の先頭で関門を呼ぶ。⚠️ 呼ばない
+    入口が1つでもあれば、そこから無検査の生成物が出る。整備スタンドだけは
+    `StandInputs` しか受け取らないため（要件 5.2）、材料と外接箱に閉じた
+    スタンド用の関門を通る。
+    """
+    tree = ast.parse(SHAPES_SOURCE.read_text(encoding="utf-8"))
+    gates = {"check_before_build", "check_before_building_stand"}
+    offenders: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        if not node.name.startswith("build_"):
+            continue
+        first = node.body[1] if len(node.body) > 1 else node.body[0]
+        called = {
+            child.func.id
+            for child in ast.walk(first)
+            if isinstance(child, ast.Call) and isinstance(child.func, ast.Name)
+        }
+        if not called & gates:
+            offenders.append(f"{node.name} (line {node.lineno})")
+    assert offenders == [], f"関門を通らない構築の入口がある: {offenders}"
+
+
+@requires_cad
+def test_two_builds_from_the_same_parameters_return_the_same_metrics(
+    shipped: tuple[object, object]
+) -> None:
+    """同一入力からの2回の生成が同一の指標を返す（要件 1.12）。
+
+    ⚠️ **指標は実形状から抽出した値である**（`measure_part`）。寸法からの
+    再計算ではないため、ブール演算の結果が版や実行ごとに揺れれば一致しない。
+    """
+    params, layout = shipped
+    first = build_parts(params, layout)  # type: ignore[arg-type]
+    second = build_parts(params, layout)  # type: ignore[arg-type]
+    assert [part.name for part in first] == list(part_names(params))  # type: ignore[arg-type]
+    assert [part.metrics for part in first] == [part.metrics for part in second]
+
+
+@requires_cad
+def test_every_part_carries_a_mass_estimate_from_the_upstream_density(
+    shipped: tuple[object, object]
+) -> None:
+    """体積と上流の材料密度から各部品の質量の目安を出す（要件 7.9 / タスク 3.6）。
+
+    ⚠️ **密度は上流の公開契約から来る**（`PrintingConstraints.
+    material_density_g_cm3`）——本 Spec は同じ値を持たない（要件 1.3）。
+    """
+    from catch_mechanism import estimate_mass_g
+
+    params, layout = shipped
+    parts = build_parts(params, layout)  # type: ignore[arg-type]
+    masses = part_masses(parts, params.printing)  # type: ignore[attr-defined]
+    assert [mass.part_name for mass in masses] == [part.name for part in parts]
+    for part, mass in zip(parts, masses, strict=True):
+        assert mass.volume_mm3 == part.metrics.volume_mm3
+        assert mass.mass_g == estimate_mass_g(
+            part.metrics.volume_mm3, params.printing.material_density_g_cm3  # type: ignore[attr-defined]
+        )
+        assert mass.mass_g > 0.0
+
+
+_METRICS_PROBE = """
+import json
+
+from chassis_mechanism.config import load_params
+from chassis_mechanism.layout import derive_layout
+from chassis_mechanism.shapes import build_parts
+
+params = load_params()
+report = [
+    {
+        "name": part.metrics.part_name,
+        "volume_mm3": part.metrics.volume_mm3.hex(),
+        "bbox_mm": [extent_mm.hex() for extent_mm in part.metrics.bbox_mm],
+        "solid_count": part.metrics.solid_count,
+    }
+    for part in build_parts(params, derive_layout(params))
+]
+print(json.dumps(report))
+"""
+"""別のプロセスで形状指標を抽出して JSON で返す小片（要件 1.12）。
+
+⚠️ **浮動小数を `hex()` で運ぶ。** 十進の丸めで一致させると、⚠️ **最後の 1bit が
+違う指標を「同じ」と読んでしまう**——指標の一致は記録の照合（タスク 4.2）が
+許容差で見る話であって、ここで見たいのは⚠️ **同じ入力から同じ数が出ること**
+そのものである。
+"""
+
+
+@requires_cad
+def test_a_fresh_process_extracts_the_same_metrics_bit_for_bit(
+    shipped: tuple[object, object]
+) -> None:
+    """⚠️ **別プロセスの生成も同一の指標を返す**（要件 1.12）。
+
+    ⚠️ **同一プロセスでの2回では足りない。** 辞書や集合の反復順が
+    `PYTHONHASHSEED` で変われば、ブール演算の順序が変わって最下位ビットが動き
+    うる——⚠️ **その揺れは同じプロセスの中では決して現れない。** 新しい
+    インタプリタを別の hash seed で起こし、⚠️ **ビット単位で**突き合わせる。
+    """
+    import json
+
+    params, layout = shipped
+    env = os.environ.copy()
+    env["PYTHONHASHSEED"] = "12345"
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", _METRICS_PROBE],
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        encoding="utf-8",
+        env=env,
+        timeout=600.0,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    reported = json.loads(result.stdout)
+
+    here = build_parts(params, layout)  # type: ignore[arg-type]
+    assert [entry["name"] for entry in reported] == [part.name for part in here]
+    for entry, part in zip(reported, here, strict=True):
+        assert float.fromhex(entry["volume_mm3"]) == part.metrics.volume_mm3
+        assert tuple(
+            float.fromhex(extent) for extent in entry["bbox_mm"]
+        ) == part.metrics.bbox_mm
+        assert entry["solid_count"] == part.metrics.solid_count

@@ -22,6 +22,11 @@ design.md 決定 3）。`JointSpec` は `bolt_count` / `insert_count`（荷重�
 「⚠️ **ダボは `lines` に現れない**」）。ダボは造形で作る位置決め要素であり、
 購入する締結部品ではない。
 
+⚠️ **本 Spec の位置決めは嵌め合いの形が担っており、ダボは1本も無い**
+（`_NO_DOWELS`）。⚠️ **数えるだけで実現しない要素を持たない**ことが要件 2.7 の
+「区別して保持する」を実物について述べたものにする条件であり、その関門は
+`shapes.check_before_build` にある（タスク 3.6）。
+
 **当たり面は上流の下限と本 Spec のより厳しい下限の両方を満たす**（要件 2.9 /
 design.md Postconditions）。上流の `check_joint` を実際に通したうえで、
 モータ反力を受ける接合部には `LocalJointLimits.min_bearing_area_mm2` を課す。
@@ -183,15 +188,26 @@ _BOTH_SIDES: Final[int] = 2
 直径には2倍で効く。
 """
 
-_LOCATING_DOWEL_COUNT: Final[int] = 2
-"""造形部品どうしの接合部が持つ位置決めダボの本数。
-
-⚠️ **1本では姿勢が決まらない**（軸まわりに回る）。⚠️ **荷重は受けない**——
-本数を増やしても `bearing_area_mm2` は動かない（要件 2.7）。購入部品
-（金属ブラケット・ゴミ箱・ホイール）との接合部にはダボを置かない。
-"""
-
 _NO_DOWELS: Final[int] = 0
+"""位置決めダボを置かない（＝本数 0）ことの表明。
+
+⚠️ **本 Spec のどの接合部もダボを持たない。** かつてアーム接合部と
+`hub_plate__adapter_segment_*` は `dowel_count=2` を記録していたが、
+⚠️ **実形状にダボ穴は1つも無かった**（タスク 3.2 が 3.6 へ残した申し送り）。
+タスク 3.6 は数え上げた要素を形の側で実現するのではなく、⚠️ **数え上げを
+取り下げた**——理由は家族ごとに異なり、どちらも「ダボを置く余地が無い」または
+「ダボが同じ位置決めを二重に主張するだけ」である（`derive_joints` の各家族の
+注記を参照）。
+
+⚠️ **位置決め要素が消えたのではない。** 本 Spec の位置決めは**嵌め合いの形**が
+担っている——二股と舌、裾と中央部の外縁、耳とアーム、筒と立ち上がり。要件 2.7 が
+求める区別は、⚠️ **`bearing_area_mm2` がボルト座しか数えない**ことで保たれている
+（嵌め合いの面は当たり面に1度も算入されない）。
+
+⚠️ **数え上げた位置決め要素をどの部品も実現していない一覧は、形状生成の関門が
+拒否する**（`shapes.check_before_build`）——`dowel_count` を 0 でない値へ戻す
+なら、それを実現する穴を形の側が持たなければならない。
+"""
 _NO_BOLTS: Final[int] = 0
 
 BOLT_KIND: Final[str] = "bolt"
@@ -1531,7 +1547,15 @@ def derive_joints(
             face_width_mm=layout.arm_length_mm,
             minimum_bearing_area_mm2=local_floor_mm2,
             print_normal_axis=_TANGENTIAL_NORMAL_AXIS,
-            dowel_count=_LOCATING_DOWEL_COUNT,
+            # ⚠️ **ダボを置かない。** 二股が舌を両側から挟む形そのものが接線方向の
+            # 位置決めであり（`fork_slot_width_mm` と舌の厚さの差は嵌め合い隙間
+            # ぶんしかない）、⚠️ **それはボルトが決められない唯一の向き**である。
+            # ⚠️ 残る2方向へダボを置く**面が無い**——接合面は半径方向に
+            # `hub_radius` から `fork_root_radius` までの 18.8mm しかなく、
+            # 座の環（Ø9.2）が 2 つでその 18.4mm を占める。厚さ方向にも
+            # 15.0mm の面に Ø9.2 の環が載って残りは片側 2.9mm である。
+            # ⚠️ **数えたダボを置く場所が無いまま数え上げない**（`_NO_DOWELS`）。
+            dowel_count=_NO_DOWELS,
             floor_count=MIN_BOLTS_PER_FASTENED_JOINT,
             params=params,
         )
@@ -1549,7 +1573,11 @@ def derive_joints(
             face_width_mm=math.pi * adapter_outer_diameter_mm / adapter_segment_count,
             minimum_bearing_area_mm2=upstream_floor_mm2,
             print_normal_axis=_RADIAL_NORMAL_AXIS,
-            dowel_count=_LOCATING_DOWEL_COUNT,
+            # ⚠️ **ダボを置かない。** 断片の裾は中央部の外縁を全周で掴み、
+            # その掴みは板厚の全高に渡る——半径方向・接線方向・鉛直方向の
+            # いずれも嵌め合いが決めている。⚠️ ダボは同じ位置決めを二重に
+            # 主張するだけである（`board_deck__catch_deck_*` と同じ理由）。
+            dowel_count=_NO_DOWELS,
             floor_count=MIN_BOLTS_PER_FASTENED_JOINT,
             params=params,
         )

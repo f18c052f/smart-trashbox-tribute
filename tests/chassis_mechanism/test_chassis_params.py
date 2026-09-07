@@ -185,8 +185,7 @@ def make_battery(**overrides: object) -> BatterySpec:
 
 def make_board(**overrides: object) -> BoardSpec:
     values: dict[str, object] = {
-        "deck_x_mm": 150.0,
-        "deck_y_mm": 120.0,
+        "mount_area_mm2": 18000.0,
         "standoff_height_mm": 8.0,
         "driver_count": 3,
         "cooling_gap_mm": 10.0,
@@ -611,7 +610,7 @@ POSITIVE_LENGTH_CASES = [
     (make_battery, "hold_height_mm"),
     (make_battery, "fuse_holder_length_mm"),
     (make_battery, "fuse_holder_width_mm"),
-    (make_board, "deck_x_mm"),
+    (make_board, "mount_area_mm2"),
     (make_board, "deck_thickness_mm"),
     (make_board, "component_height_mm"),
     (make_board, "standoff_height_mm"),

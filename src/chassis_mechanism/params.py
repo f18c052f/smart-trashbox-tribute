@@ -711,13 +711,20 @@ class BoardSpec:
     持たない**。
 
     Attributes:
-        deck_x_mm: 基板群を並べるために要る取付面の X 方向寸法（mm）。
-        deck_y_mm: 基板群を並べるために要る取付面の Y 方向寸法（mm）。
-            ⚠️ **段は円形であるため、この2つは「必要な取付面の面積」として効く**
-            （design.md 決定 4b が「必要な 19,600mm^2 に対して1段で足りる」と
-            面積で述べているのと同じ読み方である）。⚠️ 内接する長方形として
-            読まない——Ø182 に一辺 140 の正方形は入らず、決定 4b はその読み方を
-            採っていない。
+        mount_area_mm2: 基板群を並べるために要る取付面の**面積**（mm^2）。
+            ⚠️ **面積であって辺ではない。** 段は円形であり、決定 4b も
+            「必要な 19,600mm^2 に対して1段で足りる」と面積で述べている。
+            ⚠️ **辺の積として持たない**——`deck_x_mm=140 × deck_y_mm=140` と
+            `deck_x_mm=200 × deck_y_mm=98` は同じ「要求」を表しながら全く違う
+            基板配置を意味し、⚠️ **どちらも同じ面積として通ってしまう**
+            （タスク 3.2 が 3.6 へ残した申し送り）。円の中へ内接する長方形として
+            読むこともしない——Ø182 に一辺 140 の正方形は入らず、決定 4b は
+            その読み方を採っていない。
+            ⚠️ **余裕は 601.7mm^2 しかない**（`shapes.deck_stack_geometry` の
+            `usable_area_mm2` は出荷値で 20,201.7mm^2）。配線の通し穴が
+            輪ごと・系統ごとに1つ（9箇所）あり、⚠️ `cable.channel_width_mm` を
+            実測へ置き換える際に **12.2mm を超えるとこの関門が先に落ちる**
+            （裾の肉が尽きるより早い。タスク 3.5 が 3.6 / 5.x へ残した申し送り）。
         standoff_height_mm: スタンドオフの高さ（mm）。
         driver_count: モータドライバの台数。1 以上（要件 7.4 は3台を要求するが、
             台数そのものは設定値である）。
@@ -747,8 +754,7 @@ class BoardSpec:
             非有限の場合、または台数が 1 以上の整数でない場合。
     """
 
-    deck_x_mm: float
-    deck_y_mm: float
+    mount_area_mm2: float
     standoff_height_mm: float
     driver_count: int
     cooling_gap_mm: float
@@ -760,8 +766,7 @@ class BoardSpec:
 
     def __post_init__(self) -> None:
         """全不変条件を検証し、違反時は違反項目名と値を添えて拒否する。"""
-        _require_positive_finite(self.deck_x_mm, "deck_x_mm")
-        _require_positive_finite(self.deck_y_mm, "deck_y_mm")
+        _require_positive_finite(self.mount_area_mm2, "mount_area_mm2")
         _require_positive_finite(self.standoff_height_mm, "standoff_height_mm")
         _require_count(self.driver_count, "driver_count", 1)
         _require_nonneg_finite(self.cooling_gap_mm, "cooling_gap_mm")

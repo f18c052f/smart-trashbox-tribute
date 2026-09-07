@@ -273,22 +273,55 @@ def test_no_derived_joint_uses_the_layer_axis() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_load_bearing_joints_carry_locating_dowels() -> None:
-    """造形部品どうしの接合部は位置決めダボを持つ（型の上での区別）。"""
+def test_no_joint_counts_a_positioning_element_that_no_part_realises() -> None:
+    """⚠️ **数え上げた位置決め要素は形の側が実現していなければならない。**
+
+    ⚠️ **本テストはタスク 3.6 で向きを変えた**（旧: 造形部品どうしの接合部は
+    ダボを持つ）。アーム接合部と `hub_plate__adapter_segment_*` は
+    `dowel_count=2` を記録していたが、⚠️ **実形状にダボ穴は1つも無かった**
+    （タスク 3.2 が 3.6 へ残した申し送り）。数え上げを取り下げた理由は家族ごとに
+    異なる——アーム接合部は座の環が接合面を埋めていて⚠️ **ダボを置く面が無く**、
+    アダプタの裾は中央部の外縁を全周・全高で掴んでいて⚠️ **ダボが同じ位置決めを
+    二重に主張するだけ**である（`joints._NO_DOWELS`）。
+
+    ⚠️ **要件 2.7 の区別は消えていない**——`bearing_area_mm2` はボルト座だけを
+    数え、嵌め合いの面を1度も算入しない（`test_changing_the_dowel_diameter_
+    does_not_move_any_bearing_area`）。数え上げを戻すなら形の側に穴を置くこと
+    を、`shapes.check_before_build` が関門として要求する。
+    """
     specs = _derived(_params())
+    assert [spec.name for spec in specs if spec.dowel_count > 0] == []
     arm_joint = _named(specs, "hub_plate__motor_arm_1")
-    assert arm_joint.dowel_count > 0
+    # ⚠️ 荷重を受ける側は変わっていない（インサートはボルト1本につき1つ）。
     assert arm_joint.insert_count == arm_joint.bolt_count
 
 
 def test_dowels_never_appear_in_the_fastener_lines() -> None:
-    """⚠️ ダボは造形で作る位置決め要素であり、購入する締結部品ではない。"""
+    """⚠️ ダボは造形で作る位置決め要素であり、購入する締結部品ではない。
+
+    ⚠️ **空振りでないこと**: 出荷の一覧はダボを1本も数えていない
+    （`test_no_joint_counts_a_positioning_element_that_no_part_realises`）ため、
+    ⚠️ **ダボを数える接合部を作って**一覧に何も足さないことを見る——さもなければ
+    「現に無いものが現れない」と述べているだけになる。
+    """
+    import dataclasses
+
+    from chassis_mechanism.joints import _fastener_lines
+
     schedule = derive_fastener_schedule(derive_layout(_params()), _params())
     assert {line.kind for line in schedule.lines} <= set(FASTENER_KINDS)
     assert "dowel" not in FASTENER_KINDS
-    total_dowels = sum(spec.dowel_count for spec in schedule.joints)
-    assert total_dowels > 0
     assert all("dowel" not in line.designation for line in schedule.lines)
+
+    with_dowels = tuple(
+        dataclasses.replace(spec, dowel_count=2) for spec in schedule.joints
+    )
+    assert sum(spec.dowel_count for spec in with_dowels) > 0
+    params = _params()
+    lines = _fastener_lines(
+        with_dowels, params.joint.bolt_designation, params.joint.insert_length_mm
+    )
+    assert lines == schedule.lines
 
 
 def test_the_line_totals_are_determined_by_the_joints_alone() -> None:
@@ -312,14 +345,28 @@ def test_changing_the_dowel_diameter_does_not_move_any_bearing_area() -> None:
 
 
 def test_a_record_with_more_dowels_keeps_the_same_lines(tmp_path: Path) -> None:
-    """ダボを増やした記録でも `lines` は変わらない（＝ダボは数え上げに入らない）。"""
+    """ダボを増やした記録でも `lines` は変わらない（＝ダボは数え上げに入らない）。
+
+    ⚠️ **増やし方は 0 を生き延びるものでなければならない**（タスク 3.6 の是正）。
+    出荷の一覧はダボを1本も数えなくなったため、旧来の `dowel_count * 2` は
+    ⚠️ **恒等写像に退化し**、「増やした記録」と称するものが元と1バイトも違わない
+    まま `load(dump(x)).lines == x.lines` だけを述べていた。`+ 2` へ改め、
+    ⚠️ **変異が現に効いていることを先に主張する**——この主張が無ければ、同じ
+    空振りが数え上げの変更のたびに黙って戻る。
+    """
     schedule = derive_fastener_schedule(derive_layout(_params()), _params())
+    more = tuple(
+        replace(spec, dowel_count=spec.dowel_count + 2) for spec in schedule.joints
+    )
+    # ⚠️ **空振りにしない**——変異した記録は元と異なっていなければならない。
+    assert more != schedule.joints
+    assert sum(spec.dowel_count for spec in more) > sum(
+        spec.dowel_count for spec in schedule.joints
+    )
     doubled = FastenerSchedule(
         schema_version=schedule.schema_version,
         parameters_digest=schedule.parameters_digest,
-        joints=tuple(
-            replace(spec, dowel_count=spec.dowel_count * 2) for spec in schedule.joints
-        ),
+        joints=more,
         lines=schedule.lines,
     )
     path = tmp_path / "joint-schedule.json"

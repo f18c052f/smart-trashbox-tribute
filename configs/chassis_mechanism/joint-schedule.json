@@ -4,7 +4,7 @@
       "bearing_area_mm2": 114.793795562,
       "bolt_count": 2,
       "bolt_length_mm": 38.7,
-      "dowel_count": 2,
+      "dowel_count": 0,
       "insert_count": 2,
       "members": [
         "hub_plate",
@@ -18,7 +18,7 @@
       "bearing_area_mm2": 114.793795562,
       "bolt_count": 2,
       "bolt_length_mm": 38.7,
-      "dowel_count": 2,
+      "dowel_count": 0,
       "insert_count": 2,
       "members": [
         "hub_plate",
@@ -32,7 +32,7 @@
       "bearing_area_mm2": 114.793795562,
       "bolt_count": 2,
       "bolt_length_mm": 38.7,
-      "dowel_count": 2,
+      "dowel_count": 0,
       "insert_count": 2,
       "members": [
         "hub_plate",
@@ -46,7 +46,7 @@
       "bearing_area_mm2": 114.793795562,
       "bolt_count": 2,
       "bolt_length_mm": 11.7,
-      "dowel_count": 2,
+      "dowel_count": 0,
       "insert_count": 2,
       "members": [
         "hub_plate",
@@ -60,7 +60,7 @@
       "bearing_area_mm2": 114.793795562,
       "bolt_count": 2,
       "bolt_length_mm": 11.7,
-      "dowel_count": 2,
+      "dowel_count": 0,
       "insert_count": 2,
       "members": [
         "hub_plate",
@@ -74,7 +74,7 @@
       "bearing_area_mm2": 114.793795562,
       "bolt_count": 2,
       "bolt_length_mm": 11.7,
-      "dowel_count": 2,
+      "dowel_count": 0,
       "insert_count": 2,
       "members": [
         "hub_plate",
@@ -255,6 +255,6 @@
       "length_mm": 5.7
     }
   ],
-  "parameters_digest": "sha256:f5aca61dac15b0c148c488a67ca1511829da8a56fc298a14260e15c80ceff88e",
+  "parameters_digest": "sha256:705602bfbb130502cf77a303ff3d5068a01ba42bf6ba3bf1442c95a975c077f7",
   "schema_version": "1.0"
 }

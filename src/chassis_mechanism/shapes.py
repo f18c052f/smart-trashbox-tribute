@@ -136,11 +136,14 @@ from catch_mechanism import (
     PartMetrics,
     PrintingConstraints,
     check_envelope,
+    check_joint,
     check_material,
+    estimate_mass_g,
 )
 
+from chassis_mechanism.clearance import evaluate_clearance
 from chassis_mechanism.config import ResolvedParams
-from chassis_mechanism.errors import CadUnavailableError, GeometryError
+from chassis_mechanism.errors import CadUnavailableError, ClearanceError, GeometryError
 from chassis_mechanism.joints import (
     BATTERY_TRAY_ARM_INDEX,
     BATTERY_TRAY_JOINT_NAME_TEMPLATE,
@@ -172,7 +175,9 @@ __all__ = [
     "TRASH_CAN_PART_NAME",
     "CABLE_GUIDE_PART_NAME",
     "CABLE_ROUTE_NAMES",
+    "DOWEL_BORE_DIAMETER_MM",
     "AdapterGeometry",
+    "AssemblyInterference",
     "AssemblyReachViolation",
     "AssemblyStep",
     "BatteryTrayGeometry",
@@ -181,13 +186,18 @@ __all__ = [
     "CableRoute",
     "DeckStackGeometry",
     "DriveBaseGeometry",
+    "PartMass",
     "StandGeometry",
     "StandInputs",
     "adapter_geometry",
+    "assembled_interferences",
+    "assembled_parts",
     "assembly_reach_violations",
     "assembly_steps",
     "battery_tray_geometry",
     "cable_guide_geometry",
+    "check_before_build",
+    "check_before_building_stand",
     "build_adapter_segments",
     "build_battery_tray",
     "build_cable_guides",
@@ -199,6 +209,8 @@ __all__ = [
     "deck_stack_geometry",
     "drive_base_geometry",
     "measure_part",
+    "part_envelopes",
+    "part_masses",
     "part_names",
     "stand_geometry",
     "stand_inputs",
@@ -329,13 +341,42 @@ _HALF_TURN_DEG: Final[float] = 180.0
 バッテリを外せる経路が無い機体になる（要件 7.2）。
 """
 
-_EXTRACTION_HALF_ANGLE_DEG: Final[float] = 1e-6
-"""引き抜く向きがアームと「重なっている」と言うための角度の刻み（度）。
+def _radial_band_mm(
+    angle_deg: float,
+    inner_radius_mm: float,
+    outer_radius_mm: float,
+    half_width_mm: float,
+) -> tuple[tuple[float, float], tuple[float, float]]:
+    """半径方向へ伸びる帯が局所座標で占める `(x の範囲, y の範囲)`（mm）。
 
-⚠️ **アームの幅ではない。** ここで見たいのは「真後ろがアームそのものか」であり、
-輪数が偶数のときに厳密に一致する。幅を見る検査は実形状に対して
-`test_chassis_invariants.py` の掃引が行う。
-"""
+    帯は角 `angle_deg` の向きに `inner_radius_mm` から `outer_radius_mm` まで
+    伸び、その向きに直交して `±half_width_mm` の幅を持つ（モータ取付部の矩形、
+    駆動ユニットの円筒のいずれもこの形である）。⚠️ **局所座標は引き抜く向きを
+    `+x` に採った系**であり、`angle_deg` はその系での角である（機体の取付角
+    そのものではない）。
+
+    ⚠️ **角度の刻みで「重なっている」と言わない。** かつてここには 1e-6 度の
+    epsilon が置かれており、⚠️ **輪数が偶数のときだけ**働いて `wheel_count=5`
+    では素通りしていた（タスク 3.2 が 3.6 へ残した申し送り）。⚠️ **epsilon は
+    設計条件ではない**——帯どうしが重なるかは閉じた形で判る。
+    """
+    radians = math.radians(angle_deg)
+    sin_angle, cos_angle = math.sin(radians), math.cos(radians)
+    x_ends_mm = (inner_radius_mm * cos_angle, outer_radius_mm * cos_angle)
+    y_ends_mm = (inner_radius_mm * sin_angle, outer_radius_mm * sin_angle)
+    x_spread_mm = half_width_mm * abs(sin_angle)
+    y_spread_mm = half_width_mm * abs(cos_angle)
+    return (
+        (min(x_ends_mm) - x_spread_mm, max(x_ends_mm) + x_spread_mm),
+        (min(y_ends_mm) - y_spread_mm, max(y_ends_mm) + y_spread_mm),
+    )
+
+
+def _intervals_overlap(
+    left: tuple[float, float], right: tuple[float, float]
+) -> bool:
+    """2つの閉区間が**幅を持って**重なるか（⚠️ 接するだけは重なりではない）。"""
+    return min(left[1], right[1]) - max(left[0], right[0]) > 0.0
 
 _SUPPORT_PAD_DEPTH_MULTIPLE: Final[float] = 1.0
 """支持パッドの半径方向の奥行き（モータ胴体径の倍数）。
@@ -805,6 +846,365 @@ def measure_part(name: str, solid: object) -> PartMetrics:
 
 
 # ---------------------------------------------------------------------------
+# 検査を通らない形状の生成物を出さない関門（タスク 3.6 / 要件 2.3, 2.4, 4.4）
+#
+# ## ⚠️ 関門は生成の「前」に立つ
+#
+# design.md `#### Shapes` は「構築の前に `check_material` / `check_envelope` /
+# `evaluate_clearance` を通す」と定めている。⚠️ **作ってから捨てる実装にしない**
+# ——書き出し（タスク 3.7）が検査を飛ばした瞬間に無検査の生成物が出る。本節の
+# 関門は⚠️ **形状ライブラリを1行も import しない**ため、`cad` extra 非導入の
+# 環境でも同じ失敗が同じ内容で出る。それが「生成の前」であることの証拠である。
+#
+# ## ⚠️ 迂回できる入口を作らない
+#
+# 公開されている構築関数（`build_*`）は**すべて**、本体の先頭で関門を通る。
+# ⚠️ **1つでも通らない入口があれば、そこから無検査の生成物が出る**
+# （`test_chassis_shapes.py::test_every_public_builder_passes_through_the_gate`
+# が `ast` で固定する）。整備スタンドだけは `StandInputs` しか受け取らないため
+# （要件 5.2: 設計入力を配置半径と現物採寸値に限る）、材料と外接箱に閉じた
+# `check_before_building_stand` を通る——⚠️ **床との隙間は機体の部位の話であり、
+# スタンドの設計入力からは到達できない**（スタンドは床に置く側である）。
+# 機体の一員として作られるときは `build_parts` が先に機体の関門を通している。
+#
+# ## ⚠️ 「全件」を値のまま集める
+#
+# 造形可能寸法の超過は**部品ごと・軸ごと**に、床との隙間の不足は**部位ごと**に、
+# ⚠️ **一度の失敗ですべて**を示す（要件 2.3, 4.4）。1件ずつ直しては再実行する
+# 往復にしないため、上流 `check_envelope` と `evaluate_clearance` の戻り値
+# （どちらも全件の一覧）をすべて集めてから送出する。⚠️ **両方が失敗したときは
+# 両方をメッセージへ載せる**——型は1つしか選べないが、見えている違反を捨てない。
+# ---------------------------------------------------------------------------
+
+
+DOWEL_BORE_DIAMETER_MM: Final[float | None] = None
+"""位置決めダボの穴の径（mm）。⚠️ **`None` は「どの部品もダボ穴を持たない」。**
+
+本 Spec の位置決めは**嵌め合いの形**が担っており、ダボは1本も無い
+（`joints` の `_NO_DOWELS`）。⚠️ **これは値の欠落ではなく表明である**——
+`_realisation_violations` はこの値を見て、`joints` が数え上げたダボを実現する
+穴が形の側に無いことを判定する。ダボを設計へ入れるなら、⚠️ **ここへ径を置き、
+その径の穴を実際に開ける部品の `bore_diameters_mm` へ現れさせる**こと。
+"""
+
+_ENVELOPE_ADVICE: Final[dict[str, str]] = {
+    HUB_PLATE_PART_NAME: (
+        "⚠️ 中央部の外接箱は舌の張り出しを含む。中央部の外径かホイール配置半径を"
+        "見直すこと"
+    ),
+    MOTOR_ARM_PART_NAME: (
+        "アームの長さは base.hub_center_to_mount_face_mm に 1:1 で追随する"
+        "（配置半径を見直すこと）"
+    ),
+    ADAPTER_SEGMENT_PART_NAME: (
+        "⚠️ 分割数は上流の円環の導出（segment_counts）が決めており、そこは中心を"
+        "含む扇形という最悪値で判定している。ゴミ箱の底の外径か座の肉厚を"
+        "見直すこと"
+    ),
+    BATTERY_TRAY_PART_NAME: (
+        "⚠️ 耳はアームの二股より外の帯にしか載らない"
+        "（joints.BATTERY_TRAY_ARM_INDEX）ため、受け持つアームを増やして解決する"
+        "問題ではない。バッテリの寸法か配置半径を見直すこと"
+    ),
+    BOARD_DECK_PART_NAME: "段の高さか缶との隙間を見直すこと（要件 7.13）",
+    CATCH_DECK_PART_NAME: "段の高さか缶との隙間を見直すこと（要件 7.13）",
+    CABLE_GUIDE_PART_NAME: (
+        "⚠️ 経路を1本にまとめて解決する問題ではない"
+        "（決定 8: 系統ごとに別経路。要件 7.7）"
+    ),
+    SERVICE_STAND_PART_NAME: (
+        "⚠️ 脚は輪ごとに分かれているため、これ以上の分割で解決する問題ではない"
+        "（決定 5: 1体の枠にしない）。ホイール配置と隙間の値を見直すこと"
+    ),
+}
+"""部品の種類ごとの、外接箱が収まらないときに見直す先。
+
+⚠️ **「もっと分割する」で片づく部品ばかりではない**（要件 2.1: 分割数は導出で
+あって設定値ではない）。全件を一度に示す関門は部品名しか持たないため、
+⚠️ **どのつまみを回すべきかをここが持つ**——家族ごとの構築関数が個別に例外を
+送出していた頃、その助言はそれぞれのメッセージにあった。
+"""
+
+_BORE_MATCH_TOLERANCE_MM: Final[float] = 1e-9
+"""穴の径を突き合わせるときの許容差（mm）。
+
+⚠️ **設計の余裕ではない。** 突き合わせる2つの値は同じ寸法パラメータから来る
+ため厳密に等しく、この許容差は浮動小数の演算順序の差だけを吸収する。
+"""
+
+
+def part_envelopes(
+    params: ResolvedParams, layout: ChassisLayout
+) -> tuple[tuple[str, Envelope], ...]:
+    """造形する断片1点ずつの外接箱を、`part_names` と同じ並びで返す（要件 2.2）。
+
+    ⚠️ **形状ライブラリを要さない。** 外接箱は幾何の導出結果が持っている値で
+    あり、⚠️ **宣言と実形状が一致することは `test_chassis_invariants.py` が
+    実ソリッドに対して固定する**（design.md `#### Shapes` の不変条件）。
+
+    ⚠️ **点数をここで数え直さない**（要件 2.1）——`part_names` と
+    `joints.segment_counts()` が正である。
+
+    Args:
+        params: `config.load_params()` の戻り値。
+        layout: `layout.derive_layout()` の戻り値。
+
+    Returns:
+        `(部品名, 外接箱)` の組を、造形する断片の点数ぶん並べたタプル。
+
+    Raises:
+        GeometryError: いずれかの部品の幾何が成立しない場合。
+    """
+    drive_base = drive_base_geometry(params, layout)
+    adapter = adapter_geometry(params, layout)
+    tray = battery_tray_geometry(params, layout)
+    deck = deck_stack_geometry(params, layout)
+    guide = cable_guide_geometry(params, layout)
+    stand = stand_geometry(stand_inputs(params, layout))
+
+    by_base_name: dict[str, tuple[Envelope, ...]] = {
+        HUB_PLATE_PART_NAME: (drive_base.hub_plate_envelope,),
+        # ⚠️ 3本は同一形状である（据え付けの角度だけが異なる）。
+        MOTOR_ARM_PART_NAME: (drive_base.motor_arm_envelope,) * drive_base.wheel_count,
+        ADAPTER_SEGMENT_PART_NAME: adapter.segment_envelopes,
+        BATTERY_TRAY_PART_NAME: (tray.envelope,),
+        BOARD_DECK_PART_NAME: deck.board_envelopes,
+        CATCH_DECK_PART_NAME: deck.catch_envelopes,
+        CABLE_GUIDE_PART_NAME: (guide.envelope,) * guide.guide_count,
+        SERVICE_STAND_PART_NAME: (stand.envelope,) * stand.leg_count,
+    }
+    envelopes = tuple(
+        envelope for base_name in PART_NAMES for envelope in by_base_name[base_name]
+    )
+    names = part_names(params)
+    if len(envelopes) != len(names):  # pragma: no cover - 点数の正は1箇所である
+        raise GeometryError(
+            f"外接箱の点数 {len(envelopes)!r} が部品の点数 {len(names)!r} と"
+            "食い違う。⚠️ 分割数の正は joints.segment_counts() ただ1つである"
+            "（要件 2.1）。"
+        )
+    return tuple(zip(names, envelopes, strict=True))
+
+
+def _realised_bore_diameters(
+    params: ResolvedParams, layout: ChassisLayout
+) -> dict[str, tuple[float, ...]]:
+    """造形部品の**種類**ごとに、実際に開ける穴の径の一覧を返す。
+
+    ⚠️ **購入部品（ゴミ箱・ホイール・金属ブラケット）は現れない**——こちらが
+    穴を開ける相手ではないため、その部材については何も主張しない。
+    """
+    drive_base = drive_base_geometry(params, layout)
+    adapter = adapter_geometry(params, layout)
+    deck = deck_stack_geometry(params, layout)
+    return {
+        HUB_PLATE_PART_NAME: drive_base.bore_diameters_mm,
+        MOTOR_ARM_PART_NAME: drive_base.bore_diameters_mm,
+        # ⚠️ `joints` は断片を `adapter_segment_i`、円環全体を `adapter` と
+        # 呼び分ける（`adapter__trash_can` / `adapter__board_deck`）。どちらも
+        # 同じ幾何が穴を開ける。
+        ADAPTER_SEGMENT_PART_NAME: adapter.bore_diameters_mm,
+        "adapter": adapter.bore_diameters_mm,
+        BATTERY_TRAY_PART_NAME: battery_tray_geometry(
+            params, layout
+        ).bore_diameters_mm,
+        BOARD_DECK_PART_NAME: deck.bore_diameters_mm,
+        CATCH_DECK_PART_NAME: deck.bore_diameters_mm,
+        CABLE_GUIDE_PART_NAME: cable_guide_geometry(params, layout).bore_diameters_mm,
+        # ⚠️ 脚は締結を持たない（要件 5.6 の拘束は形そのものである）。
+        SERVICE_STAND_PART_NAME: (),
+    }
+
+
+def _member_base_name(member: str) -> str:
+    """部材名から連番を落とした「部品の種類」の名を返す（`motor_arm_1` → `motor_arm`）。"""
+    head, _, tail = member.rpartition("_")
+    return head if head and tail.isdigit() else member
+
+
+def _has_bore(diameters_mm: tuple[float, ...], wanted_mm: float) -> bool:
+    """`wanted_mm` の穴が一覧にあるか。"""
+    return any(
+        abs(diameter_mm - wanted_mm) <= _BORE_MATCH_TOLERANCE_MM
+        for diameter_mm in diameters_mm
+    )
+
+
+def _realisation_violations(
+    params: ResolvedParams, layout: ChassisLayout
+) -> tuple[str, ...]:
+    """数え上げた締結・位置決めの要素を形の側が実現していない件を、全件返す。
+
+    ⚠️ **これはタスク 3.2 が 3.6 へ残した申し送りの関門である。** `joints` は
+    アーム接合部に `dowel_count=2` を記録していたのに、⚠️ **どの部品にも
+    ダボ穴が無かった**——数え上げだけが存在し、形がそれを実現していない状態は、
+    緑のまま通り抜けていた。⚠️ **同じことはボルトとインサートでも起こりうる**
+    （相手側に穴が無ければ、記録された締結はどこも通らない）ため、3種すべてを
+    同じ規則で見る。
+
+    ⚠️ **例外を送出しない。** 違反は全件を値として返し、失敗として扱うのは
+    `check_before_build` である（`clearance.evaluate_clearance` と同じ流儀）。
+    """
+    bores = _realised_bore_diameters(params, layout)
+    violations: list[str] = []
+    for joint in derive_joints(layout, params):
+        printed = [
+            (member, bores[_member_base_name(member)])
+            for member in joint.members
+            if _member_base_name(member) in bores
+        ]
+        for member, diameters_mm in printed:
+            if joint.bolt_count > 0 and not _has_bore(
+                diameters_mm, params.joint.through_hole_diameter_mm
+            ):
+                violations.append(
+                    f"{joint.name}: ボルト {joint.bolt_count!r} 本を数えているが、"
+                    f"{member} は貫通穴の径 "
+                    f"{params.joint.through_hole_diameter_mm!r}mm の穴を開けない"
+                )
+            if joint.dowel_count > 0 and (
+                DOWEL_BORE_DIAMETER_MM is None
+                or not _has_bore(diameters_mm, DOWEL_BORE_DIAMETER_MM)
+            ):
+                violations.append(
+                    f"{joint.name}: 位置決めダボ（dowel）{joint.dowel_count!r} 本を"
+                    f"数えているが、{member} はそれを実現する穴を開けない"
+                    f"（DOWEL_BORE_DIAMETER_MM={DOWEL_BORE_DIAMETER_MM!r}）"
+                )
+        if joint.insert_count > 0 and not any(
+            _has_bore(diameters_mm, params.joint.insert_outer_diameter_mm)
+            for _member, diameters_mm in printed
+        ):
+            violations.append(
+                f"{joint.name}: インサート {joint.insert_count!r} 個を数えているが、"
+                f"座の径 {params.joint.insert_outer_diameter_mm!r}mm の穴を"
+                "どちらの部材も開けない"
+            )
+    return tuple(violations)
+
+
+def check_before_build(params: ResolvedParams, layout: ChassisLayout) -> None:
+    """形状を作る前に、材料・造形可能寸法・床との隙間・要素の実現を通す。
+
+    ⚠️ **本関数を通らない構築の入口を作らない**（本節の冒頭）。⚠️ **形状
+    ライブラリを import しない**ため、`cad` extra 非導入の環境でも同じ失敗が
+    同じ内容で出る。
+
+    Args:
+        params: `config.load_params()` の戻り値。
+        layout: `layout.derive_layout()` の戻り値。
+
+    Returns:
+        `None`。⚠️ **通ったことは戻り値ではなく「送出しなかったこと」で表す。**
+
+    Raises:
+        catch_mechanism.ParameterError: 材料が上流の許可一覧に無い場合
+            （要件 2.4。⚠️ **包み直さない**）。
+        GeometryError: いずれかの断片が造形可能寸法を超える場合（⚠️ **部品名・
+            軸・超過量を全件**示す。要件 2.3）、または数え上げた締結・位置決めの
+            要素を形の側が実現していない場合。
+        ClearanceError: いずれかの部位の床との隙間が下限を下回る場合
+            （⚠️ **部位と不足量を全件**示す。要件 4.4）。
+
+    ⚠️ **送出できる例外の型は1つだが、見えている違反は捨てない。** 3種の検査は
+    どれも先に全件を計算し終えているため、選ばれなかった種類の違反も同じ失敗の
+    メッセージへ併せて載せる——⚠️ **1種類ずつ直しては再実行する往復にしない。**
+    """
+    # 要件 2.4: 材料は上流の許可一覧の範囲から選ぶ。
+    check_material(params.printing)
+
+    envelope_violations = [
+        violation
+        for name, envelope in part_envelopes(params, layout)
+        for violation in check_envelope(name, envelope, params.printing)
+    ]
+    clearance_violations = evaluate_clearance(layout, params.chassis)
+    realisation_violations = _realisation_violations(params, layout)
+
+    clearance_detail = "、".join(
+        f"{violation.name} の隙間 {violation.height_mm!r}mm が下限 "
+        f"{violation.minimum_mm!r}mm を {violation.shortfall_mm!r}mm 下回る"
+        for violation in clearance_violations
+    )
+    realisation_detail = "、".join(realisation_violations)
+    # ⚠️ **見えている違反を捨てない。** 例外の**型**は1つしか選べないが、そのとき
+    # 既に計算し終えている他の種類の違反は、同じ失敗のメッセージへ併せて載せる
+    # ——⚠️ **1種類ずつ直しては再実行する往復にしない**（本関数の約束）。
+    clearance_also = (
+        f"。併せて床との隙間も不足している（{clearance_detail}）"
+        if clearance_detail
+        else ""
+    )
+    realisation_also = (
+        "。併せて数え上げた要素を形の側が実現していない"
+        f"（{realisation_detail}）"
+        if realisation_detail
+        else ""
+    )
+
+    if envelope_violations:
+        detail = "、".join(
+            f"{violation.part_name} の 軸 {violation.axis} が "
+            f"{violation.envelope_mm!r}mm で上限 {violation.limit_mm!r}mm を "
+            f"{violation.excess_mm!r}mm 超過"
+            for violation in envelope_violations
+        )
+        also = clearance_also + realisation_also
+        advice = "、".join(
+            dict.fromkeys(
+                _ENVELOPE_ADVICE[_member_base_name(violation.part_name)]
+                for violation in envelope_violations
+            )
+        )
+        raise GeometryError(
+            f"造形可能寸法に収まらない断片がある（{detail}）{also}。{advice}。"
+            "⚠️ 検査を通らない形状の生成物は出力しない（要件 2.3）。"
+        )
+    if clearance_violations:
+        raise ClearanceError(
+            f"床との隙間が下限を下回る部位がある（{clearance_detail}）"
+            f"{realisation_also}。"
+            "⚠️ 検査を通らない形状の生成物は出力しない（要件 4.4）。"
+        )
+    if realisation_violations:
+        raise GeometryError(
+            f"数え上げた要素を形の側が実現していない（{realisation_detail}）。"
+            "⚠️ 数えただけの締結・位置決めは組み上がらない（要件 2.7, 2.10）。"
+        )
+
+
+def check_before_building_stand(
+    inputs: StandInputs, printing: PrintingConstraints
+) -> None:
+    """整備スタンドの脚を作る前に、材料と造形可能寸法を通す（要件 2.3, 2.4, 5.2）。
+
+    ⚠️ **床との隙間は見ない。** 隙間の5部位は**機体**の部位であり（`clearance`）、
+    要件 5.2 が限定するスタンドの設計入力（配置半径と現物採寸値）からは到達
+    できない——スタンドは床に置く側であって、床から浮く側ではない。機体の一員
+    として作られるときは `build_parts` が先に `check_before_build` を通している。
+
+    Raises:
+        GeometryError: 脚の外接箱が造形可能寸法に収まらない場合
+            （⚠️ **超過する軸と超過量を全件**示す）。
+        catch_mechanism.ParameterError: 材料が上流の許可一覧に無い場合。
+    """
+    geometry = stand_geometry(inputs)
+    check_material(printing)
+    violations = check_envelope(SERVICE_STAND_PART_NAME, geometry.envelope, printing)
+    if violations:
+        detail = "、".join(
+            f"軸 {violation.axis} が {violation.envelope_mm!r}mm で"
+            f"上限 {violation.limit_mm!r}mm を {violation.excess_mm!r}mm 超過"
+            for violation in violations
+        )
+        raise GeometryError(
+            f"{SERVICE_STAND_PART_NAME} の外接箱が造形可能寸法に収まらない（{detail}）。"
+            "⚠️ 脚は3つに分かれているため、これ以上の分割で解決する問題ではない"
+            "（決定 5: 1体の枠にしない）。ホイール配置と隙間の値を見直すこと。"
+        )
+
+
+# ---------------------------------------------------------------------------
 # 構築（⚠️ 形状ライブラリの import はこの下だけ）
 # ---------------------------------------------------------------------------
 
@@ -864,26 +1264,12 @@ def build_service_stand_legs(
             環境でも観測できる（design.md「Allowed Dependencies」/
             「Dependency Direction」）。
     """
+    # ⚠️ **検査が先である**（`check_before_building_stand`）。材料と外接箱に
+    # 閉じた関門であり、⚠️ **床との隙間は見ない**——5部位は機体の部位であって、
+    # 要件 5.2 が限定するスタンドの設計入力からは到達できない。
+    check_before_building_stand(inputs, printing)
+
     geometry = stand_geometry(inputs)
-
-    # 要件 2.4: 材料は上流の許可一覧の範囲から選ぶ。
-    check_material(printing)
-
-    # 要件 2.2, 2.3: 断片の外接箱が造形可能寸法に収まることを、上流の検査で見る。
-    # ⚠️ **1脚ずつ**の検査である（決定 5「1体の枠にすると造形可能寸法を超える」）。
-    violations = check_envelope(SERVICE_STAND_PART_NAME, geometry.envelope, printing)
-    if violations:
-        detail = "、".join(
-            f"軸 {violation.axis} が {violation.envelope_mm}mm で"
-            f"上限 {violation.limit_mm}mm を {violation.excess_mm}mm 超過"
-            for violation in violations
-        )
-        raise GeometryError(
-            f"{SERVICE_STAND_PART_NAME} の外接箱が造形可能寸法に収まらない（{detail}）。"
-            "⚠️ 脚は3つに分かれているため、これ以上の分割で解決する問題ではない"
-            "（決定 5: 1体の枠にしない）。ホイール配置と隙間の値を見直すこと。"
-        )
-
     solid = _build_leg(geometry)
     return tuple(
         BuiltPart(
@@ -1002,7 +1388,13 @@ def build_parts(
         GeometryError: 幾何が成立しない、または造形可能寸法に収まらない場合。
         ParameterError: 材料が上流の許可一覧に無い場合。
         CadUnavailableError: 形状ライブラリが導入されていない場合。
+        ClearanceError: いずれかの部位の床との隙間が下限を下回る場合
+            （⚠️ **部位と不足量を全件**示す。要件 4.4）。
     """
+    # ⚠️ **検査が先である**（`check_before_build`）。家族ごとの構築関数も同じ
+    # 関門を通るが、ここで先に通しておくことで、⚠️ **どの家族の形も1つも
+    # 作られないうちに**全件の違反が出る。
+    check_before_build(params, layout)
     return (
         build_drive_base(params, layout)
         + build_adapter_segments(params, layout)
@@ -1612,9 +2004,10 @@ def build_drive_base(
 ) -> tuple[BuiltPart, ...]:
     """駆動ベース（中央部1点とモータ取付部 `wheel_count` 点）を構築する。
 
-    ⚠️ **検査が先である**（design.md `#### Shapes`）——材料と外接箱を通してから
-    ソリッドを作る。⚠️ 3本のアームは**同一形状**であり、据え付けの角度だけが
-    異なる（角度を形へ焼き付けない）。
+    ⚠️ **検査が先である**（`check_before_build`）——⚠️ **全部品**の材料・
+    造形可能寸法・床との隙間・要素の実現を通してからソリッドを作る。⚠️ 3本の
+    アームは**同一形状**であり、据え付けの角度だけが異なる（角度を形へ焼き
+    付けない）。
 
     Args:
         params: `config.load_params()` の戻り値。
@@ -1629,30 +2022,11 @@ def build_drive_base(
         ParameterError: 材料が上流の許可一覧に無い場合。
         CadUnavailableError: 形状ライブラリが導入されていない場合。
     """
+    # ⚠️ **検査が先である**（`check_before_build`）。⚠️ **全部品を一度に見る**
+    # ため、この入口から入っても直すべき箇所は1回の失敗で全部読める。
+    check_before_build(params, layout)
+
     geometry = drive_base_geometry(params, layout)
-    check_material(params.printing)
-
-    violations = [
-        violation
-        for part_name, envelope in (
-            (HUB_PLATE_PART_NAME, geometry.hub_plate_envelope),
-            (MOTOR_ARM_PART_NAME, geometry.motor_arm_envelope),
-        )
-        for violation in check_envelope(part_name, envelope, params.printing)
-    ]
-    if violations:
-        detail = "、".join(
-            f"{violation.part_name} の 軸 {violation.axis} が "
-            f"{violation.envelope_mm}mm で上限 {violation.limit_mm}mm を "
-            f"{violation.excess_mm}mm 超過"
-            for violation in violations
-        )
-        raise GeometryError(
-            f"駆動ベースの外接箱が造形可能寸法に収まらない（{detail}）。"
-            "⚠️ 中央部の外接箱は舌の張り出しを含む（要件 2.3）。"
-            "中央部の外径かホイール配置半径を見直すこと。"
-        )
-
     plate = _build_hub_plate(
         geometry,
         adapter_geometry(params, layout),
@@ -2382,9 +2756,9 @@ def build_adapter_segments(
 ) -> tuple[BuiltPart, ...]:
     """ゴミ箱固定アダプタの断片を全点構築する（要件 2.2, 6.1, 6.2, 6.5, 6.7）。
 
-    ⚠️ **検査が先である**（design.md `#### Shapes`）——材料と外接箱を通してから
-    ソリッドを作る。⚠️ **断片は据え付けの角度のまま構築する**（組み上がり状態の
-    干渉を実形状で見るため）。
+    ⚠️ **検査が先である**（`check_before_build`）——⚠️ **全部品**の検査を
+    通してからソリッドを作る。⚠️ **断片は据え付けの角度のまま構築する**
+    （組み上がり状態の干渉を実形状で見るため）。
 
     Args:
         params: `config.load_params()` の戻り値。
@@ -2399,30 +2773,11 @@ def build_adapter_segments(
         ParameterError: 材料が上流の許可一覧に無い場合。
         CadUnavailableError: 形状ライブラリが導入されていない場合。
     """
+    # ⚠️ **検査が先である**（`check_before_build`）。⚠️ **全部品を一度に見る**
+    # ため、この入口から入っても直すべき箇所は1回の失敗で全部読める。
+    check_before_build(params, layout)
+
     geometry = adapter_geometry(params, layout)
-    check_material(params.printing)
-
-    violations = [
-        violation
-        for index, envelope in enumerate(geometry.segment_envelopes, start=1)
-        for violation in check_envelope(
-            f"{ADAPTER_SEGMENT_PART_NAME}_{index}", envelope, params.printing
-        )
-    ]
-    if violations:
-        detail = "、".join(
-            f"{violation.part_name} の 軸 {violation.axis} が "
-            f"{violation.envelope_mm}mm で上限 {violation.limit_mm}mm を "
-            f"{violation.excess_mm}mm 超過"
-            for violation in violations
-        )
-        raise GeometryError(
-            f"アダプタ断片の外接箱が造形可能寸法に収まらない（{detail}）。"
-            "⚠️ 分割数は上流の円環の導出（segment_counts）が決めており、"
-            "そこは中心を含む扇形という最悪値で判定している（要件 2.3）。"
-            "ゴミ箱の底の外径か座の肉厚を見直すこと。"
-        )
-
     return tuple(
         BuiltPart(
             name=f"{ADAPTER_SEGMENT_PART_NAME}_{index + 1}",
@@ -2548,7 +2903,8 @@ class DeckStackGeometry:
         insert_bore_diameter_mm: インサート座の下穴径（mm、上流）。
         insert_bore_depth_mm: インサート座の深さ（mm、上流）。
         usable_area_mm2: 基板デッキの上面のうち取付に使える面積（解析値）。
-        required_area_mm2: 要る取付面積（＝ `deck_x_mm * deck_y_mm`）。
+        required_area_mm2: 要る取付面積（＝ `board.mount_area_mm2`）。
+            ⚠️ **辺の積ではない**（`params.BoardSpec.mount_area_mm2`）。
         catch_segment_count: 受け止めデッキの断片の数（⚠️ `joints` が正）。
         catch_segment_span_deg: 受け止めデッキの断片1つが占める角度（度）。
         catch_segment_start_angles_deg: 受け止めデッキの断片の始まりの角度。
@@ -2859,13 +3215,13 @@ def deck_stack_geometry(
         / 4.0
         * chassis.cable.channel_width_mm**2
     )
-    required_area_mm2 = board.deck_x_mm * board.deck_y_mm
+    required_area_mm2 = board.mount_area_mm2
     if usable_area_mm2 < required_area_mm2:
         raise GeometryError(
             f"基板デッキの取付面 {usable_area_mm2!r}mm^2 が要る面積 "
-            f"{required_area_mm2!r}mm^2（deck_x_mm={board.deck_x_mm!r} × "
-            f"deck_y_mm={board.deck_y_mm!r}）に足りない。⚠️ 段の外形はその高さの"
-            "缶の内径から決まる（要件 7.11）ため、段を上げるか隙間を見直すこと。"
+            f"board.mount_area_mm2={required_area_mm2!r}mm^2 に足りない。"
+            "⚠️ 段の外形はその高さの缶の内径から決まる（要件 7.11）ため、"
+            "段を上げるか隙間を見直すこと。"
         )
 
     if not board_plane_height_mm <= board.hold_height_mm <= component_top_height_mm:
@@ -3030,6 +3386,22 @@ class BatteryTrayGeometry:
             取付長穴から座の外径ぶん離した位置の、外側のほうである**。
         ear_outer_radius_mm: 耳の外側の x。
         ear_top_height_mm: 耳の上端（＝アームの上面）。
+        seat_bearing_area_mm2: ⚠️ **回り止めの座の当たり面**（mm^2）。
+            ポケットの縁の上端が中央部（ハブ板）の下面へ**圧縮で**当たる面で
+            あり、⚠️ **トレイが締結のボルトを軸に回ろうとするのを止めている**。
+            上流の `check_joint` の下限を通す（要件 2.9）。
+            ⚠️ **`joints` の `JointSpec` としては持てない**——この面の法線は
+            トレイの造形姿勢で積層方向（`z`）を向いており、`JointSpec` は
+            要件 2.8 に従ってその軸を拒否する。⚠️ **姿勢を偽らない**：耳の
+            接合面（法線は機体の `y`）は採用した姿勢（機体の `z` ＝ 積層方向）で
+            既に積層方向から外れており、機体の `x` を積層方向に採れば耳の面と
+            この座の面の**両方**を外せる（外接箱 173.6 × 61.4 × 47.0mm は
+            `build_z_mm` 180 に入る）。⚠️ **その姿勢は採っていない**ため、
+            採用した姿勢ではこの面が層と平行になる。⚠️ **要件 2.8 が禁じるのは
+            層間剥離で荷重を受ける継手であって圧縮の座ではない**（design.md
+            決定 4b の荷重経路 (iii)）——この座は圧縮しか受けないため、その
+            確定した範囲の内側にある。⚠️ **それでも当たり面の下限は課す**
+            （面積が足りなければ樹脂がクリープする。要件 2.5）。
         bolt_count: 締結のボルト本数（⚠️ `joints` が正）。
         bolt_height_mm: ボルトの軸の高さ（＝アームの厚さの中央）。
         bolt_radii_mm: ボルトの軸の局所 x（半径方向の並び）。
@@ -3065,6 +3437,7 @@ class BatteryTrayGeometry:
     ear_inner_radius_mm: float
     ear_outer_radius_mm: float
     ear_top_height_mm: float
+    seat_bearing_area_mm2: float
     bolt_count: int
     bolt_height_mm: float
     bolt_radii_mm: tuple[float, ...]
@@ -3089,10 +3462,12 @@ def battery_tray_geometry(
         バッテリトレイの幾何。
 
     Raises:
-        GeometryError: 引き抜く向きがモータ取付部と重なる場合、耳がアームの
-            中実の帯に載らない場合、ポケットが中央部の下面からはみ出す場合、
-            座の環がアームの厚さに載らない場合、または記録された保持高さが
-            ポケットの与える収まりの外にある場合。
+        GeometryError: 引き抜く廊下をモータ取付部または駆動ユニットが塞ぐ場合、
+            耳がアームの中実の帯に載らない場合、ポケットが中央部の下面から
+            はみ出す場合、座の環がアームの厚さに載らない場合、または記録された
+            保持高さがポケットの与える収まりの外にある場合。
+        catch_mechanism.ParameterError: 回り止めの座の当たり面が上流の下限を
+            下回る場合（`check_joint` からの伝播。⚠️ **包み直さない**）。
     """
     chassis = params.chassis
     battery = chassis.battery
@@ -3105,17 +3480,6 @@ def battery_tray_geometry(
     arm_index = BATTERY_TRAY_ARM_INDEX
     arm_angle_deg = layout.wheel_angles_deg[arm_index - 1]
     extraction_angle_deg = arm_angle_deg + _HALF_TURN_DEG
-    # ⚠️ 引き抜く向きにアームがあってはならない（要件 7.2）。輪数が偶数なら
-    # 真後ろは別のアームである——黙って作らず、項目名と値を添えて拒否する。
-    for angle_deg in layout.wheel_angles_deg:
-        gap_deg = abs((extraction_angle_deg - angle_deg + 180.0) % 360.0 - 180.0)
-        if gap_deg < _EXTRACTION_HALF_ANGLE_DEG:
-            raise GeometryError(
-                f"バッテリを引き抜く向き {extraction_angle_deg!r} 度が取付角 "
-                f"{angle_deg!r} 度のモータ取付部と重なる"
-                f"（wheel_count={base.wheel_count!r}）。⚠️ 駆動ベースを分解せずに"
-                "着脱できる経路が無い（要件 7.2）。"
-            )
 
     tray_top_height_mm = drive_base.underside_height_mm
     lift_height_mm = battery.tray_wall_thickness_mm
@@ -3172,6 +3536,84 @@ def battery_tray_geometry(
             f"（wheel.nominal_diameter_mm={chassis.wheel.nominal_diameter_mm!r}、"
             f"arm_width_mm={base.arm_width_mm!r}）。"
         )
+    # ⚠️ **引き抜く向きに障害物があってはならない**（要件 7.2）。
+    # ⚠️ **動くのはバッテリであってトレイではない**——要件 7.2 が求めるのは
+    # 「充電のために**バッテリを**取り外す」ことであり、トレイは機体に残る。
+    # バッテリはポケットの開いた端（局所 -x）から出る。
+    #
+    # 障害物は輪ごとに2つある。⚠️ **どちらも「高さの帯」と「y の帯」の積で
+    # 見る**——⚠️ **アームだけを見ると取り違える**：バッテリの上面
+    # （`battery_top_height_mm`）はベース板の下面より低く、アームの下を潜れる。
+    # ⚠️ **実際に塞ぐのは、そのアームの端にぶら下がる駆動ユニット**である
+    # （胴体の高さの帯はバッテリの帯と重なる）。⚠️ **高さの重なりを条件に
+    # 含める**ことで、バッテリを上げ下げしたときに障害物の顔ぶれが自動で
+    # 入れ替わる——固定の一覧を書けば、その追随が失われる。
+    #
+    # ⚠️ **これが `wheel_count` の偶数と 5 の両方を捕まえる**：真後ろ（180 度）に
+    # アームがあれば駆動ユニットが真正面に居り、5 輪では 144 度の駆動ユニットの
+    # 帯が y = -13.129mm から始まって廊下の縁（±17.5mm）へ 4.37mm 食い込む
+    # （出荷寸法での実測。下の例外メッセージが同じ -13.129… を印字する）。
+    # ⚠️ **角度の刻みでは後者が見えない。**
+    #
+    # ⚠️ **経路の全体を見るのは実形状の掃引である**（`test_chassis_invariants.py`
+    # の `test_the_battery_comes_out_without_taking_anything_apart`）——ここに
+    # あるのは、形状ライブラリを要さずに判る閉じた形の条件だけである。
+    battery_band_mm = (-pocket_half_width_mm, pocket_half_width_mm)
+    battery_heights_mm = (battery_bottom_height_mm, battery_top_height_mm)
+    # ⚠️ **掃くのは半直線である。** バッテリは局所 +x へ出ていくため、掃かれる
+    # のは「出発時の最も内側の端より外側」のすべてである。⚠️ **引き抜く向きの
+    # 後ろにある障害物は塞がない**——トレイを受け持つアームの駆動ユニットは
+    # まさにそこに居り、x を見なければ出荷の寸法でさえ拒否してしまう。
+    swept_x_mm = (-pocket_half_length_mm, math.inf)
+    motor_radius_mm = drive_base.motor_body_diameter_mm / _BOTH_SIDES
+    motor_heights_mm = (
+        layout.vertical.motor_body_bottom_height_mm,
+        layout.vertical.motor_body_bottom_height_mm + drive_base.motor_body_diameter_mm,
+    )
+    arm_heights_mm = (
+        drive_base.underside_height_mm,
+        drive_base.underside_height_mm + drive_base.arm_thickness_mm,
+    )
+    for angle_deg in layout.wheel_angles_deg:
+        relative_deg = angle_deg - arm_angle_deg + _HALF_TURN_DEG
+        obstacles = (
+            (
+                "モータ取付部",
+                _radial_band_mm(
+                    relative_deg,
+                    drive_base.hub_radius_mm,
+                    drive_base.arm_outer_radius_mm,
+                    drive_base.arm_half_width_mm,
+                ),
+                arm_heights_mm,
+            ),
+            (
+                "駆動ユニット（モータ胴体）",
+                _radial_band_mm(
+                    relative_deg,
+                    drive_base.motor_inner_radius_mm,
+                    drive_base.motor_outer_radius_mm,
+                    motor_radius_mm,
+                ),
+                motor_heights_mm,
+            ),
+        )
+        for label, (x_mm, y_mm), heights_mm in obstacles:
+            if (
+                _intervals_overlap(x_mm, swept_x_mm)
+                and _intervals_overlap(y_mm, battery_band_mm)
+                and _intervals_overlap(heights_mm, battery_heights_mm)
+            ):
+                raise GeometryError(
+                    f"バッテリを引き抜く廊下（y は {battery_band_mm!r}mm、高さは "
+                    f"{battery_heights_mm!r}mm）を、取付角 {angle_deg!r} 度の"
+                    f"{label}（y は {y_mm!r}mm、高さは {heights_mm!r}mm、"
+                    f"引き抜く向きの x は {x_mm!r}mm）が塞ぐ"
+                    f"（wheel_count={base.wheel_count!r}、引き抜く向き "
+                    f"{extraction_angle_deg!r} 度）。⚠️ 駆動ベースを分解せずに"
+                    "着脱できる経路が無い（要件 7.2）。"
+                )
+
     fuse_bay_top_height_mm = tray_top_height_mm
     # ⚠️ 置き場は腕の付け根より内側に収める。腕はポケットの外壁から外へ伸びる
     # ため、置き場がそこまで届くと同じ帯を2つの用途が奪い合う。
@@ -3242,6 +3684,32 @@ def battery_tray_geometry(
             f"battery.width_mm={battery.width_mm!r}）。"
         )
 
+    # ⚠️ **回り止めの座の当たり面**。ポケットの縁の上端は中央部の下面へ
+    # **圧縮で**当たり、トレイが締結のボルトを軸に回ろうとするのを止めている。
+    # ⚠️ **他のどの接合部の家族にも当たり面の検査があるのに、ここだけ無かった**
+    # （タスク 3.2 が 3.6 へ残した申し送り）。
+    # ⚠️ **数えるのはポケットの足跡とヒューズ置き場の壁だけ**である——腕と耳の
+    # 帯は中央部の下面が半径 `hub_radius_mm` で切れているため一部しか当たらず、
+    # 円の切り取りを解析式へ持ち込めば式が実形状から離れる。数えないことは
+    # 保守側であり、⚠️ **実形状との突き合わせは `test_chassis_invariants.py` が
+    # 同じ2つの箱で測る**（design.md `#### Joints` Risks の照合と同じ規律）。
+    wall_mm = battery.tray_wall_thickness_mm
+    seat_bearing_area_mm2 = (
+        # ポケットの長辺2本（引き抜く向きの端まで通っている）。
+        _BOTH_SIDES * (_BOTH_SIDES * outer_half_length_mm) * wall_mm
+        # 閉じた端（⚠️ 長辺と重なる隅を引く）。
+        + (outer_half_length_mm - pocket_half_length_mm)
+        * (_BOTH_SIDES * outer_half_width_mm)
+        - _BOTH_SIDES * wall_mm * (outer_half_width_mm - pocket_half_width_mm)
+        # ヒューズホルダの置き場の外壁。
+        + (_BOTH_SIDES * fuse_bay_wall_x_mm) * wall_mm
+        # 置き場の端壁（⚠️ 外壁と重なる隅を引く）。
+        + (fuse_bay_wall_x_mm - fuse_bay_half_length_mm)
+        * (fuse_bay_wall_y_mm - fuse_bay_inner_y_mm - wall_mm)
+    )
+    # ⚠️ 上流の下限を実際に通す（要件 2.9「上流が公開する検査を用いて確認する」）。
+    check_joint(params.joint, seat_bearing_area_mm2)
+
     # ⚠️ **y は左右非対称である**——ヒューズホルダの置き場は片側にしか無い。
     # 対称と決めつけた外接箱は、実形状より小さい部品について述べることになる。
     envelope = Envelope(
@@ -3279,6 +3747,7 @@ def battery_tray_geometry(
         ear_inner_radius_mm=ear_inner_radius_mm,
         ear_outer_radius_mm=ear_outer_radius_mm,
         ear_top_height_mm=drive_base.underside_height_mm + base.arm_thickness_mm,
+        seat_bearing_area_mm2=seat_bearing_area_mm2,
         bolt_count=bolt_count,
         bolt_height_mm=bolt_height_mm,
         bolt_radii_mm=bolt_radii_mm,
@@ -3506,8 +3975,8 @@ def build_deck_stack(
 ) -> tuple[BuiltPart, ...]:
     """段積み土台（基板デッキと受け止めデッキ）を全点構築する（要件 7.10-7.13）。
 
-    ⚠️ **検査が先である**（design.md `#### Shapes`）——材料と外接箱を通してから
-    ソリッドを作る。
+    ⚠️ **検査が先である**（`check_before_build`）——⚠️ **全部品**の検査を
+    通してからソリッドを作る。
 
     Args:
         params: `config.load_params()` の戻り値。
@@ -3523,44 +3992,11 @@ def build_deck_stack(
         ParameterError: 材料が上流の許可一覧に無い場合。
         CadUnavailableError: 形状ライブラリが導入されていない場合。
     """
+    # ⚠️ **検査が先である**（`check_before_build`）。⚠️ **全部品を一度に見る**
+    # ため、この入口から入っても直すべき箇所は1回の失敗で全部読める。
+    check_before_build(params, layout)
+
     geometry = deck_stack_geometry(params, layout)
-    check_material(params.printing)
-
-    violations = [
-        violation
-        for base_name, count, envelopes in (
-            (
-                BOARD_DECK_PART_NAME,
-                geometry.board_segment_count,
-                geometry.board_envelopes,
-            ),
-            (
-                CATCH_DECK_PART_NAME,
-                geometry.catch_segment_count,
-                geometry.catch_envelopes,
-            ),
-        )
-        for index, envelope in enumerate(envelopes, start=1)
-        for violation in check_envelope(
-            base_name if count == _UNSPLIT_PART_COUNT else f"{base_name}_{index}",
-            envelope,
-            params.printing,
-        )
-    ]
-    if violations:
-        detail = "、".join(
-            f"{violation.part_name} の 軸 {violation.axis} が "
-            f"{violation.envelope_mm}mm で上限 {violation.limit_mm}mm を "
-            f"{violation.excess_mm}mm 超過"
-            for violation in violations
-        )
-        raise GeometryError(
-            f"段の外接箱が造形可能寸法に収まらない（{detail}）。"
-            "⚠️ 分割数は上流の円環の導出（segment_counts）が決めており、"
-            "そこは中心を含む扇形という最悪値で判定している（要件 2.3, 7.13）。"
-            "段の高さか缶との隙間を見直すこと。"
-        )
-
     guide = cable_guide_geometry(params, layout)
     parts: list[BuiltPart] = []
     for base_name, count, builder in (
@@ -3692,7 +4128,8 @@ def build_battery_tray(
 ) -> tuple[BuiltPart, ...]:
     """バッテリトレイを構築する（要件 7.1, 7.2, 7.3, 8.5）。
 
-    ⚠️ **検査が先である**（design.md `#### Shapes`）。
+    ⚠️ **検査が先である**（`check_before_build`）——⚠️ **全部品**の検査を
+    通してからソリッドを作る。
 
     Args:
         params: `config.load_params()` の戻り値。
@@ -3707,25 +4144,11 @@ def build_battery_tray(
         ParameterError: 材料が上流の許可一覧に無い場合。
         CadUnavailableError: 形状ライブラリが導入されていない場合。
     """
+    # ⚠️ **検査が先である**（`check_before_build`）。⚠️ **全部品を一度に見る**
+    # ため、この入口から入っても直すべき箇所は1回の失敗で全部読める。
+    check_before_build(params, layout)
+
     geometry = battery_tray_geometry(params, layout)
-    check_material(params.printing)
-
-    violations = check_envelope(
-        BATTERY_TRAY_PART_NAME, geometry.envelope, params.printing
-    )
-    if violations:
-        detail = "、".join(
-            f"軸 {violation.axis} が {violation.envelope_mm}mm で"
-            f"上限 {violation.limit_mm}mm を {violation.excess_mm}mm 超過"
-            for violation in violations
-        )
-        raise GeometryError(
-            f"{BATTERY_TRAY_PART_NAME} の外接箱が造形可能寸法に収まらない"
-            f"（{detail}）。⚠️ 耳はアームの二股より外の帯にしか載らない"
-            "（joints.BATTERY_TRAY_ARM_INDEX）ため、受け持つアームを増やして"
-            "解決する問題ではない。バッテリの寸法か配置半径を見直すこと。"
-        )
-
     solid = _build_battery_tray(geometry)
     return (
         BuiltPart(
@@ -4883,24 +5306,11 @@ def build_cable_guides(
         ParameterError: 材料が上流の許可一覧に無い場合。
         CadUnavailableError: 形状ライブラリが導入されていない場合。
     """
+    # ⚠️ **検査が先である**（`check_before_build`）。⚠️ **全部品を一度に見る**
+    # ため、この入口から入っても直すべき箇所は1回の失敗で全部読める。
+    check_before_build(params, layout)
+
     geometry = cable_guide_geometry(params, layout)
-    check_material(params.printing)
-
-    violations = check_envelope(
-        CABLE_GUIDE_PART_NAME, geometry.envelope, params.printing
-    )
-    if violations:
-        detail = "、".join(
-            f"軸 {violation.axis} が {violation.envelope_mm}mm で"
-            f"上限 {violation.limit_mm}mm を {violation.excess_mm}mm 超過"
-            for violation in violations
-        )
-        raise GeometryError(
-            f"{CABLE_GUIDE_PART_NAME} の外接箱が造形可能寸法に収まらない"
-            f"（{detail}）。⚠️ 経路を1本にまとめて解決する問題ではない"
-            "（決定 8: 系統ごとに別経路。要件 7.7）。"
-        )
-
     solid = _build_cable_guide(geometry)
     return tuple(
         BuiltPart(
@@ -5173,6 +5583,10 @@ def build_trash_can_shell(params: ResolvedParams, layout: ChassisLayout) -> obje
     いるため、この置き方は実物より下へ張り出す——⚠️ 干渉の判定は保守側に倒れる
     （`test_chassis_invariants.py` の `_trash_can_model` と同じ扱い）。
 
+    ⚠️ **関門を通ってから作る。** 缶そのものは造形物ではないが、この代用形状は
+    組立の順序と組み上がりの干渉の入力であり、⚠️ **検査を通らない寸法について
+    「組み上がる」と述べさせない**。
+
     Args:
         params: `config.load_params()` の戻り値。
         layout: `layout.derive_layout()` の戻り値。
@@ -5184,6 +5598,7 @@ def build_trash_can_shell(params: ResolvedParams, layout: ChassisLayout) -> obje
         GeometryError: アダプタの幾何が成立しない場合（伝播）。
         CadUnavailableError: 形状ライブラリが導入されていない場合。
     """
+    check_before_build(params, layout)
     build123d = _require_shape_library()
     can = params.trash_can
     adapter = adapter_geometry(params, layout)
@@ -5225,24 +5640,15 @@ def _placed_machine_parts(
 ) -> dict[str, object]:
     """機体を構成する部品を**機体座標へ据え付けて**名前で引ける形にする。
 
-    ⚠️ **アームと配線ガイドは据え付けの角度へ回す**——どちらも点数ぶん**同一の
-    ソリッド**を返すため、回さずに並べると重なる。⚠️ **整備スタンドの脚は
-    機体の部品ではなく**、脚の局所座標で構築されている（要件 5.3）ため除く。
+    ⚠️ **据え付けの規則をここに書き写さない**——どの部品を回すか、脚を除くか、
+    缶を足すかは `assembled_parts` ただ1つが持つ（タスク 3.6 の是正）。同じ規則の
+    写しを2つ置けば、片方へ部品を足したときにもう片方が黙って追随しなくなる。
+
+    Returns:
+        部品名 → 据え付け済みのソリッド。⚠️ 指標は落とす（到達の検査は形しか
+        見ない）。
     """
-    build123d = _require_shape_library()
-    placed: dict[str, object] = {}
-    for part in build_parts(params, layout):
-        if part.name.startswith(f"{SERVICE_STAND_PART_NAME}_"):
-            continue
-        solid = part.solid
-        if part.name.startswith(
-            (f"{MOTOR_ARM_PART_NAME}_", f"{CABLE_GUIDE_PART_NAME}_")
-        ):
-            index = int(part.name.rsplit("_", 1)[1])
-            solid = build123d.Rotation(0, 0, layout.wheel_angles_deg[index - 1]) * solid
-        placed[part.name] = solid
-    placed[TRASH_CAN_PART_NAME] = build_trash_can_shell(params, layout)
-    return placed
+    return {part.name: part.solid for part in assembled_parts(params, layout)}
 
 
 def _extent_along(
@@ -5352,3 +5758,183 @@ def assembly_reach_violations(
                 )
         installed.append(step.part_name)
     return tuple(violations)
+
+
+# ---------------------------------------------------------------------------
+# 組み上がった状態の干渉と、質量の目安（タスク 3.6 / 要件 9.1, 7.9）
+#
+# ⚠️ **「組み上がった状態で干渉しない」ことは、組み上げられることを意味しない**
+# （要件 7.14 / `assembly_reach_violations`）。逆も真である——到達できる順序が
+# あっても、最終形で部品どうしが食い合っていれば組み上がらない。⚠️ **2つは別の
+# 主張であり、片方で他方を代用しない。**
+#
+# ⚠️ **据え付けの角度へ回してから比べる。** アームと配線ガイドは点数ぶん**同一の
+# ソリッド**であり（角度を形へ焼き付けない）、回さずに並べれば自分自身と重なる。
+# ⚠️ **整備スタンドの脚は機体の部品ではない**——脚の局所座標で構築されており
+# （要件 5.3）、機体の組み上がりには現れない。⚠️ **ゴミ箱は現れる**——要件 9.1 が
+# 求めるのは「部品同士**および搭載物との**干渉が無いこと」である。
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class AssemblyInterference:
+    """組み上がった状態で食い合っている2部品（要件 9.1）。
+
+    Attributes:
+        left: 部品名（⚠️ 名前順で先に来る側）。
+        right: 相手の部品名。
+        overlap_mm3: 共通部分の体積（mm^3）。⚠️ **接するだけは干渉ではない**
+            ——面で触れる部品の共通部分は体積 0 である。
+    """
+
+    left: str
+    right: str
+    overlap_mm3: float
+
+
+@dataclass(frozen=True, slots=True)
+class PartMass:
+    """部品1点の質量の目安（要件 7.9）。
+
+    ⚠️ **中身の詰まった立体としての目安である**（上流 `estimate_mass_g` の
+    契約）。充填率・外壁・上下面の設定を考慮しないため、実際の造形物はこの値より
+    軽くなる。⚠️ **合否条件に使わない。**
+
+    Attributes:
+        part_name: 部品名（`BuiltPart.name`）。
+        volume_mm3: 体積（mm^3）。⚠️ **実形状から抽出した値**である。
+        mass_g: 質量の目安（g）。上流 `estimate_mass_g` が体積と材料密度から出す。
+    """
+
+    part_name: str
+    volume_mm3: float
+    mass_g: float
+
+
+def assembled_parts(
+    params: ResolvedParams, layout: ChassisLayout
+) -> tuple[BuiltPart, ...]:
+    """機体を組み上げた状態の部品を、**機体座標へ据え付けて**返す（要件 9.1）。
+
+    ⚠️ **`build_parts` の戻り値をそのまま比べない。** あちらは造形の座標（部品
+    ごとの局所の向き）であり、アームと配線ガイドは点数ぶん同一のソリッドである。
+
+    ⚠️ **整備スタンドの脚は含まない**（機体の部品ではない）。⚠️ **ゴミ箱の代用
+    形状は含む**——要件 9.1 の「搭載物との干渉」の相手である。
+
+    Args:
+        params: `config.load_params()` の戻り値。
+        layout: `layout.derive_layout()` の戻り値。
+
+    Returns:
+        据え付け済みの部品。指標は `build_parts` が抽出したものをそのまま持つ
+        ——⚠️ **据え付けは剛体の移動であり、体積も外接箱の大きさも変えない**。
+
+    Raises:
+        GeometryError: 幾何が成立しない、または関門を通らない場合。
+        ClearanceError: 床との隙間が下限を下回る場合。
+        CadUnavailableError: 形状ライブラリが導入されていない場合。
+    """
+    # ⚠️ **据え付けの規則はここ1箇所にしか無い**（`_placed_machine_parts` は本関数の
+    # 結果から名前を引くだけである。タスク 3.6 の是正）。
+    build123d = _require_shape_library()
+    placed: list[BuiltPart] = []
+    for part in build_parts(params, layout):
+        if part.name.startswith(f"{SERVICE_STAND_PART_NAME}_"):
+            continue
+        solid = part.solid
+        if part.name.startswith(
+            (f"{MOTOR_ARM_PART_NAME}_", f"{CABLE_GUIDE_PART_NAME}_")
+        ):
+            index = int(part.name.rsplit("_", 1)[1])
+            solid = build123d.Rotation(0, 0, layout.wheel_angles_deg[index - 1]) * solid
+        placed.append(BuiltPart(name=part.name, solid=solid, metrics=part.metrics))
+    shell = build_trash_can_shell(params, layout)
+    placed.append(
+        BuiltPart(
+            name=TRASH_CAN_PART_NAME,
+            solid=shell,
+            metrics=measure_part(TRASH_CAN_PART_NAME, shell),
+        )
+    )
+    return tuple(placed)
+
+
+def assembled_interferences(
+    parts: tuple[BuiltPart, ...]
+) -> tuple[AssemblyInterference, ...]:
+    """組み上がった状態で食い合っている組を**全件**返す（要件 9.1）。
+
+    ⚠️ **例外を送出しない。** 干渉は全件を値として返す（`evaluate_clearance` と
+    同じ流儀）——1組ずつ直しては再実行する往復にしない。失敗として扱うかどうかは
+    呼び出し側が決める。
+
+    ⚠️ **据え付け済みの部品を渡すこと**（`assembled_parts`）。造形の座標のまま
+    渡せば、同一形状のアームどうしが自分自身と重なって全件が干渉として返る。
+
+    Args:
+        parts: 据え付け済みの部品。⚠️ 名前は一意でなければならない。
+
+    Returns:
+        食い合っている `(左, 右, 重なりの体積)` を、名前順に並べたタプル。
+        干渉が無ければ空である。
+
+    Raises:
+        CadUnavailableError: 形状ライブラリが導入されていない場合。
+        GeometryError: 同じ名前の部品が2つ渡された場合（どちらについて述べた
+            結果なのかが読めなくなる）。
+    """
+    _require_shape_library()
+    names = [part.name for part in parts]
+    if len(set(names)) != len(names):
+        raise GeometryError(
+            f"組み上がりの干渉を見る部品に同じ名前が2つ以上ある（{sorted(names)!r}）。"
+        )
+    by_name = {part.name: part.solid for part in parts}
+    violations: list[AssemblyInterference] = []
+    for left, right in itertools.combinations(sorted(by_name), 2):
+        overlap_mm3 = float((by_name[left] & by_name[right]).volume)  # type: ignore[operator]
+        if overlap_mm3 > _CONTACT_TOLERANCE_MM3:
+            violations.append(
+                AssemblyInterference(
+                    left=left, right=right, overlap_mm3=overlap_mm3
+                )
+            )
+    return tuple(violations)
+
+
+def part_masses(
+    parts: tuple[BuiltPart, ...], printing: PrintingConstraints
+) -> tuple[PartMass, ...]:
+    """各部品の質量の目安を、体積と上流の材料密度から算出する（要件 7.9）。
+
+    ⚠️ **密度は上流の公開契約が正である**（`PrintingConstraints.
+    material_density_g_cm3`）——本 Spec は同じ値を持たない（要件 1.3）。換算も
+    上流 `estimate_mass_g` が持ち、⚠️ **ここで cm^3 と mm^3 の換算を書かない。**
+
+    ⚠️ **目安であることを黙示にしない**（`estimate_mass_g` の docstring）。中身の
+    詰まった立体としての値であり、実際の造形物はこれより軽い。要件 7.9 は合成
+    重心の見積もりを**未実測の推定として扱う**ことを求めており、この値は
+    合否条件に使わない。
+
+    Args:
+        parts: 構築済みの部品（`build_parts` の戻り値）。
+        printing: 上流の造形制約。
+
+    Returns:
+        `parts` と同じ並びの質量の目安。
+
+    Raises:
+        catch_mechanism.ParameterError: 体積または密度が正の有限値でない場合
+            （`estimate_mass_g` からの伝播。⚠️ **包み直さない**）。
+    """
+    return tuple(
+        PartMass(
+            part_name=part.name,
+            volume_mm3=part.metrics.volume_mm3,
+            mass_g=estimate_mass_g(
+                part.metrics.volume_mm3, printing.material_density_g_cm3
+            ),
+        )
+        for part in parts
+    )

@@ -988,7 +988,17 @@ def verify_digest(baseline: GeometryBaseline, params: ChassisParams) -> None: ..
   - ブラケット取付穴は長穴であり、その移動量が `slot_travel_mm` と一致する（要件 3.8）
   - バッテリトレイの最下面が全部品の中で最も低い搭載物である（要件 7.1）
 - 構築の前に `check_material` / `check_envelope` / `evaluate_clearance` を通す。
-  ⚠️ **検査を通らない形状の生成物を出力しない**（要件 2.3, 4.4）
+  ⚠️ **検査を通らない形状の生成物を出力しない**（要件 2.3, 4.4）。関門は
+  `check_before_build` ただ1つであり、⚠️ **超過は部品と軸と超過量つきで、不足は部位と
+  不足量つきで、いずれも全件を1回の失敗で示す**（1件ずつ直す往復にしない）
+- 関門は⚠️ **数え上げた締結・位置決めの要素を形の側が実現していること**も見る
+  （`joints` の `bolt_count` / `insert_count` / `dowel_count` に対応する穴が
+  部品の `bore_diameters_mm` に現れること）。⚠️ **数えただけの要素は組み上がらない**。
+  ⚠️ **照合は径の一覧に対してであり、位置に対してではない**——ダボは実現する穴の径が
+  そもそも定義されていない（`DOWEL_BORE_DIAMETER_MM is None`）ため無条件に落ちて
+  決定的だが、⚠️ **ボルトとインサートの側は同径の別用途の穴でも満たされうる**
+  （保守側に緩い）。⚠️ **向きも片方だけである**——「数えたのに穴が無い」は見るが、
+  ⚠️ **「穴があるのに誰も数えていない」は見ない**
 - 質量の目安は上流 `estimate_mass_g` を用いる（要件 7.9）
 
 **Dependencies**
@@ -1005,11 +1015,38 @@ class BuiltPart:
     solid: object                    # build123d の Part。型は CAD 層の外へ漏らさない
     metrics: PartMetrics             # 上流の型
 
+@dataclass(frozen=True, slots=True)
+class AssemblyInterference:
+    left: str
+    right: str
+    overlap_mm3: float
+
+@dataclass(frozen=True, slots=True)
+class PartMass:
+    part_name: str
+    volume_mm3: float
+    mass_g: float
+
 def part_names(params: ResolvedParams) -> tuple[str, ...]: ...
+def part_envelopes(params: ResolvedParams, layout: ChassisLayout) -> tuple[tuple[str, Envelope], ...]: ...
+def check_before_build(params: ResolvedParams, layout: ChassisLayout) -> None: ...
+def check_before_building_stand(inputs: StandInputs, printing: PrintingConstraints) -> None: ...
 def build_parts(params: ResolvedParams, layout: ChassisLayout) -> tuple[BuiltPart, ...]: ...
-def assembled_interferences(parts: tuple[BuiltPart, ...]) -> tuple[str, ...]: ...
+def assembled_parts(params: ResolvedParams, layout: ChassisLayout) -> tuple[BuiltPart, ...]: ...
+def assembled_interferences(parts: tuple[BuiltPart, ...]) -> tuple[AssemblyInterference, ...]: ...
+def part_masses(parts: tuple[BuiltPart, ...], printing: PrintingConstraints) -> tuple[PartMass, ...]: ...
 def measure_part(name: str, solid: object) -> PartMetrics: ...
 ```
+- ⚠️ **関門（`check_before_build`）は公開されているすべての `build_*` の先頭にある。**
+  迂回できる入口があれば、そこから無検査の生成物が出る（タスク 3.6）。整備スタンドだけは
+  設計入力が `StandInputs` に限られるため（要件 5.2）、材料と外接箱に閉じた
+  `check_before_building_stand` を通る——⚠️ **床との隙間は機体の部位の話であり、
+  スタンドの設計入力からは到達できない**
+- ⚠️ **`assembled_interferences` は「据え付け済み」の部品を受け取り、値で全件を返す。**
+  `build_parts` の戻り値は造形の座標であり、アームと配線ガイドは点数ぶん同一のソリッドで
+  ある——回さずに比べれば自分自身と重なる。据え付けは `assembled_parts` が行い、
+  ⚠️ **ゴミ箱の代用形状もそこに含まれる**（要件 9.1 の「搭載物との干渉」）。
+  ⚠️ 戻り値を `tuple[str, ...]` から値型へ改めた（部品名だけでは重なりの量が読めない）
 - Preconditions: `build123d` が導入されていること。未導入なら `CadUnavailableError`
 - Postconditions: 同一の `ResolvedParams` からの複数回の生成は同一の `PartMetrics` を返す（要件 1.12）
 - Invariants: 各部品の外接箱は造形可能寸法に収まる
