@@ -40,8 +40,10 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from fakerealsense import FakeDevice, FakePipeline, FakeSensor, make_fake_rs_module
 from synthetic import make_supplier
 
 from sensing_foundation import cli
@@ -82,6 +84,60 @@ def _common_flags(tmp_path: Path, **overrides: str) -> list[str]:
         str(overrides.get("logging_path", tmp_path / "logs")),
     ]
     return flags
+
+
+def _live_flags(tmp_path: Path) -> list[str]:
+    """`--source live` で `record` を回すための共通フラグ列（タスク 8.3）。"""
+    return [
+        "--source",
+        "live",
+        "--width-px",
+        str(WIDTH_PX),
+        "--height-px",
+        str(HEIGHT_PX),
+        "--fps",
+        "30",
+        "--recording-root",
+        str(tmp_path / "sessions"),
+        "--logging-path",
+        str(tmp_path / "logs"),
+    ]
+
+
+def _install_fake_sdk(
+    monkeypatch,
+    *,
+    device: FakeDevice | None = None,
+    context_devices: list[FakeDevice] | None = None,
+) -> FakePipeline:
+    """フェイク `pyrealsense2` を `sys.modules` へ注入する（タスク 8.3）。
+
+    `RealSenseSource` は SDK を関数内で遅延 import するため、この注入は
+    `record` が入力元を開いた時点で効く。フレームは尽きない供給にして
+    おき、取得の終わりは `--duration-s` が決める（在庫制のままだと区間の
+    途中で在庫切れになり、取得失敗として扱われてしまう）。
+    """
+    pipeline = FakePipeline(
+        device=device, endless=True, frame_width=WIDTH_PX, frame_height=HEIGHT_PX
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "pyrealsense2",
+        make_fake_rs_module(pipeline, context_devices=context_devices),
+    )
+    return pipeline
+
+
+def _record_live(monkeypatch, capsys, tmp_path, **fake_kwargs) -> dict:
+    """フェイク SDK を入れた状態で `record` を1回走らせ、manifest を返す。"""
+    _install_fake_sdk(monkeypatch, **fake_kwargs)
+    rc = cli.main(
+        ["record", *_live_flags(tmp_path), "--recording-mode", "continuous", "--duration-s", "0.05"]
+    )
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    session_dir = Path(payload["session_dir"])
+    return json.loads((session_dir / "manifest.json").read_text(encoding="utf-8"))
 
 
 # ----------------------------------------------------------------------------
@@ -234,6 +290,150 @@ class TestRecord:
         log_path = Path(payload["log_path"])
         assert log_path.exists()
         assert log_path.stat().st_size > 0
+
+
+class TestRecordManifestMetadata:
+    """`record` の manifest がデバイス識別情報と有効化結果を持つ（タスク 8.3）。
+
+    タスク9.6 の実機記録では `device` が `null`・`runtime.global_time_enabled`
+    が `null` のままだった（要件 5.2 が実機で未充足）。情報が無いのではなく
+    渡していなかったのが原因であり、ここでは live 経路を SDK モックで端から
+    端まで通してその配線を固定する。要件 5.2 / 6.1。
+    """
+
+    def test_live_record_writes_device_identity_into_the_manifest(
+        self, monkeypatch, capsys, tmp_path
+    ):
+        device = FakeDevice(
+            name="Intel RealSense D435",
+            serial="834412071095",
+            firmware="5.17.3.10",
+            usb_type="3.2",
+            product_line="D400",
+        )
+        manifest = _record_live(monkeypatch, capsys, tmp_path, device=device)
+
+        assert manifest["device"] == {
+            "name": "Intel RealSense D435",
+            "serial": "834412071095",
+            "firmware": "5.17.3.10",
+            "usb_type": "3.2",
+            "product_line": "D400",
+        }
+
+    def test_live_record_writes_the_global_time_result_as_a_boolean(
+        self, monkeypatch, capsys, tmp_path
+    ):
+        """有効化に成功した事実が `null` ではなく真偽値として残る（要件 6.1）。"""
+        manifest = _record_live(monkeypatch, capsys, tmp_path)
+        assert manifest["runtime"]["global_time_enabled"] is True
+
+    def test_global_time_failure_is_recorded_as_false_not_null(
+        self, monkeypatch, capsys, tmp_path
+    ):
+        """有効化できなかったことも記録に残る。`null`（未試行）と区別できる。"""
+        device = FakeDevice(sensor=FakeSensor(global_time_supported=False))
+        manifest = _record_live(monkeypatch, capsys, tmp_path, device=device)
+        assert manifest["runtime"]["global_time_enabled"] is False
+
+    def test_device_recorded_is_the_opened_one_not_the_first_enumerated(
+        self, monkeypatch, capsys, tmp_path
+    ):
+        """複数台つながっているとき、開いた個体が記録される（タスク 6.3 の端から端まで）。"""
+        opened = FakeDevice(serial="SN-OPENED")
+        other = FakeDevice(serial="SN-OTHER")
+        manifest = _record_live(
+            monkeypatch, capsys, tmp_path, device=opened, context_devices=[other, opened]
+        )
+        assert manifest["device"]["serial"] == "SN-OPENED"
+
+    def test_items_the_sdk_refuses_stay_null_in_the_manifest(
+        self, monkeypatch, capsys, tmp_path
+    ):
+        """取得できなかった項目は `null`。既定値で埋めない（要件 3.5）。"""
+        device = FakeDevice(firmware=None, usb_type=None, product_line=None)
+        manifest = _record_live(monkeypatch, capsys, tmp_path, device=device)
+
+        assert manifest["device"]["firmware"] is None
+        assert manifest["device"]["usb_type"] is None
+        assert manifest["device"]["product_line"] is None
+        assert manifest["device"]["serial"] == "SN-0001"
+
+    def test_simulated_record_keeps_device_and_global_time_null(self, capsys, tmp_path):
+        """live 以外の入力元では欠測のまま。物理デバイスの情報を捏造しない。"""
+        rc = cli.main(
+            [
+                "record",
+                *_common_flags(tmp_path),
+                "--recording-mode",
+                "continuous",
+                "--duration-s",
+                "0.1",
+            ]
+        )
+        assert rc == 0
+        payload = json.loads(capsys.readouterr().out)
+        manifest = json.loads(
+            (Path(payload["session_dir"]) / "manifest.json").read_text(encoding="utf-8")
+        )
+
+        assert manifest["device"] is None
+        assert manifest["runtime"]["global_time_enabled"] is None
+
+    def test_a_non_live_source_exposing_the_attributes_is_still_recorded_as_null(
+        self, monkeypatch, capsys, tmp_path
+    ):
+        """live 以外の入力元が同名の属性を持っていても、記録へは写さない。
+
+        `RecordedSource` は `profile` / `intrinsics` を manifest から素通し
+        する作りなので、将来 `device` も素通しするようになり得る。そのとき
+        属性の有無だけで判定していると、**再生を録り直した記録に「元の個体」
+        が live で撮ったかのように残る**。`_live_only()` が `kind` で先に
+        絞っているのはこの取り違えを防ぐためであり、このテストが無いと
+        その絞り込みが効いているかを誰も確かめられない。
+        """
+        real_open_source = cli.open_source
+
+        def open_with_fabricated_identity(*args, **kwargs):
+            source = real_open_source(*args, **kwargs)
+            source.device_identity = SimpleNamespace(
+                name="偽の機種名",
+                serial_number="SN-FABRICATED",
+                firmware_version="9.9.9.9",
+                usb_type_descriptor="3.2",
+                product_line="D400",
+            )
+            source.global_time_enabled = True
+            return source
+
+        monkeypatch.setattr(cli, "open_source", open_with_fabricated_identity)
+        rc = cli.main(
+            [
+                "record",
+                *_common_flags(tmp_path),
+                "--recording-mode",
+                "continuous",
+                "--duration-s",
+                "0.05",
+            ]
+        )
+        assert rc == 0
+        payload = json.loads(capsys.readouterr().out)
+        manifest = json.loads(
+            (Path(payload["session_dir"]) / "manifest.json").read_text(encoding="utf-8")
+        )
+
+        assert manifest["device"] is None
+        assert manifest["runtime"]["global_time_enabled"] is None
+
+    def test_runtime_keeps_the_environment_fields_it_already_had(
+        self, monkeypatch, capsys, tmp_path
+    ):
+        """既存の `runtime` 項目を落とさない（回帰。有効化結果の追加は置換ではない）。"""
+        manifest = _record_live(monkeypatch, capsys, tmp_path)
+        runtime = manifest["runtime"]
+        for key in ("os", "os_release", "python_version", "hostname"):
+            assert isinstance(runtime[key], str) and runtime[key]
 
 
 class TestReplaySession:
@@ -505,9 +705,13 @@ class TestSettingsPrecedence:
         monkeypatch.delenv("STB_SF_FPS", raising=False)
 
         # 既定値のみ（設定ファイルもCLI引数も無し）。
+        # 既定 fps はタスク 9.4 の実機実測により 30 → 60 へ変更された
+        # （`measurements.md` タスク9.4）。ここで固定しているのは
+        # 「解決順序の最下層が既定値である」ことであり、60 という値そのものの
+        # 妥当性ではない。
         rc = cli.main(["capture", "--print-settings"])
         assert rc == 0
-        assert json.loads(capsys.readouterr().out)["capture"]["fps"] == 30
+        assert json.loads(capsys.readouterr().out)["capture"]["fps"] == 60
 
         # 設定ファイル > 既定値。
         rc = cli.main(["capture", "--print-settings", "--config", str(config_path)])

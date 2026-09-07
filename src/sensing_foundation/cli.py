@@ -139,6 +139,7 @@ import sys
 import time
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -254,14 +255,77 @@ def _resolve_supplier(
 # ----------------------------------------------------------------------------
 
 
-def _build_runtime_info() -> dict[str, object]:
-    """`manifest.json` の `runtime` オブジェクトを組み立てる（CLI からの最小実装）。"""
+def _live_only(source: FrameSource, attr_name: str) -> Any:
+    """live の入力元だけが公開する属性を、無ければ `None`（欠測）として読む。
+
+    `getattr()` で問い合わせるのは、`cli` が `RealSenseSource` を名指しで
+    import しないためである（入力元の構築は `open_source()` へ一本化されて
+    おり、CLI はアダプタの実体を知らない。`bench/modes.py` の
+    `_detect_usb2_invalid()` が採る問い合わせ方と同じ）。
+
+    `kind` で live を先に絞るのは、**物理デバイスを持たない入力元について
+    値を捏造しないため**である（要件 3.5）。recorded / simulated では
+    `None`（欠測）を返す。
+
+    戻り値が `Any` なのは、CLI がアダプタの型を知らないためである
+    （`sources/realsense.py` が SDK オブジェクトへ `Any` を使うのと同じ理由）。
+    """
+    if source.kind is not SourceKind.LIVE:
+        return None
+    return getattr(source, attr_name, None)
+
+
+def _build_device_info(source: FrameSource) -> dict[str, object] | None:
+    """`manifest.json` の `device` オブジェクトを組み立てる（要件 5.2。タスク 8.3）。
+
+    live のときは `RealSenseSource.device_identity`（タスク 6.3）——
+    **パイプラインが実際に開いた個体**の識別情報——を写す。`probe_devices()`
+    の列挙結果ではないので、複数台つながっていても記録に残るのは撮った個体
+    である。
+
+    キー名は `manifest.json` のスキーマ（design.md「Data Models」）の語彙で
+    あり、`DeviceIdentity` のフィールド名（`rs.camera_info` の列挙値名）とは
+    異なる。**この対応付けは記録側の責務**である——アダプタが保存形式の語彙を
+    知ると、記録形式を変えるたびに SDK アダプタを触ることになる。
+
+    Returns:
+        live のとき、取得できた項目を写した dict（取得できなかった項目は
+        `None`。要件 3.5「取れないものは欠測として残す」）。live 以外、または
+        入力元が識別情報を公開しない場合は `None`。
+
+        **全項目が `None` の dict と `None` は別の意味である**: 前者は
+        「live で撮ったが SDK が何も答えなかった」、後者は「そもそも
+        物理デバイスで撮っていない」。
+    """
+    identity = _live_only(source, "device_identity")
+    if identity is None:
+        return None
+    return {
+        "name": identity.name,
+        "serial": identity.serial_number,
+        "firmware": identity.firmware_version,
+        "usb_type": identity.usb_type_descriptor,
+        "product_line": identity.product_line,
+    }
+
+
+def _build_runtime_info(source: FrameSource) -> dict[str, object]:
+    """`manifest.json` の `runtime` オブジェクトを組み立てる（CLI からの最小実装）。
+
+    `global_time_enabled` は live のとき `RealSenseSource.global_time_enabled`
+    （有効化を試みた結果。タスク 6.1）を写す。**入力元を開いた後に呼ぶこと**
+    ——開く前には有効化の結果が存在しない（タスク 8.3 で是正した欠陥は、
+    まさに開く前に組み立てていたために `None` 固定になっていたことだった）。
+
+    `True` / `False` は「試みて成功した」「試みて失敗した」、`None` は
+    「そもそも試みていない」（live 以外）を意味する。
+    """
     return {
         "os": platform.system(),
         "os_release": platform.release(),
         "python_version": platform.python_version(),
         "hostname": socket.gethostname(),
-        "global_time_enabled": None,
+        "global_time_enabled": _live_only(source, "global_time_enabled"),
     }
 
 
@@ -394,8 +458,8 @@ def run_record(
                 root=settings.recording.root,
                 session_id=session_id,
                 profile=source.profile,
-                device=None,
-                runtime=_build_runtime_info(),
+                device=_build_device_info(source),
+                runtime=_build_runtime_info(source),
                 compression=settings.recording.compression,
                 logger=logger,
                 source=settings.source,

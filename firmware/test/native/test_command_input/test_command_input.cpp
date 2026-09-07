@@ -32,11 +32,13 @@
 using drivetrain_control::BodyVelocityCommand;
 using drivetrain_control::CommandAcceptance;
 using drivetrain_control::CommandInput;
+using drivetrain_control::ControlPath;
 using drivetrain_control::GeometryParams;
 using drivetrain_control::Kinematics;
 using drivetrain_control::kWheelCount;
 using drivetrain_control::MotionLimits;
 using drivetrain_control::TimeMs;
+using drivetrain_control::WheelDutyCommand;
 using drivetrain_control::WheelTargets;
 using drivetrain_control::WheelVelocityCommand;
 
@@ -366,6 +368,131 @@ void test_output_enable_is_independent_of_command_submission(void) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// E: 開ループ指令（WheelDutyCommand）— task 10.1
+//    - 定義域 [-1, +1] を超える目標デューティは輪ごとに個別飽和され、
+//      CommandAcceptance::clamped / lastCommandClamped() へ報告される
+//      （要件 5.10, 5.13）
+//    - 投入後、保持中の経路（latched().path）が kOpenLoop になる
+//      （要件 5.10）
+//    - 経路をまたぐ指令の入れ替わりは、過去時刻でない限り通常の指令更新と
+//      同じに受理される（issued_at_ms の単調性のみで判定。経路が変わった
+//      こと自体は拒否条件にならない）
+// ---------------------------------------------------------------------------
+
+void test_out_of_domain_wheel_duty_command_is_saturated_per_wheel_and_reported(void) {
+  const GeometryParams geometry = makeGeometry();
+  const Kinematics kinematics(geometry);
+  const MotionLimits limits = makeLimits();
+
+  const WheelDutyCommand duty_cmd{
+      /*wheel_duty=*/{1.5f, -1.5f, 0.4f}, /*issued_at_ms=*/5000};
+
+  CommandInput input(kinematics, limits);
+  const CommandAcceptance acc = input.submit(duty_cmd);
+
+  TEST_ASSERT_TRUE(acc.accepted);
+  TEST_ASSERT_TRUE(acc.clamped);
+  TEST_ASSERT_TRUE(input.lastCommandClamped());
+
+  const WheelTargets& wt = input.latched();
+  // 個別飽和: 輪2 (0.4, 範囲内) はそのまま。輪0/輪1 は定義域の端へ飽和。
+  TEST_ASSERT_FLOAT_WITHIN(kTight, 1.0f, wt.duty[0]);
+  TEST_ASSERT_FLOAT_WITHIN(kTight, -1.0f, wt.duty[1]);
+  TEST_ASSERT_FLOAT_WITHIN(kTight, 0.4f, wt.duty[2]);
+}
+
+void test_in_domain_wheel_duty_command_is_not_clamped(void) {
+  const GeometryParams geometry = makeGeometry();
+  const Kinematics kinematics(geometry);
+  const MotionLimits limits = makeLimits();
+
+  const WheelDutyCommand duty_cmd{
+      /*wheel_duty=*/{0.3f, -0.3f, 0.0f}, /*issued_at_ms=*/5000};
+
+  CommandInput input(kinematics, limits);
+  const CommandAcceptance acc = input.submit(duty_cmd);
+
+  TEST_ASSERT_TRUE(acc.accepted);
+  TEST_ASSERT_FALSE(acc.clamped);
+  TEST_ASSERT_FALSE(input.lastCommandClamped());
+
+  const WheelTargets& wt = input.latched();
+  TEST_ASSERT_FLOAT_WITHIN(kTight, 0.3f, wt.duty[0]);
+  TEST_ASSERT_FLOAT_WITHIN(kTight, -0.3f, wt.duty[1]);
+  TEST_ASSERT_FLOAT_WITHIN(kTight, 0.0f, wt.duty[2]);
+}
+
+void test_wheel_duty_command_sets_latched_path_to_open_loop(void) {
+  const GeometryParams geometry = makeGeometry();
+  const Kinematics kinematics(geometry);
+  const MotionLimits limits = makeLimits();
+
+  CommandInput input(kinematics, limits);
+
+  // 投入前、まだ一度も指令が無い状態では既定経路（kVelocityPid）のまま。
+  TEST_ASSERT_TRUE(ControlPath::kVelocityPid == input.latched().path);
+
+  const WheelDutyCommand duty_cmd{
+      /*wheel_duty=*/{0.5f, -0.5f, 0.1f}, /*issued_at_ms=*/6000};
+  TEST_ASSERT_TRUE(input.submit(duty_cmd).accepted);
+
+  TEST_ASSERT_TRUE(ControlPath::kOpenLoop == input.latched().path);
+  TEST_ASSERT_TRUE(input.latched().valid);
+  TEST_ASSERT_EQUAL_INT64(6000, input.latched().issued_at_ms);
+}
+
+void test_body_velocity_command_sets_latched_path_to_velocity_pid(void) {
+  const GeometryParams geometry = makeGeometry();
+  const Kinematics kinematics(geometry);
+  const MotionLimits limits = makeLimits();
+
+  CommandInput input(kinematics, limits);
+
+  const BodyVelocityCommand body{
+      /*vx_mm_s=*/10.0f, /*vy_mm_s=*/0.0f, /*omega_rad_s=*/0.0f, /*issued_at_ms=*/100};
+  TEST_ASSERT_TRUE(input.submit(body).accepted);
+  TEST_ASSERT_TRUE(ControlPath::kVelocityPid == input.latched().path);
+}
+
+void test_cross_path_transition_accepted_purely_by_timestamp_monotonicity(void) {
+  const GeometryParams geometry = makeGeometry();
+  const Kinematics kinematics(geometry);
+  const MotionLimits limits = makeLimits();
+
+  CommandInput input(kinematics, limits);
+
+  // T1: 機体速度指令（kVelocityPid 経路）。
+  const BodyVelocityCommand body{
+      /*vx_mm_s=*/10.0f, /*vy_mm_s=*/0.0f, /*omega_rad_s=*/0.0f, /*issued_at_ms=*/1000};
+  TEST_ASSERT_TRUE(input.submit(body).accepted);
+  TEST_ASSERT_TRUE(ControlPath::kVelocityPid == input.latched().path);
+
+  // T2 (> T1): 開ループ指令。経路が変わったこと自体は拒否条件にならない
+  // ため受理され、経路が kOpenLoop へ切り替わる。
+  const WheelDutyCommand duty_cmd{
+      /*wheel_duty=*/{0.2f, 0.2f, 0.2f}, /*issued_at_ms=*/2000};
+  const CommandAcceptance acc_duty = input.submit(duty_cmd);
+  TEST_ASSERT_TRUE(acc_duty.accepted);
+  TEST_ASSERT_TRUE(ControlPath::kOpenLoop == input.latched().path);
+  const WheelTargets snapshot = input.latched();
+
+  // T3 (<= T2): 輪速度指令だが、issued_at_ms が直前の有効時刻(T2)以下なの
+  // で拒否される。latched() は T2 の開ループ状態のまま変化しない（単一の
+  // 入れ物で経路をまたいだ鮮度判定が成立していることの裏取り）。
+  const WheelVelocityCommand stale_wheel_velocity{
+      /*wheel_mm_s=*/{9.0f, 9.0f, 9.0f}, /*issued_at_ms=*/2000};
+  const CommandAcceptance acc_stale = input.submit(stale_wheel_velocity);
+  TEST_ASSERT_FALSE(acc_stale.accepted);
+
+  const WheelTargets& after = input.latched();
+  TEST_ASSERT_TRUE(ControlPath::kOpenLoop == after.path);
+  TEST_ASSERT_EQUAL_INT64(snapshot.issued_at_ms, after.issued_at_ms);
+  for (std::uint8_t i = 0; i < kWheelCount; ++i) {
+    TEST_ASSERT_FLOAT_WITHIN(kTight, snapshot.duty[i], after.duty[i]);
+  }
+}
+
 int main(int argc, char **argv) {
   (void)argc;
   (void)argv;
@@ -380,6 +507,12 @@ int main(int argc, char **argv) {
   RUN_TEST(test_stale_command_is_rejected_and_latched_state_is_unchanged);
   RUN_TEST(test_staleness_check_is_shared_across_command_types);
   RUN_TEST(test_output_enable_is_independent_of_command_submission);
+
+  RUN_TEST(test_out_of_domain_wheel_duty_command_is_saturated_per_wheel_and_reported);
+  RUN_TEST(test_in_domain_wheel_duty_command_is_not_clamped);
+  RUN_TEST(test_wheel_duty_command_sets_latched_path_to_open_loop);
+  RUN_TEST(test_body_velocity_command_sets_latched_path_to_velocity_pid);
+  RUN_TEST(test_cross_path_transition_accepted_purely_by_timestamp_monotonicity);
 
   return UNITY_END();
 }

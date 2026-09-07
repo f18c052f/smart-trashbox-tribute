@@ -1,4 +1,4 @@
-"""`sensing_foundation.sources.realsense` に対するテスト（タスク 6.1）。
+"""`sensing_foundation.sources.realsense` に対するテスト（タスク 6.1 / 6.3）。
 
 観測可能な完了状態（tasks.md 6.1）を固定する:
 
@@ -16,6 +16,9 @@
   観測できる
 - USB2 判定は `usb2_warning`（`bool | None`。取得不能なら `None` で欠測を表す）
   として観測できる
+- **タスク 6.3**: `start()` が実際に開いた個体の識別情報を `device_identity`
+  として観測できる（`probe_devices()` の列挙結果ではなく、パイプラインが
+  開いた個体を指すこと。取得できない項目は `None` で欠測を表すこと）
 - 要求モードが拒否された場合は `start()` の時点で `DeviceNotReadyError`
   （`SourceUnavailableError` のサブクラス）を送出し、黙って別モードへ
   フォールバックしない
@@ -44,12 +47,25 @@
 from __future__ import annotations
 
 import ast
+import dataclasses
 import inspect
 import sys
-import types
-from typing import Any
 
 import pytest
+
+# フェイク pyrealsense2 の部品は `fakerealsense.py`（テスト用共有ヘルパ。
+# `synthetic.py` と同じ位置づけ）にある。タスク 8.3 の `record` テストも
+# 同じ形状を使うため、SDK 形状の前提が2箇所へ分かれて食い違わないよう
+# 1つのモジュールへ集約している。
+from fakerealsense import (
+    FakeDevice,
+    FakeFrameset,
+    FakeIntrinsics,
+    FakePipeline,
+    FakeSensor,
+    make_fake_rs_module,
+    make_frameset,
+)
 from synthetic import make_depth_frame
 
 from sensing_foundation.config import CaptureConfig
@@ -119,313 +135,28 @@ def _default_capture_config(**overrides: object) -> CaptureConfig:
     return CaptureConfig(**base)  # type: ignore[arg-type]
 
 
-# ============================================================================
-# フェイク pyrealsense2 の部品
-#
-# `realsense.py` モジュール docstring「前提とする pyrealsense2 API 形状」に
-# 合わせた最小実装。実 SDK を検証できないため、本テストが「本モジュールが
-# 呼ぶ形」を仕様として固定する一次資料を兼ねる。
-# ============================================================================
-
-
-class _Enum:
-    """`.name` 属性を持つだけの、pyrealsense2 の pybind11 列挙値を模したもの。"""
-
-    def __init__(self, name: str) -> None:
-        self.name = name
-
-    def __repr__(self) -> str:  # pragma: no cover - デバッグ用
-        return f"<enum {self.name}>"
-
-
-class _FakeConfig:
-    def __init__(self) -> None:
-        self.enabled_streams: list[tuple[Any, int, int, Any, int]] = []
-        self.device_serial: str | None = None
-
-    def enable_device(self, serial: str) -> None:
-        self.device_serial = serial
-
-    def enable_stream(self, stream: Any, width: int, height: int, fmt: Any, fps: int) -> None:
-        self.enabled_streams.append((stream, width, height, fmt, fps))
-
-
-class _FakeSensor:
-    def __init__(
-        self,
-        *,
-        depth_scale: float = 0.001,
-        depth_scale_raises: bool = False,
-        global_time_supported: bool = True,
-        queue_option_supported: bool = True,
-    ) -> None:
-        self._depth_scale = depth_scale
-        self._depth_scale_raises = depth_scale_raises
-        self._global_time_supported = global_time_supported
-        self._queue_option_supported = queue_option_supported
-        self.set_option_calls: list[tuple[str, object]] = []
-
-    def get_depth_scale(self) -> float:
-        if self._depth_scale_raises:
-            raise RuntimeError("get_depth_scale not supported")
-        return self._depth_scale
-
-    def set_option(self, option: Any, value: object) -> None:
-        name = getattr(option, "name", "")
-        self.set_option_calls.append((name, value))
-        if name == "global_time_enabled" and not self._global_time_supported:
-            raise RuntimeError("global_time_enabled not supported by this build")
-        if name == "frames_queue_size" and not self._queue_option_supported:
-            raise RuntimeError("frames_queue_size not supported by this build")
-
-
-class _FakeDevice:
-    def __init__(
-        self,
-        *,
-        usb_type: str | None = "3.2",
-        serial: str = "SN-0001",
-        firmware: str = "5.13.0.50",
-        name: str = "Intel RealSense D435",
-        sensor: "_FakeSensor | None" = None,
-    ) -> None:
-        info: dict[str, str] = {"serial_number": serial, "firmware_version": firmware, "name": name}
-        if usb_type is not None:
-            info["usb_type_descriptor"] = usb_type
-        self._info = info
-        self.sensor = sensor if sensor is not None else _FakeSensor()
-
-    def get_info(self, info_enum: Any) -> str:
-        key = info_enum.name
-        if key not in self._info:
-            raise RuntimeError(f"info not supported by this build: {key}")
-        return self._info[key]
-
-    def first_depth_sensor(self) -> _FakeSensor:
-        return self.sensor
-
-
-class _FakeIntrinsics:
-    def __init__(
-        self,
-        *,
-        width: int = WIDTH_PX,
-        height: int = HEIGHT_PX,
-        fx: float = 50.0,
-        fy: float = 51.0,
-        ppx: float = 4.0,
-        ppy: float = 3.0,
-        model: str = "brown_conrady",
-        coeffs: tuple[float, ...] = (0.0, 0.0, 0.0, 0.0, 0.0),
-    ) -> None:
-        self.width = width
-        self.height = height
-        self.fx = fx
-        self.fy = fy
-        self.ppx = ppx
-        self.ppy = ppy
-        self.model = model
-        self.coeffs = list(coeffs)
-
-
-class _FakeVideoStreamProfile:
-    def __init__(self, intrinsics: "_FakeIntrinsics | None") -> None:
-        self._intrinsics = intrinsics
-
-    def get_intrinsics(self) -> _FakeIntrinsics:
-        if self._intrinsics is None:
-            raise RuntimeError("intrinsics not available for this stream")
-        return self._intrinsics
-
-
-class _FakeStreamProfile:
-    def __init__(self, intrinsics: "_FakeIntrinsics | None") -> None:
-        self._intrinsics = intrinsics
-
-    def as_video_stream_profile(self) -> _FakeVideoStreamProfile:
-        return _FakeVideoStreamProfile(self._intrinsics)
-
-
-class _FakePipelineProfile:
-    def __init__(self, device: _FakeDevice, intrinsics: "_FakeIntrinsics | None") -> None:
-        self._device = device
-        self._intrinsics = intrinsics
-
-    def get_device(self) -> _FakeDevice:
-        return self._device
-
-    def get_stream(self, stream_enum: Any) -> _FakeStreamProfile:
-        del stream_enum
-        return _FakeStreamProfile(self._intrinsics)
-
-
-class _FakeDepthFrame:
-    def __init__(
-        self,
-        seq: int,
-        depth_array,
-        device_timestamp_ms: float,
-        domain_name: str,
-        *,
-        fail_frame_number: bool = False,
-        fail_timestamp: bool = False,
-        fail_domain: bool = False,
-    ) -> None:
-        self._seq = seq
-        self._depth_array = depth_array
-        self._timestamp = device_timestamp_ms
-        self._domain_name = domain_name
-        self._fail_frame_number = fail_frame_number
-        self._fail_timestamp = fail_timestamp
-        self._fail_domain = fail_domain
-
-    def __bool__(self) -> bool:
-        return True
-
-    def get_frame_number(self) -> int:
-        if self._fail_frame_number:
-            raise RuntimeError("frame number unavailable")
-        return self._seq
-
-    def get_timestamp(self) -> float:
-        if self._fail_timestamp:
-            raise RuntimeError("timestamp unavailable")
-        return self._timestamp
-
-    def get_frame_timestamp_domain(self) -> _Enum:
-        if self._fail_domain:
-            raise RuntimeError("domain unavailable")
-        return _Enum(self._domain_name)
-
-    def get_data(self) -> bytes:
-        return self._depth_array.tobytes()
-
-
-class _FakeFrameset:
-    def __init__(self, depth_frame: "_FakeDepthFrame | None") -> None:
-        self._depth_frame = depth_frame
-
-    def __bool__(self) -> bool:
-        return self._depth_frame is not None
-
-    def get_depth_frame(self) -> "_FakeDepthFrame | None":
-        return self._depth_frame
-
-
-def _make_frameset(
-    seq: int,
-    *,
-    domain_name: str = "hardware_clock",
-    device_timestamp_ms: float = 0.0,
-    width: int = WIDTH_PX,
-    height: int = HEIGHT_PX,
-    **frame_kwargs: object,
-) -> _FakeFrameset:
-    depth = make_depth_frame(width, height, seq)
-    depth_frame = _FakeDepthFrame(seq, depth, device_timestamp_ms, domain_name, **frame_kwargs)  # type: ignore[arg-type]
-    return _FakeFrameset(depth_frame)
-
-
-class _FakePipeline:
-    def __init__(
-        self,
-        *,
-        reject_start: bool = False,
-        wait_frames: list[_FakeFrameset] | None = None,
-        poll_frames: list[_FakeFrameset] | None = None,
-        device: _FakeDevice | None = None,
-        intrinsics: "_FakeIntrinsics | None" = None,
-    ) -> None:
-        self._reject_start = reject_start
-        self._wait_queue = list(wait_frames or [])
-        self._poll_queue = list(poll_frames or [])
-        self.device = device if device is not None else _FakeDevice()
-        self.intrinsics = intrinsics if intrinsics is not None else _FakeIntrinsics()
-        self.started = False
-        self.stopped = False
-        self.last_config: _FakeConfig | None = None
-
-    def start(self, config: _FakeConfig) -> _FakePipelineProfile:
-        self.last_config = config
-        if self._reject_start:
-            raise RuntimeError("Couldn't resolve requests")
-        self.started = True
-        return _FakePipelineProfile(self.device, self.intrinsics)
-
-    def stop(self) -> None:
-        self.stopped = True
-
-    def wait_for_frames(self, timeout_ms: int) -> _FakeFrameset:
-        del timeout_ms
-        if not self._wait_queue:
-            raise RuntimeError("Frame didn't arrive within timeout")
-        return self._wait_queue.pop(0)
-
-    def poll_for_frames(self) -> "_FakeFrameset | None":
-        if not self._poll_queue:
-            return None
-        return self._poll_queue.pop(0)
-
-
-class _FakeContext:
-    def __init__(self, devices: list[_FakeDevice]) -> None:
-        self._devices = devices
-
-    def query_devices(self) -> list[_FakeDevice]:
-        return list(self._devices)
-
-
-def _make_fake_rs_module(
-    pipeline: _FakePipeline, *, context_devices: list[_FakeDevice] | None = None
-) -> types.ModuleType:
-    fake = types.ModuleType("pyrealsense2")
-    fake.__version__ = "2.99.9-fake"  # type: ignore[attr-defined]
-    fake.__file__ = "/fake/path/pyrealsense2.so"  # type: ignore[attr-defined]
-
-    fake.stream = types.SimpleNamespace(depth=_Enum("depth"), color=_Enum("color"))  # type: ignore[attr-defined]
-    fake.format = types.SimpleNamespace(z16=_Enum("z16"), bgr8=_Enum("bgr8"))  # type: ignore[attr-defined]
-    fake.camera_info = types.SimpleNamespace(  # type: ignore[attr-defined]
-        usb_type_descriptor=_Enum("usb_type_descriptor"),
-        serial_number=_Enum("serial_number"),
-        firmware_version=_Enum("firmware_version"),
-        name=_Enum("name"),
-    )
-    fake.option = types.SimpleNamespace(  # type: ignore[attr-defined]
-        frames_queue_size=_Enum("frames_queue_size"),
-        global_time_enabled=_Enum("global_time_enabled"),
-    )
-
-    fake.config = _FakeConfig  # type: ignore[attr-defined]
-    fake.pipeline = lambda: pipeline  # type: ignore[attr-defined]
-
-    devices = context_devices if context_devices is not None else [pipeline.device]
-    fake.context = lambda: _FakeContext(devices)  # type: ignore[attr-defined]
-
-    return fake
-
-
 def _build_source(
     monkeypatch: pytest.MonkeyPatch,
     *,
     capture_config: CaptureConfig | None = None,
-    wait_frames: list[_FakeFrameset] | None = None,
-    poll_frames: list[_FakeFrameset] | None = None,
-    device: _FakeDevice | None = None,
-    intrinsics: "_FakeIntrinsics | None" = None,
+    wait_frames: list[FakeFrameset] | None = None,
+    poll_frames: list[FakeFrameset] | None = None,
+    device: FakeDevice | None = None,
+    intrinsics: "FakeIntrinsics | None" = None,
     reject_start: bool = False,
-    context_devices: list[_FakeDevice] | None = None,
-) -> tuple[RealSenseSource, _FakePipeline]:
+    context_devices: list[FakeDevice] | None = None,
+) -> tuple[RealSenseSource, FakePipeline]:
     """モック済み `pyrealsense2` を `sys.modules` へ注入した `RealSenseSource` を返す。"""
     capture_config = capture_config if capture_config is not None else _default_capture_config()
     metrics, clock = _make_metrics_and_clock()
-    pipeline = _FakePipeline(
+    pipeline = FakePipeline(
         reject_start=reject_start,
         wait_frames=wait_frames,
         poll_frames=poll_frames,
         device=device,
         intrinsics=intrinsics,
     )
-    fake_rs = _make_fake_rs_module(pipeline, context_devices=context_devices)
+    fake_rs = make_fake_rs_module(pipeline, context_devices=context_devices)
     monkeypatch.setitem(sys.modules, "pyrealsense2", fake_rs)
 
     source = RealSenseSource(capture_config, metrics, clock=clock)
@@ -514,7 +245,7 @@ class TestBasicAcquisitionAgainstMockedSdk:
     def test_acquired_frames_have_common_representation(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        frames_in = [_make_frameset(0), _make_frameset(1)]
+        frames_in = [make_frameset(0), make_frameset(1)]
         source, _ = _build_source(monkeypatch, wait_frames=frames_in)
 
         with source:
@@ -544,7 +275,7 @@ class TestGapDetectionSeqPassthrough:
     def test_frame_number_gap_is_detected_via_reported_seq(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        frames_in = [_make_frameset(0), _make_frameset(1), _make_frameset(3)]  # 2 を欠番
+        frames_in = [make_frameset(0), make_frameset(1), make_frameset(3)]  # 2 を欠番
         source, _ = _build_source(monkeypatch, wait_frames=frames_in)
 
         with source:
@@ -564,11 +295,11 @@ class TestDrainActuallyQueriesSdk:
     def test_drain_latest_polls_until_empty_and_keeps_newest(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        poll_frames = [_make_frameset(10), _make_frameset(11), _make_frameset(12)]
+        poll_frames = [make_frameset(10), make_frameset(11), make_frameset(12)]
         source, _ = _build_source(
             monkeypatch,
             capture_config=_default_capture_config(drain_enabled=True),
-            wait_frames=[_make_frameset(9)],
+            wait_frames=[make_frameset(9)],
             poll_frames=poll_frames,
         )
         source.start()
@@ -595,11 +326,11 @@ class TestDrainActuallyQueriesSdk:
     def test_end_to_end_frames_uses_drained_latest_and_counts_dropped(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        poll_frames = [_make_frameset(10), _make_frameset(11), _make_frameset(12)]
+        poll_frames = [make_frameset(10), make_frameset(11), make_frameset(12)]
         source, _ = _build_source(
             monkeypatch,
             capture_config=_default_capture_config(drain_enabled=True),
-            wait_frames=[_make_frameset(9)],
+            wait_frames=[make_frameset(9)],
             poll_frames=poll_frames,
         )
 
@@ -640,8 +371,8 @@ class TestAcquireFailureIsObservedNotRaised:
     def test_frame_number_unavailable_is_treated_as_acquire_failure_and_continues(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        broken = _make_frameset(999, fail_frame_number=True)
-        good = _make_frameset(7)
+        broken = make_frameset(999, fail_frame_number=True)
+        good = make_frameset(7)
         source, _ = _build_source(
             monkeypatch,
             capture_config=_default_capture_config(on_acquire_error="continue"),
@@ -662,13 +393,13 @@ class TestAcquireFailureIsObservedNotRaised:
 
 class TestUsb2Warning:
     def test_usb2_connection_is_flagged(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        device = _FakeDevice(usb_type="2.1")
+        device = FakeDevice(usb_type="2.1")
         source, _ = _build_source(monkeypatch, device=device)
         source.start()
         assert source.usb2_warning is True
 
     def test_usb3_connection_is_not_flagged(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        device = _FakeDevice(usb_type="3.2")
+        device = FakeDevice(usb_type="3.2")
         source, _ = _build_source(monkeypatch, device=device)
         source.start()
         assert source.usb2_warning is False
@@ -676,7 +407,7 @@ class TestUsb2Warning:
     def test_missing_usb_type_descriptor_is_reported_as_missing_not_false(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        device = _FakeDevice(usb_type=None)
+        device = FakeDevice(usb_type=None)
         source, _ = _build_source(monkeypatch, device=device)
         source.start()
         # 「取れないものは欠測として残す」（要件 3.5）。False を偽装しない。
@@ -685,6 +416,151 @@ class TestUsb2Warning:
     def test_usb2_warning_is_none_before_start(self, monkeypatch: pytest.MonkeyPatch) -> None:
         source, _ = _build_source(monkeypatch)
         assert source.usb2_warning is None
+
+
+# ============================================================================
+# 開いたデバイスの識別情報（タスク 6.3。要件 1.4 / 5.2）
+# ============================================================================
+
+
+class TestDeviceIdentity:
+    """`start()` が実際に開いた個体の識別情報を公開する（タスク 6.3）。
+
+    記録側（タスク 8.3）が `manifest.json` の `device` を埋めるための唯一の
+    入手経路である。要件 5.2「メタ情報にデバイス識別情報を含める」。
+    """
+
+    def test_identity_is_none_before_start(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """デバイスを開く前は「まだ分からない」を `None` で表す。
+
+        `usb2_warning` と同じ流儀（構築しただけでは何も観測していない）。
+        """
+        source, _ = _build_source(monkeypatch)
+        assert source.device_identity is None
+
+    def test_identity_is_resolved_after_start(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        device = FakeDevice(
+            name="Intel RealSense D435",
+            serial="834412071095",
+            firmware="5.17.3.10",
+            usb_type="3.2",
+            product_line="D400",
+        )
+        source, _ = _build_source(monkeypatch, device=device)
+        source.start()
+
+        identity = source.device_identity
+        assert identity is not None
+        assert identity.name == "Intel RealSense D435"
+        assert identity.serial_number == "834412071095"
+        assert identity.firmware_version == "5.17.3.10"
+        assert identity.usb_type_descriptor == "3.2"
+        assert identity.product_line == "D400"
+
+    def test_identity_is_the_opened_device_not_the_first_enumerated_one(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """複数台つながっているとき、**パイプラインが開いた個体**を指す。
+
+        tasks.md 6.3「`probe_devices()` の流用で代替しない」の核心。
+        列挙の先頭とパイプラインが開いた個体をわざと食い違わせているので、
+        `probe_devices()` の結果を流用する実装はこのテストで落ちる。
+        """
+        opened = FakeDevice(serial="SN-OPENED", firmware="5.17.3.10")
+        other = FakeDevice(serial="SN-OTHER", firmware="5.12.0.0")
+        source, _ = _build_source(
+            monkeypatch, device=opened, context_devices=[other, opened]
+        )
+        source.start()
+
+        # 前提の確認: 列挙の先頭は「開いていない方」である（この前提が崩れると
+        # 以下の表明が食い違いを検出できなくなり、テストが空振りする）。
+        enumerated = probe_devices()["devices"]
+        assert enumerated[0]["serial_number"] == "SN-OTHER"  # type: ignore[index]
+
+        identity = source.device_identity
+        assert identity is not None
+        assert identity.serial_number == "SN-OPENED"
+        assert identity.firmware_version == "5.17.3.10"
+
+    def test_items_the_sdk_refuses_are_missing_not_faked(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """取得できない項目は `None`（欠測）。空文字や既定値で埋めない（要件 3.5）。"""
+        device = FakeDevice(firmware=None, usb_type=None, product_line=None)
+        source, _ = _build_source(monkeypatch, device=device)
+        source.start()
+
+        identity = source.device_identity
+        assert identity is not None
+        assert identity.firmware_version is None
+        assert identity.usb_type_descriptor is None
+        assert identity.product_line is None
+        # 取れる項目は落とさない（1項目の欠測が他を巻き込まない）。
+        assert identity.name == "Intel RealSense D435"
+        assert identity.serial_number == "SN-0001"
+
+    def test_camera_info_without_product_line_is_missing_not_an_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`rs.camera_info` に該当の列挙値自体が無い SDK ビルドでも起動できる。
+
+        `get_info()` が例外を送出する場合とは別の失敗の形である
+        （design.md Risks「SDK のビルド構成によって取得できるメタデータが変わる」）。
+        """
+        device = FakeDevice()
+        pipeline = FakePipeline(device=device)
+        fake_rs = make_fake_rs_module(pipeline)
+        del fake_rs.camera_info.product_line  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "pyrealsense2", fake_rs)
+        metrics, clock = _make_metrics_and_clock()
+        source = RealSenseSource(_default_capture_config(), metrics, clock=clock)
+
+        source.start()
+
+        identity = source.device_identity
+        assert identity is not None
+        assert identity.product_line is None
+        assert identity.serial_number == "SN-0001"
+
+    def test_usb2_warning_agrees_with_the_recorded_descriptor(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """警告フラグと記録される接続種別が同じ1つの観測から出る。
+
+        両者が別々に `get_info()` を叩くと、記録には `"2.1"` が残るのに
+        警告は立っていない、という食い違いが起こり得る。
+        """
+        for usb_type, expected in (("2.1", True), ("3.2", False)):
+            device = FakeDevice(usb_type=usb_type)
+            source, _ = _build_source(monkeypatch, device=device)
+            source.start()
+
+            identity = source.device_identity
+            assert identity is not None
+            assert identity.usb_type_descriptor == usb_type
+            assert source.usb2_warning is expected
+
+    def test_identity_survives_stop(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """取得を終えた後も読める（記録のメタ情報は取得終了後に書き出され得る）。"""
+        source, _ = _build_source(monkeypatch)
+        source.start()
+        before = source.device_identity
+        source.stop()
+
+        assert source.device_identity == before
+        assert before is not None
+        assert before.serial_number == "SN-0001"
+
+    def test_identity_is_immutable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """呼び出し側が書き換えて記録の内容を汚せない。"""
+        source, _ = _build_source(monkeypatch)
+        source.start()
+
+        identity = source.device_identity
+        assert identity is not None
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            identity.serial_number = "SN-TAMPERED"  # type: ignore[misc]
 
 
 # ============================================================================
@@ -725,7 +601,7 @@ class TestColorStreamConfiguration:
 
 class TestGlobalTimeEnable:
     def test_success_is_observable_as_true(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        device = _FakeDevice(sensor=_FakeSensor(global_time_supported=True))
+        device = FakeDevice(sensor=FakeSensor(global_time_supported=True))
         source, _ = _build_source(monkeypatch, device=device)
         source.start()
 
@@ -735,7 +611,7 @@ class TestGlobalTimeEnable:
     def test_failure_is_observable_as_false_and_does_not_raise(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        device = _FakeDevice(sensor=_FakeSensor(global_time_supported=False))
+        device = FakeDevice(sensor=FakeSensor(global_time_supported=False))
         source, _ = _build_source(monkeypatch, device=device)
         source.start()  # 例外を送出しない
 
@@ -750,7 +626,7 @@ class TestQueueCapacityBestEffort:
     def test_queue_capacity_is_applied_when_supported(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        device = _FakeDevice(sensor=_FakeSensor(queue_option_supported=True))
+        device = FakeDevice(sensor=FakeSensor(queue_option_supported=True))
         source, _ = _build_source(
             monkeypatch, capture_config=_default_capture_config(queue_capacity=3), device=device
         )
@@ -761,7 +637,7 @@ class TestQueueCapacityBestEffort:
     def test_unsupported_queue_option_does_not_fail_startup(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        device = _FakeDevice(sensor=_FakeSensor(queue_option_supported=False))
+        device = FakeDevice(sensor=FakeSensor(queue_option_supported=False))
         source, _ = _build_source(monkeypatch, device=device)
         source.start()  # 例外を送出しない
 
@@ -776,7 +652,7 @@ class TestCaptureLatencyMs:
         source, _ = _build_source(monkeypatch)
         source.start()
         now_wall_ms = source._clock.to_wall_ms(source._clock.now_ms())  # noqa: SLF001
-        frameset = _make_frameset(1, domain_name="global_time", device_timestamp_ms=now_wall_ms)
+        frameset = make_frameset(1, domain_name="global_time", device_timestamp_ms=now_wall_ms)
 
         # `_acquire()` は `wait_for_frames()` 経由（キュー未投入のため使えない）
         # のに対し、`_raw_frame_from_frameset()` は frameset -> RawFrame
@@ -793,7 +669,7 @@ class TestCaptureLatencyMs:
         source.start()
 
         for domain_name in ("hardware_clock", "system_time", "unknown"):
-            frameset = _make_frameset(1, domain_name=domain_name, device_timestamp_ms=123.0)
+            frameset = make_frameset(1, domain_name=domain_name, device_timestamp_ms=123.0)
             raw = source._raw_frame_from_frameset(frameset)  # noqa: SLF001
             assert raw is not None
             assert raw.capture_latency_ms is None
@@ -801,7 +677,7 @@ class TestCaptureLatencyMs:
     def test_none_when_device_timestamp_unavailable(self, monkeypatch: pytest.MonkeyPatch) -> None:
         source, _ = _build_source(monkeypatch)
         source.start()
-        frameset = _make_frameset(
+        frameset = make_frameset(
             1, domain_name="global_time", device_timestamp_ms=0.0, fail_timestamp=True
         )
 
@@ -849,8 +725,8 @@ class TestIntrinsicsAndDepthScale:
     def test_intrinsics_are_resolved_from_device_when_available(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        intrinsics = _FakeIntrinsics(fx=123.0, fy=124.0, ppx=5.0, ppy=6.0)
-        device = _FakeDevice(sensor=_FakeSensor(depth_scale=0.0005))
+        intrinsics = FakeIntrinsics(fx=123.0, fy=124.0, ppx=5.0, ppy=6.0)
+        device = FakeDevice(sensor=FakeSensor(depth_scale=0.0005))
         source, _ = _build_source(monkeypatch, device=device, intrinsics=intrinsics)
         source.start()
 
@@ -866,18 +742,18 @@ class TestIntrinsicsAndDepthScale:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # `_build_source(..., intrinsics=None)` は「未指定なら既定値を使う」
-        # という `_FakePipeline.__init__` の意味論のため、実際には
-        # `_FakeIntrinsics()` に差し替わってしまい狙った状態を作れない
-        # （`intrinsics is not None else _FakeIntrinsics()` を参照）。
+        # という `FakePipeline.__init__` の意味論のため、実際には
+        # `FakeIntrinsics()` に差し替わってしまい狙った状態を作れない
+        # （`intrinsics is not None else FakeIntrinsics()` を参照）。
         # ここでは構築後に `pipeline.intrinsics` を直接 `None` へ差し替え、
         # `get_stream().as_video_stream_profile().get_intrinsics()` が
         # 例外を送出する状況を作る。`start()` はこの失敗を吸収して
         # `intrinsics=None`（欠測。要件 3.5）へ変換するはずである。
         capture_config = _default_capture_config()
         metrics, clock = _make_metrics_and_clock()
-        pipeline = _FakePipeline()
+        pipeline = FakePipeline()
         pipeline.intrinsics = None
-        fake_rs = _make_fake_rs_module(pipeline)
+        fake_rs = make_fake_rs_module(pipeline)
         monkeypatch.setitem(sys.modules, "pyrealsense2", fake_rs)
 
         source = RealSenseSource(capture_config, metrics, clock=clock)
@@ -888,7 +764,7 @@ class TestIntrinsicsAndDepthScale:
     def test_depth_scale_fallback_when_sensor_query_fails(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        device = _FakeDevice(sensor=_FakeSensor(depth_scale_raises=True))
+        device = FakeDevice(sensor=FakeSensor(depth_scale_raises=True))
         source, _ = _build_source(monkeypatch, device=device)
         source.start()
 
@@ -902,7 +778,7 @@ class TestIntrinsicsAndDepthScale:
 
 class TestDepthBufferCopiedOnceAndReadOnly:
     def test_raw_frame_depth_is_read_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        source, _ = _build_source(monkeypatch, wait_frames=[_make_frameset(0)])
+        source, _ = _build_source(monkeypatch, wait_frames=[make_frameset(0)])
         source.start()
 
         raw = source._acquire(1000)  # noqa: SLF001
@@ -915,7 +791,7 @@ class TestDepthBufferCopiedOnceAndReadOnly:
         # `depth.flags.writeable = False` を独自に立てるため、RawFrame の
         # 時点での読み取り専用化と二重になる。ここではその二重防御込みで
         # 最終的な CaptureFrame も読み取り専用であることを確認する。
-        source, _ = _build_source(monkeypatch, wait_frames=[_make_frameset(0)])
+        source, _ = _build_source(monkeypatch, wait_frames=[make_frameset(0)])
         with source:
             frames = _take(source, 1)
         assert frames[0].depth.flags.writeable is False
@@ -992,8 +868,8 @@ class TestProbeSdkMocked:
     def test_reports_version_and_location_when_available(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        pipeline = _FakePipeline()
-        fake_rs = _make_fake_rs_module(pipeline)
+        pipeline = FakePipeline()
+        fake_rs = make_fake_rs_module(pipeline)
         monkeypatch.setitem(sys.modules, "pyrealsense2", fake_rs)
 
         result = probe_sdk()
@@ -1010,10 +886,10 @@ class TestProbeDevicesMocked:
     def test_reports_enumerated_devices_with_serial_and_firmware(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        device_a = _FakeDevice(serial="SN-AAA", firmware="5.1.0")
-        device_b = _FakeDevice(serial="SN-BBB", firmware="5.2.0", usb_type="2.0")
-        pipeline = _FakePipeline(device=device_a)
-        fake_rs = _make_fake_rs_module(pipeline, context_devices=[device_a, device_b])
+        device_a = FakeDevice(serial="SN-AAA", firmware="5.1.0")
+        device_b = FakeDevice(serial="SN-BBB", firmware="5.2.0", usb_type="2.0")
+        pipeline = FakePipeline(device=device_a)
+        fake_rs = make_fake_rs_module(pipeline, context_devices=[device_a, device_b])
         monkeypatch.setitem(sys.modules, "pyrealsense2", fake_rs)
 
         result = probe_devices()
@@ -1029,9 +905,9 @@ class TestProbeDevicesMocked:
     def test_missing_metadata_is_reported_as_none_not_faked(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        device = _FakeDevice(usb_type=None)
-        pipeline = _FakePipeline(device=device)
-        fake_rs = _make_fake_rs_module(pipeline, context_devices=[device])
+        device = FakeDevice(usb_type=None)
+        pipeline = FakePipeline(device=device)
+        fake_rs = make_fake_rs_module(pipeline, context_devices=[device])
         monkeypatch.setitem(sys.modules, "pyrealsense2", fake_rs)
 
         result = probe_devices()

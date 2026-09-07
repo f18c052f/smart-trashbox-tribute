@@ -107,9 +107,78 @@ def _consume(source: FrameSource) -> list[CaptureFrame]:
     （`start()` → `frames()` → `stop()`）だけを使う。本ファイルの全テストは
     この関数を通じて `FrameSource` を消費し、種別ごとに別々の消費コードを
     書かない。
+
+    ⚠️ **供給が尽きる入力元にのみ使える。** `list(source.frames())` は
+    イテレータを終端まで読むため、**終端しない live には使えない**
+    （実機のストリームは止めるまで続く）。live は `_take()` を使う。
     """
     with source:
         return list(source.frames())
+
+
+def _take(source: FrameSource, count: int) -> list[CaptureFrame]:
+    """**終端しない**入力元（live）から先頭 `count` 枚だけ取り出す。
+
+    live を `_consume()` へ渡すと `list(source.frames())` が実機ストリームの
+    終端を待って戻らない（タスク 9.3 で実機に対して実測した挙動）。本ヘルパは
+    枚数で境界を切ることでこれを避ける。
+
+    `cli.run_capture()` は同じ問題を `_drain_frames(source, duration_s, ...)`
+    の**時間**境界で解いているが、テストでは取得枚数が実行ごとに変動しない方が
+    比較の基準として安定するため、ここでは**枚数**境界を採る。
+
+    `with` は呼び出し側が持つ（`stats` / `profile` を `stop()` の前に読むため）。
+    """
+    frames: list[CaptureFrame] = []
+    for frame in source.frames():
+        frames.append(frame)
+        if len(frames) >= count:
+            break
+    return frames
+
+
+# ----------------------------------------------------------------------------
+# live（実機）が使えるかの判定
+# ----------------------------------------------------------------------------
+
+
+def _live_hardware_available() -> bool:
+    """RealSense SDK と実機デバイスの**両方**が使えるかを判定する。
+
+    `doctor` が使うのと同じ probe 関数を経由し、**本ファイルは
+    `pyrealsense2` を直接 import しない**（design.md 境界テスト2 /
+    要件 4.4「実機用の入力元以外は SDK が無い環境でも動作する」の趣旨を
+    テスト側でも守る）。
+
+    SDK が無い開発機（WSL）では `probe_sdk()` が `available: False` を返し、
+    `pyrealsense2` を `sys.modules` へ持ち込まずに `False` を返す——
+    design.md の「live 以外は実機・SDK なしで全通過すること」を壊さない。
+    """
+    try:
+        from sensing_foundation.sources.realsense import probe_devices, probe_sdk
+    except Exception:
+        return False
+    try:
+        if not probe_sdk().get("available"):
+            return False
+        return bool(probe_devices().get("devices"))
+    except Exception:
+        return False
+
+
+#: モジュール読み込み時に1度だけ判定する（`pytest.mark.skipif` は
+#: デコレート時に値を要求するため、遅延評価にはできない）。
+_LIVE_AVAILABLE = _live_hardware_available()
+
+requires_live_hardware = pytest.mark.skipif(
+    not _LIVE_AVAILABLE,
+    reason="RealSense SDK と実機デバイスが必要（タスク 9.3）。開発機では skip される",
+)
+
+requires_no_live_hardware = pytest.mark.skipif(
+    _LIVE_AVAILABLE,
+    reason="SDK 非導入環境の挙動を固定するテスト。実機ではその前提が成立しない",
+)
 
 
 def _record_frames(
@@ -117,6 +186,8 @@ def _record_frames(
     frames: list[CaptureFrame],
     profile: StreamProfile,
     stats: CaptureStats,
+    *,
+    source: SourceKind = SourceKind.SIMULATED,
 ) -> Path:
     """`frames` をそのまま `SessionRecorder` で記録し、セッションディレクトリを返す。
 
@@ -126,6 +197,11 @@ def _record_frames(
     された本物の値）を渡す——`writer.py` モジュール docstring が明示する
     「保険機構（`__exit__` の自動合成）に頼らず、明示的な `close(stats)` を
     必ず呼ぶこと」という方針に従う。
+
+    `source` は manifest へ書かれる**記録元の種別**であり、既定は合成
+    （このヘルパの既存の全呼び出し元が合成系列を記録するため）。live を
+    記録する場合（タスク 9.3）は `SourceKind.LIVE` を明示する——manifest が
+    実際の記録元と食い違うと、後から再生したセッションの出所が追えなくなる。
     """
     root = tmp_path / "sessions"
     session_id = layout.new_session_id(time.time() * 1000.0)
@@ -135,7 +211,7 @@ def _record_frames(
         profile,
         device=None,
         runtime={},
-        source=SourceKind.SIMULATED,
+        source=source,
     )
     with recorder:
         for frame in frames:
@@ -370,8 +446,17 @@ class TestOpenSourceRejectsMisconfiguration:
 
 
 class TestLiveAdapterCaseIsDeferredToTask61:
-    """`live`（`RealSenseSource`）の**内容比較**（3アダプタ共通の系列一致）は
-    タスク 9.3（実機必須）まで引き続き保留する。
+    """SDK が**無い**環境で、live 分岐が安全に失敗することを固定する。
+
+    ⚠️ **タスク 9.3 完了により、本クラスの役割は「保留の記録」から
+    「SDK 非導入環境での挙動の固定」へ変わった。** 3アダプタ共通の系列一致は
+    `TestLiveAdapterProducesEquivalentSeriesThroughRecordAndReplay` が実機で
+    検証する。以下の記述は、保留がどう解除されたかの経緯として残す。
+
+    ---
+
+    （タスク 4.6 時点の記述）`live`（`RealSenseSource`）の**内容比較**
+    （3アダプタ共通の系列一致）はタスク 9.3（実機必須）まで保留していた。
 
     tasks.md 4.6「実機アダプタは同テストの対象に含める形にしておき、実行は
     タスク 9.3 で行う」に対応する。第3の契約テストケース
@@ -406,7 +491,17 @@ class TestLiveAdapterCaseIsDeferredToTask61:
     そのものではなく、他の例外や無限ハングにもならない。
     """
 
+    @requires_no_live_hardware
     def test_live_branch_constructs_but_fails_at_start_without_sdk(self) -> None:
+        """⚠️ **実機では skip される。**
+
+        SDK が有る環境では `start()` が成功してしまい
+        `SourceUnavailableError` は送出されない。さらに `_consume()` は
+        終端しない live ストリームを読み続けて**戻らなくなる**
+        （タスク 9.3 で実機に対して実測した挙動）。本テストが固定するのは
+        あくまで「SDK 非導入環境で安全に失敗すること」であり、
+        実機ではその前提自体が成立しない。
+        """
         settings = RuntimeSettings(source=SourceKind.LIVE)
         metrics, clock = _make_metrics_and_clock("live-deferred")
 
@@ -416,6 +511,153 @@ class TestLiveAdapterCaseIsDeferredToTask61:
 
         with pytest.raises(SourceUnavailableError):
             _consume(live_source)
+
+
+# ----------------------------------------------------------------------------
+# live（実機）を3アダプタ共通の契約に載せる（タスク 9.3）
+# ----------------------------------------------------------------------------
+
+
+#: live から取り出す枚数。既定 30fps で約1秒ぶん。実機のウォームアップを
+#: 跨いでも安定して取れる長さとして選んだ（`doctor` の `power_stability`
+#: も 30 枚を採る）。
+LIVE_FRAME_COUNT = 30
+
+
+@requires_live_hardware
+class TestLiveAdapterProducesEquivalentSeriesThroughRecordAndReplay:
+    """live を3アダプタ共通の契約テストに載せる（タスク 9.3、要件 4.2）。
+
+    **「合成・再生と同じ契約テスト」の解釈**: design.md「Integration Tests」1 は
+    契約テストを「`CaptureFrame` の**系列が等価になること**」と定義し、
+    「live は実機タスクで同じテストを再実行する」と続ける。ここで
+    **同一の合成フレーム列を live へ流すことはできない**——実カメラが返す
+    Depth は合成パターンと一致しないため、`_assert_series_equivalent()` に
+    合成系列と live 系列を直接渡す形は原理的に成立しない。
+
+    したがって「同じテスト」を、**同じ消費関数（`_consume()`）と同じ等価性判定
+    （`_assert_series_equivalent()`）を live にも適用する**ことと解釈し、
+    既存の `test_replayed_series_matches_original_simulated_series` と同じ形の
+    往復で検証する:
+
+        live → 記録 → 再生 ≡ live
+
+    再生側は有限なので `_consume()` がそのまま使え、**種別ごとに別々の消費
+    コードを書かない**という本ファイルの方針（冒頭 1.）も保たれる。これは
+    要件 4.2「入力元を差し替えても下流のフレーム処理コードの変更を必要と
+    しない」の、実機を含めた直接の証拠になる。
+    """
+
+    def _capture_live(
+        self, session_id: str
+    ) -> tuple[list[CaptureFrame], StreamProfile, CaptureStats, float]:
+        """live から `LIVE_FRAME_COUNT` 枚と、`profile` / `stats` / 実時間を取り出す。
+
+        `profile` と `stats` は `stop()` の**前**に読む。`profile` は
+        `start()` が実機の値へ差し替えたもの（要件 3.6）、`stats` は
+        `stop()` 前でも現時点の値を返す（`BaseFrameSource.stats`）。
+
+        4つ目の戻り値は、テスト側の時計で測った**取得の実時間（秒）**である。
+        `CaptureMetrics` の計測窓（構築時刻 → `stats` 読み取り時点）と
+        **同じ区間**を測るため、`time.monotonic()` の起点を
+        `_make_metrics_and_clock()` の直前に置き、終点を `stats` の読み取り
+        直後に置く。`with` を抜けた後まで測ると `stop()`（実機では
+        pipeline の停止に数百 ms かかる）が入り込み、比較にならない。
+        """
+        settings = RuntimeSettings(source=SourceKind.LIVE)
+        wall_start_s = time.monotonic()
+        metrics, clock = _make_metrics_and_clock(session_id)
+        live_source = open_source(settings, metrics, clock=clock)
+
+        with live_source:
+            frames = _take(live_source, LIVE_FRAME_COUNT)
+            profile = live_source.profile
+            stats = live_source.stats
+            wall_elapsed_s = time.monotonic() - wall_start_s
+        return frames, profile, stats, wall_elapsed_s
+
+    def test_live_series_round_trips_through_record_and_replay(self, tmp_path: Path) -> None:
+        """live → 記録 → 再生 が元の live 系列と等価になること（要件 4.2）。"""
+        live_frames, profile, stats, _elapsed_s = self._capture_live("live-contract")
+        assert len(live_frames) == LIVE_FRAME_COUNT
+
+        session = _record_frames(
+            tmp_path, live_frames, profile, stats, source=SourceKind.LIVE
+        )
+
+        replay_settings = RuntimeSettings(source=SourceKind.RECORDED, session_path=session)
+        replay_metrics, replay_clock = _make_metrics_and_clock("live-contract-replay")
+        replayed = _consume(
+            open_source(replay_settings, replay_metrics, clock=replay_clock)
+        )
+
+        _assert_series_equivalent(live_frames, replayed)
+
+    def test_live_frames_identify_their_timestamp_basis(self) -> None:
+        """各フレームが「何を基準とした時刻か」を識別できること（要件 3.5）。
+
+        どのドメインになるかは**バックエンドとメタデータの可否で実行時に
+        決まる**（`research.md` Research 3）ため、特定の値を期待しない。
+        固定するのは「識別できる値が必ず載っていること」である。
+        """
+        live_frames, _profile, _stats, _elapsed_s = self._capture_live("live-timestamp-domain")
+
+        assert live_frames
+        for frame in live_frames:
+            assert frame.timestamp_domain is not None
+            # 値が列挙のいずれかであることを、`.name` の存在で確認する
+            assert getattr(frame.timestamp_domain, "name", None)
+
+    def test_live_profile_carries_camera_intrinsics(self) -> None:
+        """カメラ内部パラメータがフレームと同じ入力元から取れること（要件 3.6）。
+
+        `RealSenseSource` は構築時には `intrinsics=None` の暫定 `StreamProfile`
+        を持ち、`start()` が実機から取得した値へ差し替える。ここで検証するのは
+        **差し替えが実機で実際に起きること**である。
+        """
+        _frames, profile, _stats, _elapsed_s = self._capture_live("live-intrinsics")
+
+        assert profile.intrinsics is not None
+        assert profile.intrinsics.fx_px > 0
+        assert profile.intrinsics.fy_px > 0
+
+    def test_live_stats_summarize_total_dropped_missing_and_fps(self) -> None:
+        """取得終了時に総数・破棄・欠落・実測フレームレートが得られること（要件 2.8）。
+
+        **各項目を「在ること」ではなく「観測した系列と整合すること」で検証する。**
+        `frames_dropped >= 0` のような表明はカウンタが `int` である限り決して
+        落ちず、壊れた実装を検出できないため採らない。
+        """
+        live_frames, _profile, stats, wall_elapsed_s = self._capture_live("live-stats")
+
+        # 総数: `_take()` が取り出した枚数と厳密に一致する。
+        assert stats.frames_yielded == len(live_frames) == LIVE_FRAME_COUNT
+
+        # 欠落: `seq` の飛びの総数。`frames_missing` は各フレームの `gap_before`
+        # の総和（`metrics.py`）だが、ここでは **`seq` から独立に数え直して**
+        # 突き合わせる（`gap_before` 自身を使うと循環した検証になるため）。
+        # 先頭フレームには先行フレームが無いので飛びは定義されない——この前提を
+        # 暗黙にせず明示的に固定してから、残りを seq 差分と比較する。
+        assert live_frames[0].gap_before == 0
+        seqs = [frame.seq for frame in live_frames]
+        observed_gaps = sum(
+            later - earlier - 1 for earlier, later in zip(seqs, seqs[1:]) if later > earlier + 1
+        )
+        assert stats.frames_missing == observed_gaps
+
+        # 破棄: 各フレームが自分の直前の破棄数を持つ（`dropped_before`）。
+        # その総和が要約の破棄件数と一致すること。
+        assert stats.frames_dropped == sum(frame.dropped_before for frame in live_frames)
+
+        # 実測フレームレート: テスト側の時計で独立に測った実時間から導いた値と
+        # 整合すること。単位の取り違え（秒と ms）や分子の誤りといった、
+        # 桁で外れる種類の欠陥を検出するのが目的であり、**特定の fps 値を
+        # 合否条件にはしない**（要件 9.5 / 方針 A-10「未実測の数値を合否条件に
+        # しない」。fps 自体の評価はタスク 9.4 が実効サンプル数で行う）。
+        assert stats.duration_ms > 0
+        assert stats.measured_fps > 0
+        independent_fps = len(live_frames) / wall_elapsed_s
+        assert stats.measured_fps == pytest.approx(independent_fps, rel=0.25)
 
 
 # ----------------------------------------------------------------------------

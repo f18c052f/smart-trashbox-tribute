@@ -246,6 +246,36 @@
   - _Depends: 3.2, 4.3, 4.5_
   - _Boundary: open_source, tests/sensing_foundation/test_source_contract.py_
 
+- [x] 4.7 「フレーム番号」が指す量を確定させ、記録・再生・対応付けの間で一致させる
+  - 同じ「フレーム番号」に見える**3つの別々の量**があり、リングが古いフレームを
+    追い出したときだけ食い違う:
+    (a) `SessionReader.read(i)` の `i` は**索引ファイルの行位置**、
+    (b) 索引行の `i` フィールドは**記録**セッションの通し番号、
+    (c) `RecordedSource` が返す `CaptureFrame.index` は**再生**セッションの 0 始まり通し番号
+  - タスク9.6 の実機記録（181枚取得し直近60枚を保存）で、**行位置 0 の `i` が 121** であることを実測した
+  - `types.py` は `CaptureFrame.index` を「セッション内の 0 始まり通し番号。欠番なく増加する」と
+    定義しているが、この不変条件を満たすのは `RecordedSource` の側であり、
+    `SessionReader.read()` の戻り値（121 始まり）は満たさない
+  - `throw_store.link_to_session()` の `frame_index_from` / `frame_index_to` が
+    上記のどれを指すかは、design.md も requirements.md も定めていない。
+    下流が「記録側の通し番号」のつもりで値を入れ、利用側が行位置として渡すと
+    **静かにずれた範囲を読む**（例外にならない）
+  - **投擲の瞬間だけを残すリング運用（要件 5.5）はまさに追い出しが起きる使い方**であり、
+    この曖昧さが表面化する経路そのものである
+  - **まず design.md に `frame_index_*` がどの量を指すかを明記してから**、
+    `SessionReader` / `RecordedSource` / `link_to_session` / `types.CaptureFrame` の
+    記述と実装をその定義に合わせる（実装を先に動かして定義を後付けしない）
+  - 観測可能な完了状態: **追い出しが起きた記録を明示的に作り**、`link_to_session()` が
+    残した範囲から元のフレームを取り直せることをテストで固定する
+    （追い出しの無い記録では3つの量が一致してしまい、検証が空振りになる）。
+    あわせて `tests/sensing_foundation/test_real_session_roundtrip.py` に置いた
+    前提の表明（`index_rows[0]["i"] == 0` と、それが未決である旨のコメント）を
+    確定した定義に沿って更新する
+  - _Requirements: 5.5, 6.1, 7.7_
+  - _Depends: 4.4, 4.5, 5_
+  - _Boundary: SessionReader, RecordedSource, ThrowRecordStore.link_to_session, types.CaptureFrame_
+  - _Note: 欠陥は3つの境界の**間**の不整合そのものであり、どれか1つの中では契約を定義できない。したがって本タスクの境界は意図的に複数へまたがる。経緯は `measurements.md` タスク9.6「発見1」を参照。_
+
 ## 5. Throw Record の保存層
 
 - [x] 5. Throw Record の保存層を実装する
@@ -293,6 +323,22 @@
   - _Depends: 1.4, 6.1_
   - _Boundary: Doctor_
 
+- [x] 6.3 開いたデバイスの識別情報を live アダプタから取り出せるようにする
+  - `LiveSource` は `start()` の中でデバイスオブジェクトを握っているが、
+    `global_time_enabled` / `usb2_warning` と違い**識別情報を外へ公開していない**。
+    そのため記録側が「どの個体・どのファームウェアで撮ったか」を知る経路が無い
+  - `start()` 完了後に確定する属性として、実際に開いたデバイスの
+    `name` / `serial_number` / `firmware_version` / `usb_type_descriptor` を公開する
+    （`global_time_enabled` と同じ流儀のプロパティ）
+  - **`probe_devices()` の流用で代替しない。** あれは接続中の全デバイスを列挙するもので、
+    複数台つながっているときに**パイプラインが実際に開いた個体**を特定できない
+  - 取得できない項目は `None`（欠測）とし、偽装しない（要件 3.5 の方針をそのまま適用）
+  - 観測可能な完了状態: SDK を模したモックに対し、`start()` 後に識別情報が読め、
+    `get_info` が例外を送出する項目は `None` になることをテストで固定する
+  - _Requirements: 1.4, 5.2_
+  - _Depends: 6.1_
+  - _Boundary: RealSenseSource_
+
 ## 7. 集計と比較の手段
 
 - [ ] 7. 集計と比較の手段
@@ -334,6 +380,26 @@
   - 観測可能な完了状態: 合成入力で実行すると、3条件の実測値と判定基準文字列と判定結果を含む結果ファイルが生成される
   - _Requirements: 5.6, 10.1, 10.2, 10.3, 10.4, 10.5_
   - _Depends: 4.6_
+  - _Boundary: LoggingOverheadBench_
+
+- [x] 7.4 計測 ON / OFF の比較を単一入力元の構造へ作り替える
+  - 3条件で `FrameSource`・`SessionClock`・`CaptureMetrics` を**1つずつ共有**し、
+    セグメントの切り替えでは**ロガーの向き先だけ**を差し替える
+    （`logging_off` → `NullLogger`、`logging_on` → `StructuredLogger`、
+    `recording_on` → `NullLogger` ＋ `SessionRecorder.write()`）
+  - ロガーの差し替えは `obslog.Logger` が `Protocol`（構造的部分型）であることを利用し、
+    **ベンチ側の私有クラス**で実現する。**`metrics.py` と `source.py` は変更しない**
+  - 条件別の `frames_dropped` は、共有した `CaptureMetrics.counters()` を
+    **セグメント境界の前後で読んだ差分**として条件ごとに積算する
+  - **A/B/A/B の交互実行と、実測前に確定済みの判定基準の文字列は変更しない**
+    （要件 10.3 / 方針 A-10。ここを動かすと 7.3 が固定した前提が崩れる）
+  - 3条件が入力の**互いに素な区間**を処理するようになる（合成・再生でも同一内容を見なくなる）。
+    これは design.md「3条件が入力元を共有する理由」が許容すると明記した副作用であり、
+    A/B/A/B の交互実行と複数サイクルが打ち消す対象である
+  - 観測可能な完了状態: `open_source()` の呼び出しが**1回だけ**であることをテストで固定し、
+    合成入力に対する 7.3 の既存テスト（3条件の実測値・判定基準文字列・判定結果）が引き続き通過する
+  - _Requirements: 10.1, 10.5_
+  - _Depends: 7.3_
   - _Boundary: LoggingOverheadBench_
 
 ## 8. 入口と境界の確定
@@ -383,6 +449,27 @@
   - _Depends: 8.1_
   - _Boundary: PublicApi, tests/sensing_foundation/test_boundaries.py, tests/sensing_foundation/test_public_api.py_
 
+- [x] 8.3 記録のメタ情報にデバイス識別情報とグローバル時刻の有効化結果を入れる
+  - **欠陥1**: `run_record()` が `SessionRecorder(..., device=None, ...)` を固定で渡すため、
+    実機で撮った記録でも `manifest.json` の `"device"` が `null` になる。
+    **要件 5.2「メタ情報にデバイス識別情報を含める」が実機で未充足**である
+    （タスク9.6 の実記録で確認。タスク9.2 では serial 834412071095 / FW 5.17.3.10 が
+    読めているので、情報が無いのではなく渡していない）
+  - **欠陥2**: `_build_runtime_info()` が `"global_time_enabled": None` を固定で返す。
+    **入力元を開く前に組み立てている**ため、実際の有効化結果を入れる経路が無い。
+    タスク6.1 の「有効化できたかどうかをメタ情報とログに残す」の字義を満たしていない
+    （索引行の `ts_domain` から推定は可能なので影響は限定的だが、メタ情報としては欠測のまま）
+  - `runtime` の組み立てを `open_source()` の**後**へ移し、live のときは
+    `LiveSource.global_time_enabled` と 6.3 が公開する識別情報を読んで渡す。
+    live 以外の入力元では `None`（欠測）のままとし、値を偽装しない
+  - 観測可能な完了状態: SDK を模したモックを使った `record` の実行で、
+    `manifest.json` の `device` が非 `null` になり `runtime.global_time_enabled` が
+    真偽値になることをテストで固定する。**実機での確認は次の実機セッションで
+    タスク9.5 と同時に行う**（`device` が実在の個体を指すことは実機でしか確認できない）
+  - _Requirements: 5.2, 6.1_
+  - _Depends: 6.3, 8.1_
+  - _Boundary: src/sensing_foundation/cli.py_
+
 ## 9. 実機ブリングアップと実測（ハードウェア必須）
 
 > **ここから先は Raspberry Pi 4 と RealSense D435 の実機が必要である。**
@@ -391,7 +478,7 @@
 
 - [ ] 9. 実機ブリングアップと実測
 
-- [ ] 9.1 OS を導入し、RAM 容量と選定結果を記録する
+- [x] 9.1 OS を導入し、RAM 容量と選定結果を記録する
   - 64bit かつ headless 運用可能な OS を導入する。**Raspberry Pi OS 64-bit を先に評価する**
   - 実測結果の記録先として `measurements.md` を作成し、確認項目・実施日・結果・使用したコマンドを残す章立てを用意する
   - 診断コマンドで RAM 容量・OS・カーネル・Python 版を取得して記録する
@@ -400,7 +487,7 @@
   - _Requirements: 1.1, 1.3, 1.6, 1.7, 1.8_
   - _Depends: 6.2_
 
-- [ ] 9.2 RealSense の導通を確認し、SDK 導入手順を再現可能な形で記録する
+- [x] 9.2 RealSense の導通を確認し、SDK 導入手順を再現可能な形で記録する
   - 認識 → USB3 接続 → 給電安定性 → SDK 導入の順で確認する（**fps 計測より先に行う**）
   - SDK のビルドで USB バックエンドを強制する構成を用い、Python バインディングを生成する
   - import できない場合は「ビルド」「配置」「Python 版の取り違え」「デバイス」「接続速度」のどこで失敗しているかを診断コマンドで切り分ける
@@ -410,7 +497,7 @@
   - _Requirements: 1.2, 1.3, 1.9, 12.7_
   - _Depends: 9.1_
 
-- [ ] 9.3 live アダプタを実機で通し、契約テストを再実行する
+- [x] 9.3 live アダプタを実機で通し、契約テストを再実行する
   - 実機から取得した系列に対して、合成・再生と**同じ契約テスト**を実行する
   - 欠落検出・破棄計数・時刻ドメイン・内部パラメータ取得が実機で期待どおり動くことを確認する
   - グローバル時刻が有効化できたか、取得レイテンシが算出可能かを記録する（算出できない場合は欠測として記録する）
@@ -418,7 +505,7 @@
   - _Requirements: 3.5, 3.6, 4.2, 2.8_
   - _Depends: 8.2, 9.2_
 
-- [ ] 9.4 解像度・fps を掃引し、設定を決定する
+- [x] 9.4 解像度・fps を掃引し、設定を決定する
   - モード掃引を実機で実行し、少なくとも 640×480 の 30 fps と 60 fps を同一条件で比較する
   - **実効サンプル数**（一定時間窓あたりの有効フレーム数）で比較し、フレームレート単体で決めない
   - USB2 接続が検出された回の結果は無効として扱う
@@ -429,14 +516,15 @@
   - _Depends: 9.3_
 
 - [ ] 9.5 計測 ON / OFF の影響を実機で確認する
+  - _Note: live で3本同時にオープンできず実行不能だった問題は、design.md「3条件が入力元を共有する理由」の追記（A案: 1本の入力元を共有）で決着した。実行にはタスク 7.4 の作り替えが先に要る。経緯は `measurements.md` タスク9.5 を参照。_
   - 計測比較を実機で実行し、ログ無効・ログ有効・記録有効の3条件を交互に比較する
   - 事前に確定した判定基準とともに、実測値・ばらつき・判定結果を記録する
   - 判定が偽の場合は、**計測結果を無条件に有効なものとして扱わない**旨を記録し、送出経路の見直し（付随値の削減・キュー容量・フラッシュ方針）を行う
   - 観測可能な完了状態: `measurements.md` に3条件の実測値・判定基準・判定結果が記録され、判定が真であるか、偽の場合の対応が明記されている
   - _Requirements: 10.2, 10.4_
-  - _Depends: 9.4_
+  - _Depends: 9.4, 7.4_
 
-- [ ] 9.6 実データを記録し、WSL で再生する往復を確認する
+- [x] 9.6 実データを記録し、WSL で再生する往復を確認する
   - 実際の投擲を Pi 上でリングバッファ方式により記録する
   - 記録一式を WSL へ持ち帰り、**SDK も実機も無い状態で**再生する
   - 同一記録を複数回再生して同一系列になることを確認する
@@ -475,4 +563,66 @@
 
 ## 全体まとめ: タスク1〜8（ハードウェア不要な全作業）が完了
 
-`.kiro/specs/sensing-foundation/measurements.md` は未作成（タスク9.1で新設予定）。タスク9（実機ブリングアップと実測）は Raspberry Pi 4 と RealSense D435 の実機が揃うまで着手不可。`uv run --extra sensing pytest -q` は822件全通過（SDK非導入・実機非接続のこの開発環境で）。
+`uv run --extra sensing pytest -q` は822件全通過（SDK非導入・実機非接続のこの開発環境で）。
+
+- タスク9.3: **実機（SDK 有り）では 12 件のテストが失敗する。** すべて「SDK が存在しない環境」を前提に書かれたものであり、着手前から存在する（`test_doctor.py` 7件 / `test_realsense_source.py::TestSdkNotInstalled` 3件 / `test_sensing_cli.py` 1件 / `test_sensing_boundaries.py` 1件）。**このうち `test_import_sensing_foundation_succeeds_without_sdk` だけは性質が異なり、`sys.modules` というグローバル状態を見ているためテスト順序依存になる**（単独では PASS、`probe_sdk()` を呼ぶテストの後では FAIL）。ソース側の遅延 import 設計は正しく、欠陥ではない。design.md は「live 以外は**実機・SDK なしで**全通過すること」としか規定しておらず、**SDK が存在する環境での扱いは未規定**である。**タスク9.4 以降で実機のテストスイートを緑にする必要が生じた場合、まず design レベルで方針を決めること**（skipif で環境を切り分けるか、境界テストを静的解析へ移すか）。
+- タスク9.3: **live は終端しない。** `_consume()`（`list(source.frames())`）を live に渡すと戻らない。テストで live を扱う場合は枚数境界の `_take()`（`test_source_contract.py`）または `cli._drain_frames()` の時間境界を使うこと。
+- タスク9.3: **取得区間の実時間を測る際、`with` を抜けた後まで測らないこと。** RealSense の `stop()`（pipeline 停止）に約 0.58 秒かかり、`CaptureMetrics` の計測窓（構築時刻 → `stats` 読み取り時点）と食い違う。タスク9.4（fps 掃引）で実時間ベースの比較を行う際に同じ罠がある。
+- タスク9.3: **`CaptureStats` の各項目を「在ること」で検証しない。** `frames_dropped >= 0` のような表明は `int` カウンタである限り決して落ちず、壊れた実装を検出できない。また `measured_fps` を `frames_yielded / (duration_ms/1000)` と比較するのは `metrics.py:169` と同じ式であり恒真になる。**観測した系列から独立に数え直して突き合わせること**（`frames_missing` は `seq` 差分と、`frames_dropped` は `dropped_before` の総和と、`measured_fps` はテスト側の時計で測った実時間と）。
+- タスク9.3: **実機の D435 Depth ストリームは歪み係数がすべて `0.0` である**ことを実測で確認した。`sensing_foundation/geometry.py`（歪み補正を恒等として扱う）と `world_frame_calibration/deproject.py` の `ensure_supported_distortion()`（非ゼロ係数を**受理せず失敗させる**）が置いた仮定は、実機で成立する。
+
+- タスク9.4: **`bench-modes` の `--warmup-s` の既定値 0.0 は罠である。** design.md「ModeSweep」は「ウォームアップ区間を**必ず**設ける」と定めているのに CLI 既定は 0.0 であり、そのまま測るとウォームアップ込みの値が出る。タスク9.3 で観測した `measured_fps` 17.4〜20.5（30fps 要求時）はこれが原因で、`--warmup-s 2 --duration-s 10` で測り直すと 30.08 fps になった。**タスク9.5（`bench-logging`）でも同種の引数があれば同じ罠を確認すること。**
+- タスク9.4: **`src/sensing_foundation/**` を変更すると `world-frame-calibration` の境界テストが失敗する。** 同 Spec タスク7.3 の `test_actual_working_tree_changes_since_main_stay_within_boundary` が `main` からのブランチ全変更に対して `src/sensing_foundation/` への変更を禁止しており、**ブランチが単一 Spec のものであることを前提としている**ため、sensing-foundation 自身の作業ブランチで誤検出する。**本 Spec 側で回避策を当てないこと**（それ自体が越境である）。`world-frame-calibration` 側のタスクとして起こし、マージ前に解決する。
+- タスク9.4: **既定 fps を 60 へ変更したことは下流に波及する。** `world-frame-calibration` の `check_compatibility()` は保存結果の解像度・fps・Depth スケール・Color 有無を現在の入力元と突き合わせるため、**30fps で取ったキャリブレーション結果は 60fps の live 入力に対して `PROFILE_MISMATCH` で失敗する**（設計どおりの正しい挙動）。同 Spec のタスク8（実機キャリブレーション）は**必ず 60fps で実施すること**。
+- タスク9.4: **実効サンプル数には「フレーム層」と「点層」の2つがある。** 9.4 で倍増を確認したのは**フレーム層**であり、検出処理を含む点層の実効点数は `flying-object-tracking` の測定対象で未測定。下流が 1 フレーム 16.6ms に収まらない場合、ドレインが働いて点層は倍増しない（欠落は生じず、余分な取得コストを払うだけ）。**下流の実測後に既定 fps を再検討してよい。**
+
+- タスク9.6: **`frame_index_from`/`frame_index_to` の意味が未定義である（未解決・要 design 判断）。** 同じ「フレーム番号」に見える3つの量があり、**リングが古いフレームを追い出したときだけ食い違う**: (a) `SessionReader.read(i)` の `i` は索引ファイルの**行位置**、(b) 索引行の `i` フィールドは**記録**セッションの通し番号、(c) `RecordedSource` が返す `CaptureFrame.index` は**再生**セッションの 0 始まり通し番号。実測（181枚取得して直近60枚を保存した記録）では行位置 0 の `i` が 121 だった。`design.md` L1178/L1187/L1491 も `requirements.md` も `frame_index_*` がどれを指すか定義していない。**投擲だけを残すリング運用（要件 5.5）はまさに追い出しが起きる使い方**であり、下流が「記録側の通し番号」のつもりで値を入れて利用側が行位置として渡すと静かにずれた範囲を読む。なお `types.py` は `CaptureFrame.index` を「セッション内の 0 始まり通し番号。欠番なく増加する」と定義しており、この不変条件を満たすのは `RecordedSource` の側で `SessionReader.read()` の戻り値（121 始まり）は満たさない——是正の起点はここになると思われる。**本タスクでは是正していない**（`SessionReader` はタスク4.4、`link_to_session` はタスク5 の境界）。検証テストには前提の表明（`index_rows[0]["i"] == 0`）を置いた。
+- タスク9.6: **live 記録の manifest にデバイス識別情報が無い（要件 5.2 未充足・未解決）。** `cli.run_record()` が `SessionRecorder(..., device=None, ...)` を固定で渡しているため、実機で撮った記録でも `"device": null` になる。`sources/realsense.py` の `probe_devices()` は `serial_number`/`firmware_version`/`usb_type_descriptor` を返せる（タスク9.2 で実測済み: serial 834412071095 / FW 5.17.3.10）ので、**情報が無いのではなく渡していない**。どの個体・どのファームウェアで撮った記録かが後から追えない。あわせて `_build_runtime_info()` が `"global_time_enabled": None` を固定で返す（入力元を開く前に組み立てるため実際の有効化結果を入れる経路が無い）——タスク6.1 の「有効化できたかどうかをメタ情報とログに残す」の字義を満たしていない（索引行の `ts_domain` から判断は可能なので影響は限定的）。**いずれも `cli.py`（タスク8.1）の境界**であり、9.6 の要件（5.1/6.1/6.2/6.3/7.7）には含まれない。**実機でしか観測できない欠陥**なのでタスク8.1 への差し戻しとして扱うこと。
+- タスク9.6: **記録の実効レートを `summary.json` の `measured_fps` から読まないこと。** 15秒・900枚の記録で `measured_fps` は 10.04 と出るが、`CaptureMetrics` の計測窓が取得後の zlib 圧縮と書き出し（約74秒）を含むためである（9.3 発見4・9.4 発見1 と同根）。**索引の `t_capture_ms` の先頭と末尾から算出すること**（本記録では 899 間隔 15008.6ms = 16.695ms/枚 = 59.9fps、破棄0・欠落0）。
+- タスク9.6: **2回の再生を互いに突き合わせるだけでは記録の忠実性を検証できない。** `RecordedSource` は内部で `SessionReader` を使うため、両方が同じように壊れる欠陥を原理的に検出できない。負の対照（`SessionReader.read()` が返すフレーム1枚の Depth を1画素だけ書き換える）で実証済み: 独立参照と突き合わせる2件は失敗したが、`test_two_replays_produce_equivalent_series` は通過した。**期待値は `frames.ndjson`/`depth.bin`/`manifest.json` から素の `json` と `zlib` で独立に組み立てること**（タスク4.4 が手書きフィクスチャを選んだのと同じ理由）。
+- タスク9.6: **版管理しない実データを要するテストは環境変数で与え、無ければ skip する。** `tests/sensing_foundation/test_real_session_roundtrip.py` は `SENSING_REAL_SESSION_DIR` が指定されたときだけ実行する（タスク9.3 が実機の有無で `skipif` した構造と同じ）。ただし**指定されたのに読めない場合は skip ではなく失敗させる**——設定の誤りを静かに飛ばすと検証を実行しないまま緑になる。
+- タスク9.6（下流 `flying-object-tracking` への申し送り）: **640×480 で 2m 級の距離では、背景差分だけで投擲物を分離するのは困難である。** 実測した背景差分のノイズ下限（8×8ブロックで熱いブロック数の中央値 14）に対し、2.4m 先の紙ボール（直径約7cm）が占める面積は fx≈385px から見積もって約8px四方 = 64px 程度しかない。本タスクの記録で検出できた強い区間（最大96ブロック）は距離約1.0m・継続1.8〜6.1秒であり、投擲物の飛行時間（200〜400ms）ではなく**投げている人の腕や体**である可能性が高い。投擲距離を詰めるか、時間方向の情報（フレーム間差分・軌道の連続性）を使う方式が要る。
+- タスク7.4: **`Protocol` で定義した口は「実行中に向き先を差し替える」余地をタダで与える。** `obslog.Logger` が `Protocol`（構造的部分型）であるため、`enabled`/`emit`/`stage`/`timed`/`stats`/`close` の6要素を満たす**私有の転送クラス**（`bench/logging_overhead.py` の `_RoutingLogger`）を1つ置くだけで、`CaptureMetrics` を1インスタンスに保ったままログの向き先をセグメント境界で切り替えられる。**`metrics.py` も `source.py` も1行も変えていない。** 「条件ごとに計測点を作り直す」以外に道が無いように見えたのは、`Logger` を具象型として見ていたからだった——同種の「条件だけ差し替えたい」要求が出たら、まず口が `Protocol` かを確認すること。
+- タスク7.4: **計測点を共有したら、条件別の値は累計ではなく「セグメント境界の前後で読んだ差分」で取ること。** `CaptureMetrics.counters()` は構築時からの累計を返すため、共有した状態で各条件が終端の値をそのまま読むと**3条件とも同じ総数**になり、条件間の比較が静かに無意味になる（`frames_dropped` は判定基準の一方の柱なので、これは判定そのものを壊す）。差分の読み取りは `active_elapsed_ms` の計測窓の**外側**に置く（`counters()` 自体が `clock.now_ms()` と除算を行うため）。
+- タスク7.4: **入力元を共有すると `StopIteration` は3条件同時に効く。** 旧構造では条件ごとに別の供給を持っていたため「1条件だけ尽きる」ことがあり得たが、1本を分け合う以上それは起こらない。`simulated` で回すときは供給が**3条件ぶんの合計**（おおむね `3 * cycles * segment_s` 秒ぶん）を賄える必要がある——1条件ぶんの見積もりで用意すると、後半の条件がサンプル0で終わる。
+- タスク7.4: **構造の作り替えが「測っているもの」を変えていないことは、旧実装との同一入力比較で示せる。** HEAD 版と 7.4 版を同じ合成入力（`--source simulated --segment-s 0.05 --cycles 3`）で走らせ、3条件の `total_ms_p50`（0.0053/0.0264/0.0127 対 0.0055/0.0258/0.0133 ms）と2つの判定（両方とも `False`、`median_delta_ms`・`baseline_iqr_ms` ともほぼ同値）が一致することを確認した。テストの通過だけでは「同じものを測り続けている」ことまでは示せない。
+- タスク7.4（タスク8.1 への差し戻し）: **`cli.py` の `run_bench_logging()` の docstring が古くなった。** 「入力元は `LoggingOverheadBench.run()` が内部で `with source_off, source_on, source_rec:` する」と書いてあるが、7.4 以降は `with source:` の1本である（同モジュール冒頭の「`FrameSource` に触れるすべてのサブコマンド」節にも同じ記述がある）。`cli.py` は本タスクの `_Boundary: LoggingOverheadBench_` の外なので**修正していない**。
+- タスク4.7: **「同じ名前で呼ばれている量が実は複数ある」欠陥は、たまたま一致する条件でだけテストしていると永久に見つからない。** 行位置・記録側通番・再生側通番の3つは、リングが1枚も追い出していない記録では完全に一致する。既存テストはすべてその条件下で書かれていたため、全部緑のまま欠陥が残っていた。**区別が生じる条件（ここでは追い出し）を意図的に作るフィクスチャを用意し、「いま実際に食い違っていること」を最初のテストで確かめてから本題に入る**構成にした（`test_frame_index_contract.py::test_the_recording_actually_evicted_frames_so_the_quantities_differ`）。この前提テストが無いと、フィクスチャの設定を1つ間違えただけで以降のテスト全部が空振りする。
+- タスク4.7: **識別子として保存する値には、「読み出し方に依存しない量」を選ぶこと。** `frame_index_*` は記録側の通し番号（索引行の `i`）と定めた。行位置を選ばなかったのは、要件 7.7 が求めるのが「後から対応付けられる**識別子**」であり、行位置はファイル内の**位置**であって識別子ではないからである——記録を切り詰めれば同じ値が別のフレームを指す。記録側の通し番号は `seq` / `t_capture_ms` と同じく記録に書き込まれた事実である。
+- タスク4.7: **取り違えを「静かに間違った答えを返す」から「その場で失敗する」へ変えるのが是正の本体である。** `position_of()` は実在しない番号に対して `IndexError` を送出し、**メッセージへ実在する範囲と行位置の範囲を両方入れる**（取り違えた側がその場でどちらの量を渡したか判別できるため）。あわせて索引行の `i` の重複を構築時に拒否した——重複を許すと `position_of()` が黙って一方を捨て、同じ識別子が2つのフレームを指す。
+- タスク4.7: **不変条件は「どの層に適用されるか」まで書かないと、別の層で破れたときに誰も気づけない。** `types.CaptureFrame` の「`index` は 0 から欠番なく増加する」は `FrameSource` が下流へ渡すフレームについてのものであり、`SessionReader.read()` の戻り値は対象外である（記録時の値を保つ）。この適用範囲が書かれていなかったため、`SessionReader` が不変条件を破っているのか正しいのかを判断できない状態が続いていた。
+- タスク4.7: **境界の「間」の不整合は、独立したテストファイルへ集めると各境界の単体テストの性格を壊さずに済む。** 本タスクの欠陥は `FrameRingBuffer` / `SessionRecorder` / `SessionReader` / `link_to_session` / `types.CaptureFrame` の**間**にあり、どれか1つの中では契約を定義できない。`test_reader.py`（書き出し側から独立した手書きフィクスチャを主証拠にする方針）を汚さずに、境界をまたぐ約束だけを `test_frame_index_contract.py` へ置いた。
+- タスク4.7: **負の対照でテストの非空虚性を確かめた。** `SessionReader.read()` が記録側通番の代わりに行位置を返すよう壊すと7件が失敗する（契約テスト4件すべてを含む）。テストが通ることと、テストが欠陥を検出できることは別である。
+- タスク6.3: **「同じ情報を2つの経路から取れる」状態は、片方が間違いになり得ることを意味する。** 接続中の全デバイスを列挙する `probe_devices()` と、パイプラインが実際に開いた1個体を指す `device_identity` は、**1台しかつながっていない環境では常に一致する**——つまり普段は区別がつかない。区別が生じる条件（複数台接続）を意図的に作るテストを置いた（`test_identity_is_the_opened_device_not_the_first_enumerated_one`）。列挙の先頭と開いた個体をわざと食い違わせてあり、`probe_devices()` を流用する実装はこのテストだけが落ちる（負の対照で確認済み: 開いた個体の代わりに `rs.context().query_devices()[0]` を使うよう壊すと、49件中このテスト1件だけが失敗する）。
+- タスク6.3: **USB2 警告と、記録に残る接続種別は同じ1回の観測から導くこと。** 変更前は `_detect_usb2()` が独自に `get_info(usb_type_descriptor)` を呼んでいたため、識別情報を別途読むと同じ値に対して2つの出典ができる。`start()` で `_read_device_identity()` を1度だけ呼び、`_usb2_from_descriptor(identity.usb_type_descriptor)` で警告を導く形へ変えた（`_detect_usb2()` は撤去）。「記録には `"2.1"` が残っているのに警告は立っていない」という食い違いが構造的に起こらない。
+- タスク6.3（タスク8.3 への申し送り）: **`DeviceIdentity` のフィールド名は `rs.camera_info` の列挙値名（`name` / `serial_number` / `firmware_version` / `usb_type_descriptor` / `product_line`）であり、`manifest.json` の `device` の語彙（`serial` / `firmware` / `usb_type` / `product_line`。design.md「Data Models」）とは違う。** 対応付けは記録側（8.3）の責務とした——アダプタが保存形式の語彙を知ると、記録形式を変えるたびに SDK アダプタを触ることになる。なお **manifest 側のスキーマには `name` に相当するキーが無い**ので、8.3 は `name` を捨てるかスキーマへ足すかを決めること（機種名は個体の特定には不要だが、記録を後から眺めるときの手がかりにはなる）。
+- タスク6.3: **`product_line` は tasks.md 6.3 の本文が挙げる4項目に入っていないが、あえて公開した。** design.md「Data Models / `manifest.json`」の `device` スキーマがこれを要求しており、タスク8.3 の `_Boundary:_` は `cli.py` なので **8.3 側からは `RealSenseSource` にプロパティを足せない**。ここで出しておかないと 8.3 がスキーマを満たせないか、境界を越えるかの二択になる。
+- タスク6.3: **`device_identity` は `stop()` 後も保持する**（テストで固定）。記録のメタ情報は取得が終わってから書き出されることがあり、そこで「どの個体で撮ったか」が消えていては用を成さない。
+- タスク6.3: `_FakeDevice`（テスト側のモック）は各項目に `None` を渡すと「この SDK ビルドでは取得できない」を表す形へ一般化した。**`rs.camera_info` に列挙値そのものが無いビルド**という別の失敗の形も再現できるようにしてある（`del fake_rs.camera_info.product_line`）——`_device_info()` はこの2つを区別せずどちらも欠測として扱う。
+- タスク8.3: **`runtime` の組み立て位置は既に `open_source()` の後だった。欠けていたのは「入力元を引数として渡していないこと」である。** 起票時の見立て（「入力元を開く前に組み立てているため経路が無い」）は構造としては外れており、`_build_runtime_info()` は `SessionRecorder(...)` の引数として `with source:` の内側で呼ばれていた。**欠陥の所在を診断のまま信じずコードで確かめること**——直し方（呼ぶ場所を動かす／引数を足す）が変わる。
+- タスク8.3: **`getattr()` だけで live 専用属性を読むと、絞り込みが効いているかを誰も確かめられない。** `_live_only()` は `source.kind is SourceKind.LIVE` で先に絞ってから `getattr()` する。属性の有無だけで判定すると、`RecordedSource` が将来 manifest の `device` を素通しするようになった時点で（`profile`/`intrinsics` は既に素通ししている）、**再生を録り直した記録に「元の個体」が live で撮ったかのように残る**。この絞り込みは通常のテストでは素通りするので、live 以外の入力元へ意図的に `device_identity` を生やして `null` のままであることを確かめるテストを置いた（負の対照で確認済み: 絞り込みを外すとこの1件だけが落ちる）。
+- タスク8.3: **manifest の `device` について「全項目 `null` の object」と「`device: null`」は別の意味である。** 前者は「live で撮ったが SDK が何も答えなかった」、後者は「そもそも物理デバイスで撮っていない」。両方を `null` に潰すと、実機で撮った記録なのにメタデータが取れなかったのか、合成入力の記録なのかが後から区別できない。
+- タスク8.3: **`DeviceIdentity` → manifest の語彙変換は記録側（`cli.py`）に置いた。** `name`/`serial_number`/`firmware_version`/`usb_type_descriptor`/`product_line`（`rs.camera_info` の列挙値名）から `name`/`serial`/`firmware`/`usb_type`/`product_line`（design.md「Data Models」）へ写す。アダプタが保存形式の語彙を知ると、記録形式を変えるたびに SDK アダプタを触ることになる。**`name` は design.md の manifest スキーマに無かったので追加した**（タスク6.3 の申し送りへの回答。値は既に取得済みで、記録を後から眺めるときの手がかりになる）。
+- タスク8.3: **フェイク `pyrealsense2` を `tests/sensing_foundation/fakerealsense.py` へ切り出した**（`synthetic.py` と同じ共有ヘルパの慣行）。本タスクの検証は `record` の live 経路を端から端まで通す必要があり、SDK 形状の実装が2つあると**タスク9.2 の実機突き合わせで形状を直したとき片方だけが更新されて食い違う**。切り出しは純粋な移動であることをテスト（50件）で確認してから本題に入った。あわせて `FakePipeline(endless=True)` を追加——在庫制のままだと「一定時間ぶん取得する」利用側が区間の終わりに達する前にフレーム切れになり、取得失敗として扱われてしまう。
+- タスク8.3（実機での確認が未実施）: 検証はすべて SDK モックである。**`device` が実在の個体を指すことは実機でしか確認できない**ため、次の実機セッションでタスク 9.5 と同時に `record --source live` の manifest を目視すること（期待値: serial 834412071095 / FW 5.17.3.10 / usb_type 3.x）。
+
+## タスク9 進捗（2026-08-27 時点）
+
+実機（Raspberry Pi 4 Model B Rev 1.2 / 4GB モデル）が到着し、タスク9に着手した。
+記録先の `.kiro/specs/sensing-foundation/measurements.md` を新設済み。
+
+- **9.1 完了**: Raspberry Pi OS 64-bit（**Desktop 版**、Debian 13 "trixie" ベース）を導入し、
+  SSH 経由で `doctor` を実機実行。OS・カーネル・64bit判定・RAM容量・Python版を記録した。
+  搭載 RAM は 3,973,906,432 bytes（4GB モデル）で **OQ-24 が決着**。
+  リングバッファ上限の既定割合 25% は必要量の約18倍の余裕があり**妥当と判断して変更しない**。
+- **9.2 完了**: librealsense **v2.58.3** を `-DFORCE_RSUSB_BACKEND=ON` でソースビルドし（約72分、`make -j3`）、
+  Python 3.13 向けバインディングを生成して venv へ配置。`doctor` の**全9項目が `ok`** となった。
+  D435 は **USB 3.2 / FW 5.17.3.10 / serial 834412071095**、640×480@30fps でストリームを開け、
+  30枚取得で dropped 0 / missing 0。**OQ-23・OQ-28 が決着**（Ubuntu 退避は不要だった）。
+  - ✅ **9.1 で申し送った最大リスク（trixie / GCC 14.2 / Python 3.13）は顕在化しなかった。**
+    `research.md` が前提とした Bookworm より新しい環境でも v2.58.3 はエラーなくビルドできた。
+  - ⚠️ **再ビルド時の注意**: `make install` の配置先（`/usr/local/lib/python3.13/dist-packages/`）は
+    venv の探索パスに入らない。venv への `.so` 配置をやり直すこと（詳細は `measurements.md` 手順5）。
+- ⚠️ **9.4 への申し送り**: microSD の書き込み速度実測は 31.9 MB/s。60fps の Depth は約 36.9 MB/s で
+  **これを上回る**ため、60fps 評価時に連続記録を併用してはならない。
+  また実測前に起動ターゲットを `Console` へ切り替え、デスクトップを常駐させないこと。

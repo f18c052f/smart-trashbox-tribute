@@ -378,6 +378,27 @@
   - _Depends: 6.4_
   - _Boundary: .kiro/specs/world-frame-calibration/procedure.md_
 
+- [x] 7.5 境界テストが単一 Spec ブランチ前提であることを是正する
+  - `test_actual_working_tree_changes_since_main_stay_within_boundary` は
+    `main` からの**全変更**を検査するため、「このブランチには本 Spec の作業しか
+    載っていない」ことを暗黙の前提にしている。前提が書かれていないので、
+    成り立たない場所で走ったときに**境界違反として報告される**
+  - 実際に `spec/sensing-foundation-bringup` で恒常的に赤くなっている
+    （同 Spec のタスク9.4 が `src/sensing_foundation/config.py` を変更した時点から。
+    本 Spec は既に main へマージ済みのため、そのブランチには本 Spec の変更が1つも無い）
+  - **本 Spec の変更が1つも含まれないときは検査対象が無いものとして skip する**。
+    本 Spec の変更が1つでも含まれるブランチでは、**現在と同じ全変更検査を維持する**
+    （検出能力を落とさない。`pyproject.toml` は共有ファイルなので「本 Spec の変更」に数えない）
+  - 判定は純粋関数として切り出し、`git` を呼ばずに単体テストできるようにする
+    （既存の `find_forbidden_boundary_changes` / `find_out_of_boundary_changes` と同じ流儀）
+  - 観測可能な完了状態: 次の3つを実際の作業ツリーで確認する。
+    (a) 他 Spec の変更のみがある状態で skip し、誤検出しない、
+    (b) 本 Spec の変更と越境した変更が同時にある状態では**引き続き失敗する**、
+    (c) 本 Spec の変更のみの状態では通過する
+  - _Requirements: 11.5_
+  - _Depends: 7.3_
+  - _Boundary: tests/world_frame_calibration/test_world_frame_calibration_boundaries.py_
+
 ## 8. 実機での確立と検証（ハードウェア必須）
 
 > ⚠️ **ここから先は Raspberry Pi 4 と RealSense D435、および `sensing-foundation` の実装完了が前提である。**
@@ -422,6 +443,46 @@
   - _Requirements: 4.6, 7.4, 10.6_
   - _Depends: 8.2_
 
+## 9. 整合性検査の経路を下流から使える形にする
+
+- [x] 9. 整合性検査の経路の公開
+
+- [x] 9.1 整合性検査の引数を作る手段を公開入口へ出す
+  - `StreamSignature` / `Intrinsics` の型と、上流 `StreamProfile` からそれらへの写像
+    （`to_signature` / `to_intrinsics`）を公開契約に含める
+  - 写像を `sensing_foundation` への**実行時依存を持たない**モジュールへ移し、
+    `upstream.py` はそこから再 import して使う（`StreamProfile` は型注釈にしか使っていない）
+  - **既存の3つの契約を1つも壊さない**: (a) `__init__` はロジックを持たず再エクスポートのみ、
+    (b) `sensing_foundation` が未導入の環境でも `import` と全公開シンボルへのアクセスが成功する、
+    (c) 公開シンボルは元の定義モジュールと同一オブジェクトである
+  - `to_intrinsics` が `profile.intrinsics is None` を `CalibrationConfigError` として弾く安全弁
+    （要件 8.4）が、公開後も**較正側が所有したまま**であることを docstring に明記する
+  - 観測可能な完了状態: 公開シンボル一覧が12個へ更新され、`sensing_foundation` を遮断した
+    サブプロセスで `import` と全シンボルへのアクセスが成功し、下流が公開入口だけを使って
+    `check_compatibility` を呼べることをテストで固定する
+  - _Requirements: 6.4, 3.6, 8.2, 8.4, 8.6_
+  - _Depends: 6.3_
+  - _Boundary: PublicApi_
+  - _Note: 下流 `m1-prediction-validation` のタスク8.1〜8.5 がこの改修を待って保留になっている
+    （同 Spec tasks.md の `_Blocked:` 注記）。landing 後に向こうの保留を外すこと。_
+
+- [ ] 9.2 未コミット側の絞り込みをコミット側と対称にする
+  - タスク9.1 は**コミット側だけ**を「本 Spec の作業を含むコミット」へ絞り、
+    **未コミットの作業ツリーは丸ごと検査対象に残した**。そのため本 Spec のコミットを
+    載せたブランチの上で他 Spec の未コミット作業があると、それが本 Spec の境界違反として
+    報告される（タスク7.5 の問題クラスの**4度目の再発**）
+  - 未コミットの集合についても**本 Spec の所有パスを1つでも含むかどうかで丸ごと採否を決める**。
+    含むなら従来どおり全件を検査し（同一の作業で越境すれば引き続き検出される）、
+    1つも含まないなら別 Spec の作業として検査対象から外す
+  - **検出能力を落とさないこと**: 本 Spec のファイルと越境が同じ未コミット集合に同居する場合は
+    引き続き違反として報告されること
+  - 観測可能な完了状態: 他 Spec の未コミット作業だけがあるとき当該テストが緑になり、
+    本 Spec のファイルと越境が同居する未コミット集合では引き続き赤になることを、
+    crafted 入力のテストで固定する
+  - _Requirements: 11.5_
+  - _Depends: 9.1_
+  - _Boundary: tests/world_frame_calibration/test_world_frame_calibration_boundaries.py_
+
 ## Implementation Notes
 
 - タスク1.2: `CalibrationConfigError` は `prediction_core.PredictionConfigError` / `sensing_foundation.SensingConfigError` と異なり `ValueError` を継承しない。design.md の例外契約スニペットが `ValueError` に一切触れていないため契約どおりに実装した結果であり、実装上の欠陥ではない。今後 design.md を改訂する場合は、他パッケージとの `except ValueError` 互換性を意図的に持たせるかどうかを判断すること。
@@ -434,3 +495,9 @@
 - タスク6.2: テストファイルは `sensing_foundation.obslog.RESERVED_STAGES`（内部モジュール、公開入口の外）を直接importして `calibrate` ステージ名が予約語と衝突しないことを確認している。**「公開入口のみ参照」制約（design.md）は本パッケージの本番コード（`src/world_frame_calibration/**`）の依存グラフに対するものであり、テストコードの内省的な参照までは禁じていない。** タスク7.3の `test_boundaries.py` を書く際、この意図的な例外を壊さないよう注意すること。またタスク6.4（CLI）が `plane_fit`/`anchor_observe`/`frame_build`/`verify` の各段階ログを、本タスクが用意した `timed`/`stage_logger` を使って追加する予定である（design.mdのUpstreamAdapter契約には段階別の専用関数は無く、`collect_depth` 以外は6.4側でこのプリミティブを使って組み立てる）。
 - タスク7.1: 許容値の「余裕が大きい／ほぼ厳密」という主張を裏付ける実測値は、**必ず実際にテストが叩く経路（今回は `cli.run_calibrate`）で測り直すこと。** 幾何コアのモジュール（`plane`/`anchors`/`frame`）を直接呼んで測ると、CLIが経由する `depth_scale_mm` 丸め込みなどの量子化が欠落し、実際より何桁も小さい誤差を「実測値」として報告してしまう（本タスクでは回転誤差が 6e-17 対 8.1e-07 と約13000倍食い違った）。許容値の非空虚性（halving）テストは、この実際に叩く経路で測った値に対して書くこと。
 - タスク7.2: タスク7.1と同種の問題が2回発生した（docstring中の実測値主張が不正確: 存在しない「7.9mm」の記載、異なる値を「同じ量」と誤記、「数mm」を実際は0.83mmの差に対して使用）。**docstring/コメント中の数値主張は、テストのassertionが依存していなくても実際にパイプラインを叩いて検証すること。** 実測値の記述はレビューの重点確認対象になるため、書いた本人が公開前に実行環境で再現確認する習慣を今後のタスク（7.4手順書・8.x実機タスク）でも徹底すること。
+- タスク7.5: **「作業ツリーの実差分」を根拠にする検査は、暗黙に「このブランチにはこの Spec の作業しか載っていない」と仮定している。** 本 Spec が main へマージされた後、`spec/sensing-foundation-bringup` 側でその Spec の正当な変更（`src/sensing_foundation/config.py` 等）がすべて境界違反として報告され、全体スイートが恒常的に赤くなった。**前提を skip 条件として書き出す**ことで是正した（本 Spec が所有するパスの変更が1つも無ければ検査対象外）。検出能力は落としていない——本 Spec の変更が1つでもあれば従来どおり全変更を検査する。同種の「リポジトリ全体の状態を見る」テストを書くときは、**成立条件をテスト自身が判定できる形に落とすこと。**
+- タスク7.5: **「変更してよい場所」と「その Spec が所有する場所」は別の概念である。** `ALLOWED_BOUNDARY_PREFIXES` にはルート `pyproject.toml`（`ALLOWED_BOUNDARY_EXACT_FILES`）が伴うが、所有判定にこれを含めると、共有の構成ファイルに1行足しただけの他 Spec のブランチが本 Spec の境界検査の対象になってしまう。`OWNED_BOUNDARY_PREFIXES` を別の定数として置き、意図の違いをコメントに残した。
+- タスク7.5: **Windows 側で作った git worktree を WSL から実行すると、`.git` ファイルの `gitdir` が Windows 形式パス（`C:/...`）のため git がリポジトリを解決できない。** `git` を呼ぶテストはこの環境で常に skip する（本テストは skip 理由を文言で残す設計なので、静かに緑になるのではなく skip として見える）。この環境で `git` 依存のテストを検証するときは、**実 git 出力を Windows 側の git で採取し、判定関数へ通す**形をとること（本タスクではこの方法で (a) 誤検出しない・(b) 越境は引き続き検出する・(c) 本 Spec のみなら通過する、の3ケースを実データで確認した）。
+- タスク9.1（追随タスクの候補・レビューで検出）: (1) `test_mixed_branch_is_still_inspected_and_still_reports_violations`（タスク7.5 由来）の docstring 末尾「1つでもあれば従来どおり全変更が検査される」が、9.1 のコミット単位化により**全体としては成り立たなくなっている**。当該テストの assert 自体は今も正しい（ヘルパ関数を単体で検査しているため）が、文面は同じクラスの残存である。**次にそのテストを触る機会に是正すること。** (2) マージコミットのギャップを固定するテストは「文書型」であり、**呼び出し側でギャップを塞いでも落ちない**（ギャップが git の呼び出し方にあり、crafted 入力によるパーサ検査では固定できないため）。将来塞ぐときは `git log` の引数そのものを固定する検査（subprocess の argv を見る等）へ差し替えること。分離コミット側のテストは強化時に真っ先に落ちることが実測で確認されており、**両者は非対称である**。(3) `to_intrinsics` の `model` の写しが**リポジトリ内の全フィクスチャが `"brown_conrady"` リテラルを使っているため固定されていない**（定数へ固定する変異が生き残る）。移設前から同一なので 9.1 の回帰ではないが、**本タスクがこの関数を公開契約へ出した張本人**であり、フィクスチャの `model` を別の値にする追随タスクを起票する価値がある。
+
+- タスク9.1: **タスク7.5 のブランチ単位 skip は、上流 Spec が下流 Spec のブランチ上で改修される場合に再び反転する。** 7.5 は「本 Spec の変更が1つも無いブランチは検査対象外」という skip を入れて他 Spec のブランチでの誤検出を止めたが、本タスクは下流 `m1-prediction-validation` のブランチ上で本 Spec の公開面を広げたため、**本 Spec の作業と他 Spec の作業が同居**し、`test_actual_working_tree_changes_since_main_stay_within_boundary` が skip から赤へ反転した（`src/sensing_foundation/**` 7件を境界違反として報告）。検査対象をコミット単位（本 Spec の所有パスを触るコミットの全変更 ＋ 未コミットの作業ツリー）へ精緻化して是正したが、**検査範囲は狭まっている**: (a) 本 Spec の越境を本 Spec のファイルを含まない**別コミットへ分離**すると検出されない、(b) `git log --name-only` は**マージコミットの変更ファイル名を出力しない**ためコンフリクト解決で持ち込まれた変更が漏れる（旧 `git diff` 版は見えていた）。どちらも `test_commit_selection_misses_*` として**実行される検査**の形で残してある。**同種の「リポジトリ全体の状態を見る」テストを書くときは、成立条件だけでなく、成立しなくなる条件（＝何を検出できなくなるか）もテスト自身に書き出すこと。** 7.5 のノートの「検出能力は落としていない」という文言は当時は真だったが、そのまま再利用すると偽になる——**安心感のある文言を前提が変わったまま引き継がないこと。**

@@ -20,12 +20,14 @@ using drivetrain_control::BlockReason;
 using drivetrain_control::BodyVelocity;
 using drivetrain_control::BodyVelocityCommand;
 using drivetrain_control::CommandAcceptance;
+using drivetrain_control::ControlPath;
 using drivetrain_control::DurationMs;
 using drivetrain_control::EncoderCounts;
 using drivetrain_control::Pose2D;
 using drivetrain_control::StepResult;
 using drivetrain_control::TimeMs;
 using drivetrain_control::VoltageSample;
+using drivetrain_control::WheelDutyCommand;
 using drivetrain_control::WheelOutputs;
 using drivetrain_control::WheelVelocityCommand;
 using drivetrain_control::kMaxVoltagePoints;
@@ -108,6 +110,38 @@ void test_wheel_velocity_command_supports_per_wheel_indexing(void) {
   TEST_ASSERT_EQUAL_FLOAT(100.0f, cmd.wheel_mm_s[0]);
   TEST_ASSERT_EQUAL_FLOAT(-100.0f, cmd.wheel_mm_s[1]);
   TEST_ASSERT_EQUAL_FLOAT(0.0f, cmd.wheel_mm_s[2]);
+}
+
+// ---------------------------------------------------------------------------
+// WheelDutyCommand / ControlPath: 開ループ指令の型と有効経路（要件 5.10）
+// ---------------------------------------------------------------------------
+
+void test_wheel_duty_command_default_constructed_is_zero(void) {
+  WheelDutyCommand cmd;
+  for (std::uint8_t i = 0; i < kWheelCount; ++i) {
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, cmd.wheel_duty[i]);
+  }
+  TEST_ASSERT_EQUAL_INT64(0, cmd.issued_at_ms);
+}
+
+void test_wheel_duty_command_supports_per_wheel_indexing(void) {
+  WheelDutyCommand cmd;
+  cmd.wheel_duty[0] = 1.0f;
+  cmd.wheel_duty[1] = -1.0f;
+  cmd.wheel_duty[2] = 0.25f;
+  cmd.issued_at_ms = 4000;
+  TEST_ASSERT_EQUAL_FLOAT(1.0f, cmd.wheel_duty[0]);
+  TEST_ASSERT_EQUAL_FLOAT(-1.0f, cmd.wheel_duty[1]);
+  TEST_ASSERT_EQUAL_FLOAT(0.25f, cmd.wheel_duty[2]);
+  TEST_ASSERT_EQUAL_INT64(4000, cmd.issued_at_ms);
+}
+
+void test_control_path_distinguishes_velocity_pid_and_open_loop(void) {
+  const ControlPath pid_path = ControlPath::kVelocityPid;
+  const ControlPath open_loop_path = ControlPath::kOpenLoop;
+  TEST_ASSERT_TRUE(pid_path != open_loop_path);
+  TEST_ASSERT_EQUAL_UINT8(0, static_cast<std::uint8_t>(pid_path));
+  TEST_ASSERT_EQUAL_UINT8(1, static_cast<std::uint8_t>(open_loop_path));
 }
 
 // ---------------------------------------------------------------------------
@@ -277,6 +311,10 @@ int main(int argc, char **argv) {
   RUN_TEST(test_body_velocity_command_holds_assigned_fields);
   RUN_TEST(test_wheel_velocity_command_default_constructed_is_zero);
   RUN_TEST(test_wheel_velocity_command_supports_per_wheel_indexing);
+
+  RUN_TEST(test_wheel_duty_command_default_constructed_is_zero);
+  RUN_TEST(test_wheel_duty_command_supports_per_wheel_indexing);
+  RUN_TEST(test_control_path_distinguishes_velocity_pid_and_open_loop);
 
   RUN_TEST(test_command_acceptance_default_constructed_is_rejected_unclamped);
   RUN_TEST(test_wheel_outputs_default_constructed_is_all_zero_duty);

@@ -39,11 +39,11 @@
   `import world_frame_calibration` および `__all__` の全シンボルへの
   アクセスが成功すること（観測可能な完了状態そのもの。要件 8.6）。これは
   `deproject.py` / `upstream.py` がモジュールレベルで `sensing_foundation`
-  を import する一方、公開契約の8シンボルは `errors.py` / `result.py` /
-  `transform.py` からのみ再エクスポートされ、その依存連鎖
-  （`result` → `frame` → `plan` / `transform` / `types` / `linalg` /
-  `errors`）のどこにも `sensing_foundation` の module-level import が
-  無いことを裏付ける
+  を import する一方、公開契約の12シンボルは `errors.py` / `result.py` /
+  `transform.py` / `types.py` / `profile.py` からのみ再エクスポートされ、
+  その依存連鎖（`result` → `frame` → `plan` / `transform` / `types` /
+  `linalg` / `errors`、および `profile` → `types` / `errors`）のどこにも
+  `sensing_foundation` の module-level import が無いことを裏付ける
 - 本パッケージが Throw Record スキーマ相当のものを一切定義していないこと
   （`__init__.py` にクラス定義が無いこと自体が `test_init_module_source_
   contains_no_logic` で固定されるため、ここでは `ThrowRecord` という名前が
@@ -63,6 +63,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 import world_frame_calibration
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -71,6 +73,9 @@ INIT_PATH = REPO_ROOT / "src" / "world_frame_calibration" / "__init__.py"
 # design.md PublicApi「Integration」が名指しする6シンボルに、tasks.md タスク
 # 6.3 の「失敗例外」カテゴリを満たすために必要な例外階層の残り2つ
 # （`WorldFrameCalibrationError` / `CalibrationConfigError`）を加えた8個。
+# さらに tasks.md タスク 9.1 が、`check_compatibility` の**引数を作る手段**
+# として型2つ（`StreamSignature` / `Intrinsics`）と写像2つ
+# （`to_signature` / `to_intrinsics`）を加え、合計 12 個とする。
 EXPECTED_PUBLIC_SYMBOLS: frozenset[str] = frozenset(
     {
         # errors.py（失敗例外・失敗理由）
@@ -84,6 +89,12 @@ EXPECTED_PUBLIC_SYMBOLS: frozenset[str] = frozenset(
         "check_compatibility",
         # transform.py（変換型）
         "WorldTransform",
+        # types.py（整合性検査の引数の型。タスク 9.1）
+        "StreamSignature",
+        "Intrinsics",
+        # profile.py（上流 StreamProfile からの写像。タスク 9.1）
+        "to_signature",
+        "to_intrinsics",
     }
 )
 
@@ -117,8 +128,11 @@ INTERNAL_SUBMODULE_NAMES: frozenset[str] = frozenset(
         "verify",
         "report",
         "upstream",
+        # profile.py（タスク 9.1）。上流 `StreamProfile` からの写像を持つが、
+        # `sensing_foundation` への**実行時**依存は持たない。
+        "profile",
         # cli.py（タスク 6.4）。CLI の入口 `main` はパッケージの公開 API
-        # （`__init__.py` の8シンボル）には含まれない（design.md PublicApi
+        # （`__init__.py` の12シンボル）には含まれない（design.md PublicApi
         # は下流ライブラリ利用者向けの契約であり、CLI はエンドユーザー向けの
         # 別の入口であるため）。したがってサブモジュール名としてのみここへ
         # 列挙し、`EXPECTED_PUBLIC_SYMBOLS` には追加しない。
@@ -131,7 +145,7 @@ INTERNAL_SUBMODULE_NAMES: frozenset[str] = frozenset(
 
 
 def test_all_matches_expected_public_symbols_exactly() -> None:
-    """`__all__` が確定した8シンボルと完全一致する（多くも少なくもない）。"""
+    """`__all__` が確定した12シンボルと完全一致する（多くも少なくもない）。"""
     assert set(world_frame_calibration.__all__) == EXPECTED_PUBLIC_SYMBOLS
 
 
@@ -190,6 +204,14 @@ def test_reexported_symbols_are_identical_objects_not_copies() -> None:
     assert world_frame_calibration.check_compatibility is result_module.check_compatibility
 
     assert world_frame_calibration.WorldTransform is transform_module.WorldTransform
+
+    from world_frame_calibration import profile as profile_module
+    from world_frame_calibration import types as types_module
+
+    assert world_frame_calibration.StreamSignature is types_module.StreamSignature
+    assert world_frame_calibration.Intrinsics is types_module.Intrinsics
+    assert world_frame_calibration.to_signature is profile_module.to_signature
+    assert world_frame_calibration.to_intrinsics is profile_module.to_intrinsics
 
 
 def test_failure_exception_hierarchy_is_publicly_catchable() -> None:
@@ -303,9 +325,9 @@ def test_import_succeeds_without_sensing_foundation_installed() -> None:
     `sys.meta_path` の先頭へ `sensing_foundation`（およびそのサブモジュール）
     の import を必ず失敗させる `MetaPathFinder` を挿入したサブプロセスで
     検証する。これにより、`deproject.py` / `upstream.py` がモジュールレベルで
-    `sensing_foundation` を import していても、公開契約の8シンボルの依存連鎖
+    `sensing_foundation` を import していても、公開契約の12シンボルの依存連鎖
     （`errors` / `result` → `frame` → `plan` / `transform` / `types` /
-    `linalg`）がそれらを経由していない限り `import world_frame_calibration`
+    `linalg`、および `profile` → `types` / `errors`）がそれらを経由していない限り `import world_frame_calibration`
     は成功する、という設計上の主張を実測で裏付ける。
     """
     script = (
@@ -381,3 +403,164 @@ def test_blocking_finder_actually_blocks_sensing_foundation_as_a_sanity_check() 
         f"サブプロセスが失敗した:\nstdout={result.stdout}\nstderr={result.stderr}"
     )
     assert "BLOCKED_AS_EXPECTED" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# タスク 9.1: 下流が**公開入口だけ**で整合性検査を呼べること
+# ---------------------------------------------------------------------------
+
+
+def _saved_calibration_path(tmp_path: Path, upstream_profile: object) -> Path:
+    """検査対象となるキャリブレーション結果を1件保存し、そのパスを返す。
+
+    ここは**下流の契約の外側**（較正を実施する側）であるため、内部モジュール
+    を使って組み立ててよい。本テストが固定したいのは、この結果を読み込んだ
+    **下流**が公開入口だけで `check_compatibility` を呼べるかどうかである。
+    """
+    from world_frame_calibration.frame import build_world_frame
+    from world_frame_calibration.plan import PlanLimits
+    from world_frame_calibration.profile import to_intrinsics, to_signature
+    from world_frame_calibration.result import (
+        assemble_calibration_result,
+        save_calibration,
+    )
+    from world_frame_calibration.types import (
+        AnchorObservation,
+        AnchorRole,
+        PixelRegion,
+        Plane,
+        PlaneQuality,
+    )
+
+    region = PixelRegion(x0_px=0, y0_px=0, x1_px=10, y1_px=10)
+    quality = PlaneQuality(
+        points_considered=5000,
+        inlier_count=4500,
+        inlier_ratio=0.9,
+        residual_abs_p50_mm=1.2,
+        residual_abs_p95_mm=3.4,
+        residual_rms_mm=1.8,
+        frames_used=5,
+        incidence_angle_deg=42.0,
+        rng_seed=7,
+    )
+    plane = Plane(normal=(0.0, 0.0, 1.0), distance_mm=1000.0, quality=quality)
+
+    def _anchor(label: str, role: AnchorRole, point: tuple[float, float, float]):
+        return AnchorObservation(
+            label=label,
+            role=role,
+            point_camera_mm=point,
+            point_on_plane_mm=point,
+            height_above_plane_mm=0.0,
+            range_from_camera_mm=1000.0,
+            sample_count=120,
+            spread_mm=2.5,
+            region=region,
+            frames_used=5,
+        )
+
+    establishment = build_world_frame(
+        plane,
+        _anchor("origin", AnchorRole.ORIGIN, (0.0, 0.0, 1000.0)),
+        _anchor("x_axis", AnchorRole.X_AXIS, (1000.0, 0.0, 1000.0)),
+        PlanLimits(min_baseline_mm=800.0),
+    )
+    result = assemble_calibration_result(
+        establishment,
+        source_kind="simulated",
+        session_path=None,
+        signature=to_signature(upstream_profile),  # type: ignore[arg-type]
+        intrinsics=to_intrinsics(upstream_profile),  # type: ignore[arg-type]
+        plan_digest={"notes": "task 9.1"},
+        notes="",
+    )
+    path = tmp_path / "calibration.json"
+    save_calibration(result, path)
+    return path
+
+
+class _FakeIntrinsics:
+    """上流 `CameraIntrinsics` を構造的に模したダブル。
+
+    `to_intrinsics` は属性アクセスしか行わないため、上流型そのものを
+    要求しない（`sensing_foundation` 未導入の環境でも写像が動くことの
+    裏返し。`test_world_frame_calibration_profile.py` が実測で固定する）。
+    """
+
+    width_px = 643
+    height_px = 484
+    fx_px = 615.5
+    fy_px = 616.25
+    ppx_px = 321.125
+    ppy_px = 239.875
+    model = "brown_conrady"
+    coeffs = (0.0, 0.0, 0.0, 0.0, 0.0)
+
+
+class _FakeStreamProfile:
+    """上流 `StreamProfile` を構造的に模したダブル。"""
+
+    def __init__(self, **overrides: object) -> None:
+        self.width_px = 641
+        self.height_px = 482
+        self.fps = 31
+        self.depth_scale_mm = 0.123
+        self.color_enabled = True
+        self.intrinsics: object = _FakeIntrinsics()
+        for key, value in overrides.items():
+            setattr(self, key, value)
+
+
+def test_downstream_can_call_check_compatibility_using_only_public_symbols(
+    tmp_path: Path,
+) -> None:
+    """下流が `world_frame_calibration` の公開入口だけを使って
+    `check_compatibility` を呼べる（tasks.md タスク 9.1 / 要件 6.4）。
+
+    要件 6.4 は「読み込んだ結果の……が**現在の入力元のそれ**と一致しない
+    場合」と定めている。その「現在の入力元のそれ」は
+    `to_signature` / `to_intrinsics` でしか作れない——検査は
+    `result.signature != signature` という**オブジェクト同士の比較**であり、
+    構造が同じだけの別クラスを下流が自前で定義しても常に不一致になるため
+    である。本テストは、内部モジュールへ一切触れずに検査を通せることを
+    公開シンボルだけで実演する。
+    """
+    upstream_profile = _FakeStreamProfile()
+    path = _saved_calibration_path(tmp_path, upstream_profile)
+
+    # ここから下は公開入口のシンボルだけを使う（下流の視点）。
+    result = world_frame_calibration.load_calibration(path)
+    signature = world_frame_calibration.to_signature(upstream_profile)
+    intrinsics = world_frame_calibration.to_intrinsics(upstream_profile)
+
+    assert isinstance(signature, world_frame_calibration.StreamSignature)
+    assert isinstance(intrinsics, world_frame_calibration.Intrinsics)
+
+    # 一致していれば何も起きない（例外を送出しないことが「有効」の意味）。
+    assert world_frame_calibration.check_compatibility(result, signature, intrinsics) is None
+
+
+def test_downstream_public_path_detects_a_changed_stream_configuration(
+    tmp_path: Path,
+) -> None:
+    """設定が変わっていれば、公開入口だけの経路でも
+    `PROFILE_MISMATCH` として検出される（要件 6.4 / A-9）。
+
+    一致側しか通さないテストは「常に成功する検査」を見逃す。不一致側を
+    必ず通し、失敗理由が分岐可能な値として届くことまで固定する。
+    """
+    saved_profile = _FakeStreamProfile()
+    path = _saved_calibration_path(tmp_path, saved_profile)
+
+    # 解像度だけを変えた「現在の入力元」。
+    current_profile = _FakeStreamProfile(width_px=1281)
+
+    result = world_frame_calibration.load_calibration(path)
+    signature = world_frame_calibration.to_signature(current_profile)
+    intrinsics = world_frame_calibration.to_intrinsics(current_profile)
+
+    with pytest.raises(world_frame_calibration.CalibrationFailure) as excinfo:
+        world_frame_calibration.check_compatibility(result, signature, intrinsics)
+
+    assert excinfo.value.reason is world_frame_calibration.FailureReason.PROFILE_MISMATCH

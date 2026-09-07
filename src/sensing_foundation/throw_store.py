@@ -224,6 +224,30 @@ def link_to_session(
     "frame_index_to"}` という**1つの名前空間キー**にのみ書き込む。`record.extra`
     に既に存在する他のキーはそのまま維持され、上書き・削除されない（要件 7.7、
     design.md「ThrowRecordStore」Implementation Notes）。
+
+    Args:
+        record: 対応付けを足す元のレコード（変更しない）。
+        session_id: 対応付け先のセッション記録の識別子。
+        frame_index_from: 範囲の先頭。**記録側の通し番号**（セッション記録の
+            索引行の `i`。記録時の `CaptureFrame.index`）であり、**索引ファイル
+            の行位置ではない**。両者はリングが古いフレームを追い出したときに
+            食い違う（タスク 4.7。design.md「SessionReader /『フレーム番号』が
+            指す3つの量」）。
+        frame_index_to: 範囲の末尾。`frame_index_from` と同じ量で、**両端を
+            含む閉区間**である（`frame_index_from == frame_index_to` は1枚を
+            指す）。
+
+    Returns:
+        `extra["sensing"]` を設定した新しい `ThrowRecord`。
+
+    保存した範囲からフレームを取り直すには
+    `SessionReader.iter_recorded_range(frame_index_from, frame_index_to)` を
+    使う。行位置を期待する `SessionReader.read()` へそのまま渡してはならない
+    ——追い出しが起きた記録では例外にならずに**別のフレームを返し得る**。
+
+    行位置ではなく記録側の通し番号を採るのは、要件 7.7 が求めるのが「後から
+    対応付けられる**識別子**」だからである。行位置はファイル内の位置であって
+    識別子ではなく、記録を切り詰めれば同じ値が別のフレームを指す。
     """
     new_extra = dict(record.extra)
     new_extra["sensing"] = {

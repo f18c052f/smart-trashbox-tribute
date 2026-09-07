@@ -45,7 +45,10 @@ tasks.md 6.1「観測可能な完了状態」）。
         `.coeffs` を持つ）
     device
         .get_info(rs.camera_info.usb_type_descriptor|serial_number|
-                   firmware_version|name) -> str   # 未対応なら例外を送出する
+                   firmware_version|name|product_line) -> str
+                                                  # 未対応なら例外を送出する
+                                                  # （`rs.camera_info` に列挙値
+                                                  #   自体が無いビルドもある）
         .first_depth_sensor() -> sensor
     sensor
         .get_depth_scale() -> float（メートル/カウント。mm 換算は本モジュールが行う）
@@ -162,6 +165,7 @@ docstring「API 形状」の防御方針と同じ理由）。
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -178,7 +182,7 @@ from sensing_foundation.types import (
     TimestampDomain,
 )
 
-__all__ = ["RealSenseSource", "probe_devices", "probe_sdk"]
+__all__ = ["DeviceIdentity", "RealSenseSource", "probe_devices", "probe_sdk"]
 
 #: `depth_frame.get_frame_timestamp_domain()` が返す列挙値の `.name`（小文字化
 #: 済み）から `TimestampDomain` への対応表。本モジュール docstring「API 形状」
@@ -197,6 +201,41 @@ _ZERO_COEFFS: tuple[float, float, float, float, float] = (0.0, 0.0, 0.0, 0.0, 0.
 #: 基本的なハードウェア特性であり、この分岐はテスト用の壊れたモック等に
 #: 対する防御に過ぎない（本モジュール docstring 参照）。
 _FALLBACK_DEPTH_SCALE_MM = 1.0
+
+
+@dataclass(frozen=True, slots=True)
+class DeviceIdentity:
+    """`pipeline.start()` が**実際に開いた**1個体の識別情報（タスク 6.3）。
+
+    「どの個体・どのファームウェアで撮った記録か」を後から追えるようにする
+    ための値であり、記録側（タスク 8.3）が `manifest.json` の `device` を
+    埋めるときの入手経路になる（要件 5.2）。
+
+    フィールド名は `rs.camera_info` の列挙値名をそのまま使う。`manifest.json`
+    の `device` は別語彙（`serial` / `firmware` / `usb_type` / `product_line`。
+    design.md「Data Models / `manifest.json`」）であり、**その対応付けは
+    記録側の責務**である——本モジュールは SDK から見えた事実だけを持つ。
+
+    Attributes:
+        name: 製品名（例 `"Intel RealSense D435"`）。
+        serial_number: 個体のシリアル番号。同じ機種を複数台つないだときに
+            個体を区別できる唯一の値である。
+        firmware_version: ファームウェアの版。
+        usb_type_descriptor: USB 接続種別の記述子（例 `"3.2"` / `"2.1"`）。
+            `usb2_warning` はこの値から導かれる（要件 1.4 / 1.5）。
+        product_line: 製品系列（例 `"D400"`）。
+
+    Invariants:
+        取得できなかった項目は `None`（欠測）であり、既定値や空文字で
+        埋めない（要件 3.5「取れないものは欠測として残す」）。全項目が
+        `None` になることもある（メタデータを一切公開しない SDK ビルド）。
+    """
+
+    name: str | None
+    serial_number: str | None
+    firmware_version: str | None
+    usb_type_descriptor: str | None
+    product_line: str | None
 
 
 def _import_pyrealsense2() -> Any:
@@ -233,6 +272,40 @@ def _device_info(rs: Any, device: Any, attr_name: str) -> str | None:
         return device.get_info(info_enum)
     except Exception:
         return None
+
+
+def _usb2_from_descriptor(usb_type_descriptor: str | None) -> bool | None:
+    """USB 接続種別の記述子から USB2 接続かどうかを判定する（要件 1.4, 1.5）。
+
+    Args:
+        usb_type_descriptor: `rs.camera_info.usb_type_descriptor` の値
+            （例 `"3.2"` / `"2.1"`）。取得できなかった場合は `None`。
+
+    Returns:
+        `True` なら USB2 接続、`False` なら USB2 ではない（USB3 など）、
+        `None` なら判定不能（欠測。要件 3.5——偽の `False` を返さない）。
+    """
+    if usb_type_descriptor is None:
+        return None
+    return str(usb_type_descriptor).startswith("2.")
+
+
+def _read_device_identity(rs: Any, device: Any) -> DeviceIdentity:
+    """1個体の識別情報を欠測許容で読み出す（`_device_info()` の方針をそのまま適用）。
+
+    `probe_devices()` は**接続中の全デバイスを列挙する**ための別経路であり、
+    `Doctor`（タスク 6.2）との間で `dict` の形が契約になっているため統合
+    しない。本関数は `RealSenseSource.start()` が `pipeline_profile.
+    get_device()` から得た**実際に開いた1個体**にだけ使う（tasks.md 6.3
+    「`probe_devices()` の流用で代替しない」）。
+    """
+    return DeviceIdentity(
+        name=_device_info(rs, device, "name"),
+        serial_number=_device_info(rs, device, "serial_number"),
+        firmware_version=_device_info(rs, device, "firmware_version"),
+        usb_type_descriptor=_device_info(rs, device, "usb_type_descriptor"),
+        product_line=_device_info(rs, device, "product_line"),
+    )
 
 
 def _map_domain(rs_domain: Any) -> TimestampDomain:
@@ -338,7 +411,8 @@ class RealSenseSource(BaseFrameSource):
     Postconditions:
         `start()` が成功した後、`profile.intrinsics` は実機から取得できた
         場合は非 `None`、取得できなかった場合は `None`（欠測。偽装しない）。
-        `global_time_enabled` / `usb2_warning` は `start()` 完了後に確定する。
+        `global_time_enabled` / `usb2_warning` / `device_identity` は
+        `start()` 完了後に確定する。
     Invariants:
         `drain_enabled` は `capture_config` の指定をそのまま尊重する
         （`SimulatedSource`/`RecordedSource` と異なり固定しない。モジュール
@@ -389,12 +463,14 @@ class RealSenseSource(BaseFrameSource):
         self._pipeline_profile: Any = None
         self._usb2_warning: bool | None = None
         self._global_time_enabled: bool = False
+        self._device_identity: DeviceIdentity | None = None
 
     # ------------------------------------------------------------------
     # 追加プロパティ（design.md「有効化できたかどうかをメタ情報とログに
-    # 残す」「USB2 の場合は警告として明示する」への対応。ログ・manifest
-    # への実際の配線は本タスクの範囲外——呼び出し側がこれらを読んでログ・
-    # manifest へ記録することを想定する）
+    # 残す」「USB2 の場合は警告として明示する」、および tasks.md 6.3
+    # 「開いたデバイスの識別情報を取り出せるようにする」への対応。
+    # ログ・manifest への実際の配線は本モジュールの責務ではない——
+    # 呼び出し側（`cli.py`、タスク 8.3）がこれらを読んで記録する）
     # ------------------------------------------------------------------
 
     @property
@@ -406,6 +482,23 @@ class RealSenseSource(BaseFrameSource):
         return self._global_time_enabled
 
     @property
+    def device_identity(self) -> DeviceIdentity | None:
+        """`start()` が**実際に開いた個体**の識別情報（タスク 6.3。要件 1.4, 5.2）。
+
+        `start()` 完了前は `None`（まだどのデバイスも開いていない）。
+        `start()` 完了後は非 `None` だが、個々の項目は欠測し得る
+        （`DeviceIdentity` の Invariants 参照）。**`stop()` 後も保持する**
+        ——記録のメタ情報は取得が終わってから書き出されることがあり、
+        そこで「どの個体で撮ったか」が消えていては用を成さない。
+
+        **接続中のデバイス一覧が欲しい場合は `probe_devices()` を使うこと。**
+        本プロパティは逆に「複数台つながっているとき、このパイプラインが
+        開いたのはどれか」だけを答える——記録のメタ情報に残すべきなのは
+        こちらである（要件 5.2）。
+        """
+        return self._device_identity
+
+    @property
     def usb2_warning(self) -> bool | None:
         """USB2 接続が検出されたか（要件 1.4, 1.5）。
 
@@ -415,6 +508,9 @@ class RealSenseSource(BaseFrameSource):
         `False`: USB2 ではないと判定できた（USB3 など）。
         `None`: `usb_type_descriptor` を取得できず判定不能（欠測。要件 3.5
         「取れないものは欠測として残す」——偽の `False` を返さない）。
+
+        値は `device_identity.usb_type_descriptor` から導かれる（同じ1回の
+        観測を出典にするため、記録に残る接続種別と本フラグが食い違わない）。
         """
         return self._usb2_warning
 
@@ -474,7 +570,11 @@ class RealSenseSource(BaseFrameSource):
         device = pipeline_profile.get_device()
         self._apply_queue_capacity(rs, device)
         self._global_time_enabled = self._try_enable_global_time(rs, device)
-        self._usb2_warning = self._detect_usb2(rs, device)
+        # 識別情報はここで1度だけ読み、USB2 警告もその値から導く
+        # （記録に残る接続種別と警告フラグが食い違わないようにするため）。
+        identity = _read_device_identity(rs, device)
+        self._device_identity = identity
+        self._usb2_warning = _usb2_from_descriptor(identity.usb_type_descriptor)
         self._profile = self._resolve_profile(rs, pipeline_profile, device)
 
     def stop(self) -> None:
@@ -491,7 +591,7 @@ class RealSenseSource(BaseFrameSource):
             self._pipeline = None
 
     # ------------------------------------------------------------------
-    # start() が使う補助（キュー容量・グローバル時刻・USB2・内部パラメータ）
+    # start() が使う補助（キュー容量・グローバル時刻・内部パラメータ）
     # ------------------------------------------------------------------
 
     def _apply_queue_capacity(self, rs: Any, device: Any) -> None:
@@ -520,13 +620,6 @@ class RealSenseSource(BaseFrameSource):
             return True
         except Exception:
             return False
-
-    def _detect_usb2(self, rs: Any, device: Any) -> bool | None:
-        """USB 接続種別が `"2."` で始まるかを判定する（要件 1.4, 1.5）。"""
-        usb_type = _device_info(rs, device, "usb_type_descriptor")
-        if usb_type is None:
-            return None
-        return str(usb_type).startswith("2.")
 
     def _resolve_profile(self, rs: Any, pipeline_profile: Any, device: Any) -> StreamProfile:
         """実機から得た内部パラメータ・Depth スケールで `StreamProfile` を再構築する。"""
