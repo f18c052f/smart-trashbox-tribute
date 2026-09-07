@@ -1530,47 +1530,74 @@ def build_drive_base(
 
 
 # ---------------------------------------------------------------------------
-# ゴミ箱固定アダプタ（タスク 3.3 / 要件 2.2, 6.1, 6.2, 6.5, 6.7, 6.9）
+# ゴミ箱固定アダプタ（タスク 3.3 / 要件 2.2, 6.1, 6.2, 6.5, 6.6, 6.7, 6.9, 6.10）
 #
-# ## 座はゴミ箱の底の**外**を抱える環である（決定 1）
+# ## ⚠️ 座ではなく、縁を掴むクランプである（決定 4b）
 #
-# ゴミ箱の底（上流 `bottom_outer_diameter_mm` ＝ φ180）は造形可能寸法を超える
-# ため中央部では受けられない。⚠️ **底を受けるのはハブではなくアダプタ断片で
-# あり**、断片は中央部とアームの上に載って外側へ張り出す。この構造上の帰結が
-# 「アダプタが円環部品である」ことの理由であり、分割数を上流の円環の導出
-# （`joints.segment_counts()`）から採る理由でもある（要件 2.1）。
+# ⚠️ **ゴミ箱の底は抜かれる。** 上流 `catch-mechanism` の決定 3（改訂版）が
+# `bottom_modification = "bottom_removed"` を許可し、缶の内側は要件 7 の段積み
+# 土台が使う。したがって⚠️ **底を下から支える座はもう作れない**——アダプタは、
+# 切り取りで残った縁と円錐台の側壁を掴むクランプになる。
+#
+# 切り取り径は上流の**平面部径**を超えない（要件 6.10）。外径との差として残る
+# 環（片側 `lip_width_mm`）がそのまま掴み代である。断片が中央部とアームの上に
+# 載って外側へ張り出すこと、点数を上流の円環の導出（`joints.segment_counts()`）
+# から採ることは変わらない（要件 2.1）。
 #
 # 断面（半径方向の断面。z は接地面からの高さ）:
 #
-#     立ち上がり  ┃ ← 受け面は円錐台の側面に沿う（要件 6.2）
-#      (rise)     ┃╲
-#     ────────────┫ ╲───────── 底の平面部が載る面（floor_top_height_mm）
-#       床 (floor)┃  逃げ      ⚠️ 角の丸みは逃がす（bottom_flat_diameter_mm）
-#     ────────────┻──────────  中央部とアームの上面
-#       裾 (skirt)┃            ⚠️ 中央部の外縁を掴み、半径方向のボルトで留める
+#         缶の側壁 ╲          ┃╲ ← 受け面は円錐台の側面に沿う（要件 6.2）
+#                   ╲         ┃ ╲  保持の締結は**側壁**を貫く（縁ではない）
+#             縁 ────╂────────┫  ╲
+#     ────────────╂──┸────────┫ ← 掴み面（floor_top_height_mm）
+#       床 (floor) ↑切り取り径 ↑外径   ＝ 缶の底が載っていた高さ
+#     ────────────┻───────────┛  ⚠️ 中央は開いている（段が通る）
+#       裾 (skirt)┃               ⚠️ 中央部の外縁を掴み、半径方向のボルトで留める
 #
 # ## ⚠️ 受け面を円筒にしない（要件 6.2）
 #
-# 底は円錐台であり、上流 `taper_deg` の勾配で上へ広がる。⚠️ **円筒の座は底の
-# 角だけで当たり、荷重が線に集まる。** 受け面は同じ勾配の円錐とし、隙間
+# 側壁は円錐台であり、上流 `taper_deg` の勾配で上へ広がる。⚠️ **円筒の受け面は
+# 底の角だけで当たり、荷重が線に集まる。** 受け面は同じ勾配の円錐とし、隙間
 # （`adapter.seat_clearance_mm`）はどの高さでも同じ量になる。
 #
-# ## ⚠️ 上方向の拘束はテーパーが与える（要件 6.5）
+# ## ⚠️ 拘束の向きを取り違えない（要件 6.5, 6.10）
 #
-# 保持の締結は**半径方向**である（`joints` の `print_normal_axis == "x"`。
-# 座面（水平面）へ鉛直に留めると接合面の法線が積層方向と一致する。要件 2.8）。
-# ⚠️ **半径方向の締結が上方向の拘束になるのは、受け面が円錐だからである**
-# ——ゴミ箱が持ち上がるにはクランプの位置で径が太くなる側へ動く必要があり、
-# くさびとして効く。円筒の座ではこれが成立しない。
+# - **水平方向**: 円錐の受け面が全周で囲う
+# - **落ちる向き**: 縁の下へ入った掴み面（床の上面）が受ける。⚠️ **底が無い
+#   のだから、ここが欠ければ缶は受け面が噛むまで沈む**（隙間 ÷ 勾配 ＝ 十数 mm）
+# - **持ち上げる向き**: 側壁を貫く保持のボルトである（`joints` の
+#   `adapter__trash_can`、`print_normal_axis == "x"`。座面（水平面）へ鉛直に
+#   留めると接合面の法線が積層方向と一致する。要件 2.8）。⚠️ **テーパーを
+#   くさびとして数えない**——缶が持ち上がる向きでは、同じ高さにある缶の径が
+#   細くなる側であり受け面は緩む。くさびとして噛むのは沈む向きだけである
 #
-# ## ⚠️ 開口を狭めない（要件 6.7）
+# ## ⚠️ 据え付けの順序（要件 6.6）
 #
-# アダプタは底の外周を**外から**抱えるため、ゴミ箱が提供する通過
-# （底の内面から上へ広がる円錐）の内側には材料が1つも無い。
-# 受け口（ワイドリム）はゴミ箱の上端へ被さる部品であり、座はそこまで登らない。
-# ⚠️ **`opening_inner_diameter_mm` は座の内径の下限にならない**（design.md
-# `#### Shapes` の不変条件がそう明記している）。座はφ180 の底を受けるもので
-# あり、外径（φ188）ですら開口（φ210）より小さい。
+# 掴み面は縁の**下**にあるため、⚠️ **缶を上から落とし込んで留めることはできない。**
+# 缶を置いてから断片を**半径方向に**差し込み、半径方向のボルトで留める。断片が
+# 占める角度は 180 度以下であり、二等分線の向きへ動かすとき断片のどの点も軸から
+# 遠ざかる（`|R e^{iθ} + d| >= R` が `|θ| <= 90` 度で成り立つ）ため、座った位置に
+# 隙間があれば経路の全域に隙間がある。⚠️ **実形状での確認は
+# `test_chassis_invariants.py` が持つ**——ここにあるのは論証だけである。
+#
+# ## ⚠️ 通過を狭めない（要件 6.7）
+#
+# 通過の基準は**切り取り開口**（`bottom_flat_diameter_mm`）から `taper_deg` で
+# 広がる円錐である。⚠️ **底の内面ではない**——底はもう無い。アダプタは縁の下と
+# 側壁の外にしか材料を持たず、この円錐の内側には1つも入らない。中央は段
+# （タスク 3.4）が通れるよう開いており、⚠️ 開口より下では床が環として残るため
+# 通過は裾の内径 `skirt_inner_radius_mm` に絞られる——⚠️ **段の柱はその内側
+# （＝中央部の真上）から立ち上げる。** 受け口（ワイドリム）はゴミ箱の上端へ
+# 被さる部品であり、クランプはそこまで登らない。
+# ⚠️ **`opening_inner_diameter_mm` は内径の下限にならない**（design.md
+# `#### Shapes` の不変条件がそう明記している）。外径（φ188）ですら開口（φ210）
+# より小さい。
+#
+# ## ⚠️ 切断は不可逆である（要件 6.11）
+#
+# 段の寸法が確定し、造形可能性と干渉の検査を通るまで切らない。⚠️ **本モジュール
+# が作るのは「切ったあと」の形であり、形状が生成できることは切断の許可では
+# ない**（缶は再調達できるが、その利点は失敗1回につき一度しか使えない）。
 #
 # ## ⚠️ 保持の締結にインサートの座を作らない
 #
@@ -1603,11 +1630,14 @@ class AdapterGeometry:
         seat_top_radius_mm: 受け面の上端の半径。⚠️ 下端と等しくない。
         seat_slope: 受け面の勾配（＝ `tan(taper_deg)`）。
         taper_deg: 上流のテーパー角（度）。
-        contact_radius_mm: 底の平面部の半径（ここまでが接触する範囲）。
-        relief_depth_mm: 角の丸みの逃げの深さ（＝ `seat_clearance_mm`）。
-        relief_bottom_height_mm: 逃げの底の高さ（mm）。
+        cut_radius_mm: 底の切り取り径の半分（＝上流の平面部径の半分。要件 6.10）。
+            ⚠️ **通過の基準でもある**——ここから `seat_slope` で広がる円錐の
+            内側には材料が1つも無い。
+        lip_outer_radius_mm: 切り取りで残る縁の外半径（＝底の外半径）。
+        lip_width_mm: 残る縁の幅（mm、片側）。⚠️ **これが掴み代である。**
         floor_bottom_height_mm: 床の下面（＝中央部とアームの上面）。
-        floor_top_height_mm: 床の上面（＝ゴミ箱の底が載る高さ）。
+        floor_top_height_mm: 床の上面。⚠️ **縁を下から掴む面であり、
+            ゴミ箱の底が載る高さである。**
         floor_thickness_mm: 床の厚さ（＝ `wall_thickness_mm`）。
         rise_height_mm: 立ち上がりの高さ（mm）。
         rise_top_height_mm: 立ち上がりの上端の高さ（mm）。
@@ -1626,7 +1656,6 @@ class AdapterGeometry:
         retention_bolt_height_mm: 保持の締結の軸の高さ（mm）。
         retention_spotface_depth_mm: 保持の座ぐりの深さ（mm）。
         retention_bolt_angles_deg: 保持の締結の角度（度）。円周へ等配置する。
-        can_clear_radius_mm: ゴミ箱が底で提供する通過の半径（要件 6.7）。
         can_height_mm: ゴミ箱の全高（mm、上流）。
         arm_angles_deg: アームの角度（度）。⚠️ 裾はこれを避ける。
         arm_void_half_width_mm: 裾がアームへ空ける逃げの半幅（mm）。
@@ -1642,9 +1671,9 @@ class AdapterGeometry:
     seat_top_radius_mm: float
     seat_slope: float
     taper_deg: float
-    contact_radius_mm: float
-    relief_depth_mm: float
-    relief_bottom_height_mm: float
+    cut_radius_mm: float
+    lip_outer_radius_mm: float
+    lip_width_mm: float
     floor_bottom_height_mm: float
     floor_top_height_mm: float
     floor_thickness_mm: float
@@ -1665,7 +1694,6 @@ class AdapterGeometry:
     retention_bolt_height_mm: float
     retention_spotface_depth_mm: float
     retention_bolt_angles_deg: tuple[float, ...]
-    can_clear_radius_mm: float
     can_height_mm: float
     arm_angles_deg: tuple[float, ...]
     arm_void_half_width_mm: float
@@ -1772,10 +1800,10 @@ def adapter_geometry(
         アダプタの幾何。
 
     Raises:
-        GeometryError: 座の環が立ち上がり／裾に載らない場合、床が底の平面部へ
-            届かない場合、座ぐりが立ち上がりを貫く場合、保持の締結がゴミ箱の
-            底の載る面より下へ来る場合、または取付の座がアームを避けた空きの
-            弧へ並ばない場合。⚠️ メッセージには**項目名と値**を載せる。
+        GeometryError: 底を抜いた後に縁が残らない場合、座の環が立ち上がり／裾に
+            載らない場合、床が縁の下へ届かない場合、座ぐりが立ち上がりを貫く
+            場合、保持の締結がゴミ箱の縁の載る面より下へ来る場合、または取付の
+            座がアームを避けた空きの弧へ並ばない場合。⚠️ メッセージには**項目名と値**を載せる。
         catch_mechanism.GeometryError: 円環の分割数が求まらない場合
             （⚠️ **包み直さない**）。
         catch_mechanism.ParameterError: 上流の `check_joint` が当たり面を
@@ -1813,20 +1841,26 @@ def adapter_geometry(
     skirt_outer_radius_mm = skirt_inner_radius_mm + adapter.wall_thickness_mm
     skirt_bottom_height_mm = drive_base.underside_height_mm
 
-    contact_radius_mm = can.bottom_flat_diameter_mm / 2.0
-    if contact_radius_mm <= skirt_outer_radius_mm:
+    # ⚠️ **底は平面部径まで抜かれる**（要件 6.10 / 決定 4b）。残る縁が掴み代で
+    # あり、⚠️ **切り取り径を本 Spec 側の寸法パラメータとして持たない**——
+    # 上限は上流の平面部径そのものである。
+    cut_radius_mm = can.bottom_flat_diameter_mm / 2.0
+    lip_outer_radius_mm = can.bottom_outer_diameter_mm / 2.0
+    lip_width_mm = lip_outer_radius_mm - cut_radius_mm
+    if lip_width_mm <= 0.0:
         raise GeometryError(
-            f"ゴミ箱の底の平面部の半径 {contact_radius_mm!r}mm が裾の外側 "
-            f"{skirt_outer_radius_mm!r}mm 以下であり、床が平面部へ届かない"
+            f"底を平面部径まで抜くと縁が残らない（座面の幅 {lip_width_mm!r}mm）"
+            f"——bottom_flat_diameter_mm={can.bottom_flat_diameter_mm!r} が "
+            f"bottom_outer_diameter_mm={can.bottom_outer_diameter_mm!r} と"
+            "等しく、⚠️ 缶の重量を受ける座面が消える（要件 6.10）。"
+            "⚠️ 縁は持ち上げ方向を止めない。上方向の拘束は要件 6.5 の締結が担う。"
+        )
+    if cut_radius_mm <= skirt_outer_radius_mm:
+        raise GeometryError(
+            f"底の切り取り径の半径 {cut_radius_mm!r}mm が裾の外側 "
+            f"{skirt_outer_radius_mm!r}mm 以下であり、床が縁の下へ届かない"
             f"（bottom_flat_diameter_mm={can.bottom_flat_diameter_mm!r}、"
             f"hub_outer_diameter_mm={base.hub_outer_diameter_mm!r}）。"
-        )
-    if seat_bottom_radius_mm <= contact_radius_mm:
-        raise GeometryError(
-            f"受け面の下端の半径 {seat_bottom_radius_mm!r}mm が底の平面部の半径 "
-            f"{contact_radius_mm!r}mm 以下であり、角の丸みの逃げが取れない"
-            f"（bottom_outer_diameter_mm={can.bottom_outer_diameter_mm!r}、"
-            f"bottom_flat_diameter_mm={can.bottom_flat_diameter_mm!r}）。"
         )
 
     # ⚠️ 座の環が立ち上がり／裾に載りきることが、記録された当たり面が実形状で
@@ -1960,9 +1994,9 @@ def adapter_geometry(
         seat_top_radius_mm=seat_top_radius_mm,
         seat_slope=seat_slope,
         taper_deg=can.taper_deg,
-        contact_radius_mm=contact_radius_mm,
-        relief_depth_mm=adapter.seat_clearance_mm,
-        relief_bottom_height_mm=floor_top_height_mm - adapter.seat_clearance_mm,
+        cut_radius_mm=cut_radius_mm,
+        lip_outer_radius_mm=lip_outer_radius_mm,
+        lip_width_mm=lip_width_mm,
         floor_bottom_height_mm=floor_bottom_height_mm,
         floor_top_height_mm=floor_top_height_mm,
         floor_thickness_mm=adapter.wall_thickness_mm,
@@ -1983,9 +2017,6 @@ def adapter_geometry(
         retention_bolt_height_mm=retention_bolt_height_mm,
         retention_spotface_depth_mm=retention_spotface_depth_mm,
         retention_bolt_angles_deg=retention_bolt_angles_deg,
-        can_clear_radius_mm=(
-            can.bottom_outer_diameter_mm / 2.0 - can.bottom_thickness_mm
-        ),
         can_height_mm=can.height_mm,
         arm_angles_deg=layout.wheel_angles_deg,
         arm_void_half_width_mm=arm_void_half_width_mm,
@@ -2061,7 +2092,8 @@ def _build_adapter_segment(geometry: AdapterGeometry, index: int) -> Any:
             radius_mm, z_max - z_min, align=None
         )
 
-    # 床（ゴミ箱の底の平面部を受ける面）と、その内側を抜いた環。
+    # 床（⚠️ **上面が縁を下から掴む面である**）と、その内側を抜いた環。
+    # ⚠️ 中央を抜くのは段が通る道を残すためでもある（要件 6.7 / 7.10）。
     body = sector(
         geometry.outer_radius_mm,
         (geometry.floor_bottom_height_mm, geometry.floor_top_height_mm),
@@ -2116,17 +2148,9 @@ def _build_adapter_segment(geometry: AdapterGeometry, index: int) -> Any:
         - seat_tool
     )
 
-    # 角の丸みの逃げ（⚠️ **接触するのは底の平面部だけである**）。
-    body -= ring_tool(
-        geometry.seat_bottom_radius_mm,
-        (geometry.relief_bottom_height_mm, geometry.floor_top_height_mm),
-    ) - ring_tool(
-        geometry.contact_radius_mm,
-        (
-            geometry.relief_bottom_height_mm - overshoot_mm,
-            geometry.floor_top_height_mm + overshoot_mm,
-        ),
-    )
+    # ⚠️ **床の上面には逃げを作らない**（決定 4b）。底が残っていた頃は角の丸みを
+    # 逃がす環を落としていたが、⚠️ **底を抜いた後はそこが縁そのものである**
+    # ——落とせば掴み面が縁の帯から消え、缶は受け面が噛むまで沈む。
 
     # アームの逃げ（⚠️ 裾だけを削る。床はアームの上に載る）。
     for angle_deg in geometry.arm_angles_deg:

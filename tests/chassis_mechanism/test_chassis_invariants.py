@@ -1137,11 +1137,19 @@ def test_each_drive_base_fragment_fits_the_build_volume(
 
 
 # ---------------------------------------------------------------------------
-# 3. ゴミ箱固定アダプタ（タスク 3.3 / 要件 2.2, 6.1, 6.2, 6.5, 6.7）
+# 3. ゴミ箱固定アダプタ（タスク 3.3 / 要件 2.2, 6.1, 6.2, 6.5, 6.6, 6.7, 6.10）
 #
-# ⚠️ **本節の中心は3つである。**
+# ⚠️ **アダプタは座ではなくクランプである**（design.md 決定 4b）。ゴミ箱の底は
+# 平面部径（Ø170）まで抜かれ、⚠️ **下から支える平面はもう無い**。残るのは外径
+# との差ぶんの縁（片側 5mm）であり、クランプはその**下へ入って掴む**。
+#
+# ⚠️ **本節の中心は5つである。**
 #   - 受け面が**円錐台に沿う**こと（要件 6.2）。⚠️ 円筒断面を持たない
-#   - ゴミ箱が提供する通過径を**狭めない**こと、受け口へ届かないこと（要件 6.7）
+#   - 切り取り径が平面部径を超えず、⚠️ **縁の下に掴み面が実在する**こと（要件 6.10）
+#   - ゴミ箱が提供する通過を**狭めない**こと（要件 6.7）。⚠️ **基準は変わった**
+#     ——底の内面ではなく、**底を抜いた開口から `taper_deg` で広がる円錐**であり、
+#     中央は段（タスク 3.4）が通れるよう開いている
+#   - 缶を据えたまま断片を差し込めること（要件 6.6 の着脱手順が成立する条件）
 #   - `joints` が記録した当たり面が、⚠️ **実形状の座で実現している**こと
 #     （design.md `#### Joints` Risks。アダプタの2家族は本タスクまで未計測だった）
 # ---------------------------------------------------------------------------
@@ -1163,11 +1171,17 @@ def adapter_parts(adapter: Any, parts: dict[str, Any]) -> tuple[Any, ...]:
 
 
 def _full_cylinder(radius_mm: float, z_range: tuple[float, float]) -> Any:
-    """機体の軸に同軸な円筒プローブ（`align=None` で軸を原点に置く）。"""
+    """機体の軸に同軸な円筒プローブ。
+
+    ⚠️ **`align=None` は軸を機体中心に置き、下端を原点へ置く**（中央ではない。
+    `shapes._build_adapter_segment` の `ring_tool` と同じ規約）。したがって
+    位置は `z_range[0]` である——⚠️ **中点を渡すと筒は上半分ぶんずれ、
+    プローブが隣の帯を掴む。**
+    """
     from build123d import Cylinder, Location
 
     z_min, z_max = z_range
-    return Location((0.0, 0.0, (z_min + z_max) / 2.0)) * Cylinder(
+    return Location((0.0, 0.0, z_min)) * Cylinder(
         radius_mm, z_max - z_min, align=None
     )
 
@@ -1183,6 +1197,39 @@ def _cone_probe(
     return Location((0.0, 0.0, z_min)) * Cone(
         bottom_radius_mm, bottom_radius_mm + height_mm * slope, height_mm, align=None
     )
+
+
+def _trash_can_model(params: Any, adapter: Any, *, top_mm: float) -> Any:
+    """⚠️ **底を抜いたゴミ箱の代用形状**（アダプタの高さ範囲だけ）。
+
+    ⚠️ **アダプタ側の導出値から作らない**——上流の採寸値（底の外径・平面部径・
+    テーパー角・肉厚）と、缶の底が載る高さだけで立てる。使うのは
+    「缶を据えたまま断片を差し込めるか」（要件 6.6）を実形状で見るためである。
+
+    - **側壁**: 底の外径から `taper_deg` で広がる円錐の殻（肉厚は
+      `bottom_thickness_mm`）
+    - **縁**: 切り取り径から外径までの環。⚠️ **実物の縁の下面は角の丸みで上へ
+      反っている**が、ここでは平らな環として置く——⚠️ 実物より下へ張り出す
+      置き方であり、干渉の判定は保守側に倒れる
+    """
+    from build123d import Location
+
+    can = params.trash_can
+    floor_mm = adapter.floor_top_height_mm
+    outer_radius_mm = can.bottom_outer_diameter_mm / 2.0
+    wall = _cone_probe(
+        outer_radius_mm, adapter.seat_slope, (floor_mm, top_mm)
+    ) - _cone_probe(
+        outer_radius_mm - can.bottom_thickness_mm,
+        adapter.seat_slope,
+        (floor_mm - _EPS_MM, top_mm + _EPS_MM),
+    )
+    lip_range = (floor_mm, floor_mm + can.bottom_thickness_mm)
+    lip = _full_cylinder(outer_radius_mm, lip_range) - _full_cylinder(
+        can.bottom_flat_diameter_mm / 2.0,
+        (lip_range[0] - _EPS_MM, lip_range[1] + _EPS_MM),
+    )
+    return wall + lip
 
 
 def _seat_radius_mm(adapter: Any, height_mm: float) -> float:
@@ -1305,8 +1352,15 @@ def test_the_adapter_seat_has_no_cylindrical_cross_section(
 
     # 面の型でも同じことを言う: 受け面は円錐であり、⚠️ **受け面の帯に軸対称の
     # 円筒面が1つも無い**（外周面 φ188 と裾の面はこの帯の外にある）。
-    # ⚠️ **見るのはゴミ箱の底が載る高さより上だけである**——その下は角の丸みの
-    # 逃げ（ゴミ箱と触れない）であり、受け面ではない。
+    # ⚠️ **見るのはゴミ箱の底が載る高さより上だけである**——受け面とは
+    # 「掴み面より上で缶の側壁と向き合う面」のことであり、その下にあるのは
+    # 縁を下から受ける床と裾（缶の側壁と向き合わない）だからである。
+    # ⚠️ **かつての理由（角の丸みの逃げを除く）ではない**——逃げは本タスクで
+    # 廃止した（決定 4b）。現在この帯の内側で掴み面より下に落ちる面は
+    # **1つも無い**（帯にあるのは受け面の円錐と、軸が半径方向の保持の座ぐりの
+    # 円筒だけである）。⚠️ **それでも高さで区切る**: 床側に同じ半径の面が
+    # 現れる形（縁の下の溝や丸み）へ変えたとき、それを受け面として判定して
+    # しまわないためである。
     band = (adapter.seat_bottom_radius_mm - _EPS_MM, adapter.seat_top_radius_mm + _EPS_MM)
     cones = 0
     for solid in adapter_parts:
@@ -1402,37 +1456,294 @@ def test_the_seat_confines_the_trash_can_all_around_at_the_designed_clearance(
 def test_the_adapter_never_narrows_the_passage_the_trash_can_offers(
     shipped: Any, adapter: Any, adapter_parts: tuple[Any, ...]
 ) -> None:
-    """⚠️ **アダプタはゴミ箱が提供する通過径を狭めない**（要件 6.7）。
+    """⚠️ **アダプタはゴミ箱が提供する通過を狭めない**（要件 6.7）。
 
-    ゴミ箱の内側の通過は、底の内面（`bottom_outer_diameter_mm / 2 -
-    bottom_thickness_mm`）から上へテーパーで広がる円錐である。⚠️ **その円錐の
-    内側にアダプタの材料が1mm^3 も無い**ことが、開口を狭めないことの形の側の
-    意味である——アダプタは底の外周を外から抱えるのであって、内側へは入らない。
+    ⚠️ **基準は改訂で変わった。** 底が残っていた頃の通過は「底の内面（Ø177）
+    から上へ広がる円錐」であったが、底は抜かれた（決定 4b）。⚠️ **いまの通過は
+    「切り取り径 Ø170（＝上流の平面部径）から `taper_deg` で広がる円錐」であり、
+    開口の平面（＝縁が載る高さ）から始まる**——基準が移った理由は
+    「厳しくするため」ではなく、⚠️ **そこが**いま**ゴミ箱が提供している通過
+    そのものだから**である。
 
-    ⚠️ **`trash_can.opening_inner_diameter_mm` は座の内径の下限ではない**
+    ⚠️ **この置き換えで、禁止領域そのものは小さくなった（＝主張は弱くなった）。**
+    `85 + (z - 78) * slope` は `88.5 + (z - 79.5) * slope` より、どの高さでも
+    半径が **3.372mm 小さい**——上端を含めどの高さでも旧い禁止円錐の内側にある。
+    新旧の差として増えるのは z ∈ [78, 79.5] の帯だけであり、⚠️ **そこに
+    アダプタは `r < 85` の材料をもともと持たない**（床の上面は z = 78 で終わる）。
+    ⚠️ **「開口の基準が Ø210 から Ø170 になったから厳しくなった」と読み替えない**
+    ——狭い禁止領域は弱い主張である。
+
+    ⚠️ **締まりを与えているのは下半分の反証側である。** 受け面のすぐ内側
+    （`_seat_radius_mm(adapter, floor_top) + _EPS_MM`）へ寄せた円錐は必ず当たる
+    ——⚠️ **受け面が 0.05mm でも内側へ動けば落ちる**という側が本体であり、
+    それは改訂の前後で変わっていない。
+
+    ⚠️ **その円錐の内側にアダプタの材料が1mm^3 も無い**ことが、通過を狭めない
+    ことの形の側の意味である——アダプタは縁の**下**から掴み、側壁を**外から**
+    抱えるのであって、開口の内側へは入らない。段（タスク 3.4）はこの円錐を
+    通って缶の内側へ立ち上がる。
+
+    ⚠️ **`trash_can.opening_inner_diameter_mm` は受け面の内径の下限ではない**
     （design.md `#### Shapes` の不変条件がそう明記している。本ファイル末尾の
     `test_the_opening_inner_diameter_is_not_a_bound_on_the_seat_bore` を参照）。
-    座は底（φ180）を受けるものであり、開口（φ210）はゴミ箱の上端にある。
     """
     params, _ = shipped
     can = params.trash_can
-    interior_floor_mm = adapter.floor_top_height_mm + can.bottom_thickness_mm
+    opening_mm = adapter.floor_top_height_mm
+    assert adapter.cut_radius_mm == pytest.approx(can.bottom_flat_diameter_mm / 2.0)
     passage = _cone_probe(
-        adapter.can_clear_radius_mm,
+        adapter.cut_radius_mm,
         adapter.seat_slope,
-        (interior_floor_mm, adapter.rise_top_height_mm + _PROBE_MM),
+        (opening_mm, adapter.rise_top_height_mm + _PROBE_MM),
     )
     for index, solid in enumerate(adapter_parts, start=1):
         assert _volume(solid & passage) == 0.0, index
 
-    # ⚠️ 空振りでないこと: 通過の円錐は座の帯のすぐ内側にあり、受け面を
+    # ⚠️ 空振りでないこと: 通過の円錐は受け面の帯のすぐ内側にあり、受け面を
     # わずかに内側へ寄せれば必ず当たる。
     intruding = _cone_probe(
-        _seat_radius_mm(adapter, interior_floor_mm) + _EPS_MM,
+        _seat_radius_mm(adapter, opening_mm) + _EPS_MM,
         adapter.seat_slope,
-        (interior_floor_mm, adapter.rise_top_height_mm),
+        (opening_mm, adapter.rise_top_height_mm),
     )
     assert sum(_volume(solid & intruding) for solid in adapter_parts) > 0.0
+
+
+@requires_cad
+def test_the_grip_face_reaches_under_the_lip_the_cut_leaves(
+    shipped: Any, adapter: Any, adapter_parts: tuple[Any, ...]
+) -> None:
+    """⚠️ **掴み面が縁の下に実在する**（要件 6.10 / 決定 4b）。
+
+    底を抜いた後に残るのは、切り取り径（＝平面部径 Ø170）から外径 Ø180 までの
+    縁だけである。⚠️ **アダプタはその下へ入って掴む**——ここが欠ければ缶は
+    受け面のテーパーが噛むまで沈む（隙間 1mm ÷ 勾配 0.085 ＝ 十数 mm）。
+
+    見るのは3つである:
+
+    - 縁の帯 `[cut_radius, lip_outer_radius]` の**すぐ下**に、⚠️ **全周で**材料が
+      あること。⚠️ **角度を刻んで突くのではなく環の体積で測る**——欠けた扇が
+      1つでもあれば体積が足りなくなり、⚠️ 継ぎ目の抜けも同時に捉えられる
+    - その材料の上面が、缶の底が載る高さの**平面**であること（面積で見る）
+    - 同じ帯の**すぐ上**には材料が無いこと（そこは縁が占める）
+    """
+    grip_mm = adapter.floor_top_height_mm
+    below = (grip_mm - _SLAB_MM, grip_mm)
+    above = (grip_mm, grip_mm + _SLAB_MM)
+
+    def _lip_ring(z_range: tuple[float, float]) -> Any:
+        return _full_cylinder(adapter.lip_outer_radius_mm, z_range) - _full_cylinder(
+            adapter.cut_radius_mm, (z_range[0] - _EPS_MM, z_range[1] + _EPS_MM)
+        )
+
+    expected_mm3 = (
+        math.pi
+        * (adapter.lip_outer_radius_mm**2 - adapter.cut_radius_mm**2)
+        * _SLAB_MM
+    )
+    measured_mm3 = sum(_volume(solid & _lip_ring(below)) for solid in adapter_parts)
+    assert measured_mm3 == pytest.approx(expected_mm3, rel=1e-6)
+    assert sum(_volume(solid & _lip_ring(above)) for solid in adapter_parts) == 0.0
+
+    # 掴み面は平面であり、裾の内側から受け面の立ち上がりまで続いて縁の帯を
+    # 丸ごと覆う。⚠️ **ただし縁がこの面に載るのは「面」ではなく「円」である**
+    # ——平面部径ちょうどで切る以上、残る縁の下面は角の丸みそのものであり、
+    # 切り口（r = cut_radius_mm）で平面へ接するだけで、外側へ行くほど浮く。
+    # ⚠️ **面で受けていると読み替えない。** 接触円の線荷重は缶 228g だけなら
+    # 0.004N/mm、内容物を含めて 1kg を見ても 0.02N/mm 程度であり、PP が局所的に
+    # 馴染んで幅を持つ範囲である（要件 6.10 の座面としてはこれで足りる）。
+    # ⚠️ 面で当てるには角の丸み半径が要るが、上流 `TrashCanMeasurements` に
+    # その項目は無い——⚠️ **発明しない**（要件 1.1 / 1.3）。
+    face_area_mm2 = sum(
+        float(face.area)
+        for solid in adapter_parts
+        for face in _planar_faces_on_plane(solid, (0.0, 0.0, 1.0), grip_mm)
+    )
+    assert face_area_mm2 == pytest.approx(
+        math.pi
+        * (adapter.seat_bottom_radius_mm**2 - adapter.skirt_inner_radius_mm**2),
+        rel=1e-6,
+    )
+
+
+@requires_cad
+def test_a_grip_face_that_stops_short_of_the_lip_is_caught(
+    shipped: Any, adapter: Any
+) -> None:
+    """⚠️ **上の検査が空振りでない**——縁へ届かない掴み面は捉えられる。
+
+    掴み面を 2mm 下げた幾何を**測るためだけに**構築する。缶の縁はもとの高さに
+    あるため、⚠️ **その下の環は空になる**——検査は「面がそこにある」ことを
+    本当に見ている。
+    """
+    import dataclasses
+
+    from chassis_mechanism.shapes import _build_adapter_segment
+
+    _, _ = shipped
+    drop_mm = 2.0
+    sunken = dataclasses.replace(
+        adapter, floor_top_height_mm=adapter.floor_top_height_mm - drop_mm
+    )
+    solids = tuple(
+        _build_adapter_segment(sunken, index) for index in range(sunken.segment_count)
+    )
+    ring = _full_cylinder(
+        adapter.lip_outer_radius_mm,
+        (adapter.floor_top_height_mm - _SLAB_MM, adapter.floor_top_height_mm),
+    ) - _full_cylinder(
+        adapter.cut_radius_mm,
+        (
+            adapter.floor_top_height_mm - _SLAB_MM - _EPS_MM,
+            adapter.floor_top_height_mm + _EPS_MM,
+        ),
+    )
+    assert sum(_volume(solid & ring) for solid in solids) == 0.0
+
+
+@requires_cad
+def test_the_centre_stays_open_for_the_deck_stack_that_rises_inside_the_can(
+    shipped: Any, adapter: Any, adapter_parts: tuple[Any, ...]
+) -> None:
+    """⚠️ **中央は開いている**（要件 6.7 / 7.10 の前提）。
+
+    底を抜いた意味は、缶の内側を段積み土台の空間として使えることである
+    （決定 4b）。⚠️ **アダプタが中央に蓋をしていればその意味が消える。**
+
+    ⚠️ **開いている径は高さで2段に分かれる**——ここを曖昧にしない:
+
+    - 缶の底が載る高さ**より上**では、通過は切り取り径 Ø170 から広がる円錐で
+      ある（`test_the_adapter_never_narrows_the_passage_the_trash_can_offers`）
+    - **その下**（駆動ベースの上面から缶の底まで）は、アダプタの床が環として
+      残るため通過は裾の内径 `skirt_inner_radius_mm` に絞られる。
+      ⚠️ **段の柱はこの径の内側（＝中央部の真上）から立ち上げる**——
+      タスク 3.4 が読む拘束であり、ここで数として固定する
+    """
+    _, _ = shipped
+    column = _full_cylinder(
+        adapter.skirt_inner_radius_mm,
+        (adapter.skirt_bottom_height_mm - _PROBE_MM, adapter.rise_top_height_mm + _PROBE_MM),
+    )
+    for index, solid in enumerate(adapter_parts, start=1):
+        assert _volume(solid & column) == 0.0, index
+
+    # ⚠️ 空振りでないこと: わずかに太い柱は裾へ当たる。
+    thicker = _full_cylinder(
+        adapter.skirt_inner_radius_mm + _EPS_MM,
+        (adapter.skirt_bottom_height_mm, adapter.floor_bottom_height_mm),
+    )
+    assert sum(_volume(solid & thicker) for solid in adapter_parts) > 0.0
+    # 2段の関係（⚠️ 下の段のほうが細い。段の柱はそちらに従う）。
+    assert adapter.skirt_inner_radius_mm < adapter.cut_radius_mm
+
+
+@requires_cad
+def test_a_segment_can_be_installed_with_the_trash_can_already_in_place(
+    shipped: Any, adapter: Any, adapter_parts: tuple[Any, ...], parts: dict[str, Any]
+) -> None:
+    """⚠️ **缶を据えたまま断片を差し込める**（要件 6.6 / design.md 組立手順 16）。
+
+    掴み面は縁の**下**にあるため、⚠️ **缶を上から落とし込んでも掴み面は通れない**
+    ——据え付けの順序は「缶を置き、断片を半径方向に差し込んで留める」である。
+
+    断片は円環の一部であり、⚠️ **占める角度が 180 度以下であれば、二等分線の
+    向きへ引き抜くとき断片のどの点も軸から遠ざかる**
+    （`|R e^{iθ} + d| >= R` が `|θ| <= 90` 度で成り立つ）。したがって座った位置に
+    隙間がある限り経路の全域に隙間がある。⚠️ **論証だけで済ませず、経路上の
+    位置で実際に測る。**
+    """
+    from build123d import Location
+
+    params, _ = shipped
+    assert adapter.segment_span_deg <= 180.0, "この向きの引き抜きが成立する条件"
+    can = _trash_can_model(params, adapter, top_mm=adapter.rise_top_height_mm + 2.0)
+    placed = _placed_drive_base(shipped, parts)
+
+    for index, solid in enumerate(adapter_parts):
+        radians = math.radians(
+            adapter.segment_start_angles_deg[index] + adapter.segment_span_deg / 2.0
+        )
+        for offset_mm in (2.0, 6.0, 15.0, 35.0):
+            moved = solid.moved(
+                Location(
+                    (
+                        offset_mm * math.cos(radians),
+                        offset_mm * math.sin(radians),
+                        0.0,
+                    )
+                )
+            )
+            assert _volume(moved & can) == 0.0, (index, offset_mm)
+            if index:
+                continue
+            # ⚠️ 先に据えた駆動ベースと、先に留めた隣の断片にも当たらない。
+            for name, other in placed.items():
+                assert _volume(moved & other) == 0.0, (name, offset_mm)
+            for other_index in range(1, len(adapter_parts)):
+                assert _volume(moved & adapter_parts[other_index]) == 0.0, (
+                    other_index,
+                    offset_mm,
+                )
+
+    # ⚠️ 空振りでないこと: 同じ断片を 2mm 持ち上げれば掴み面が縁の居場所を奪う。
+    lifted = adapter_parts[0].moved(Location((0.0, 0.0, 2.0)))
+    assert _volume(lifted & can) > 0.0
+
+
+@requires_cad
+def test_the_mount_bolts_can_be_driven_from_outside_with_the_can_in_place(
+    shipped: Any, adapter: Any, adapter_parts: tuple[Any, ...], parts: dict[str, Any]
+) -> None:
+    """⚠️ **駆動ベースを分解せずに着脱できる**（要件 6.6）。
+
+    取付ボルトは半径方向であり、⚠️ **缶より下の帯を通って外から工具が届く**。
+    工具の筋（座の外径ぶんの円筒）に、アダプタ・駆動ベースのいずれの材料も
+    無いことを見る。缶が筋に入り得ないことは高さの関係で示す
+    ——⚠️ **缶は掴み面より上にしか存在しない。**
+    """
+    from build123d import Align, Cylinder, Location, Rotation
+
+    _, _ = shipped
+    boss_radius_mm = adapter.boss_diameter_mm / 2.0
+    # 工具の帯は缶（掴み面より上）にも床（裾の上）にも掛からない。
+    assert adapter.mount_bolt_height_mm + boss_radius_mm < adapter.floor_bottom_height_mm
+    assert adapter.mount_bolt_height_mm - boss_radius_mm > adapter.skirt_bottom_height_mm
+
+    near_mm = adapter.skirt_outer_radius_mm + _EPS_MM
+    far_mm = adapter.outer_radius_mm + 60.0
+    band = (
+        adapter.mount_bolt_height_mm - boss_radius_mm,
+        adapter.mount_bolt_height_mm + boss_radius_mm,
+    )
+    # アダプタ自身は裾より外側のこの帯に材料を持たない（⚠️ 全周で見る）。
+    outside = _full_cylinder(far_mm, band) - _full_cylinder(
+        near_mm, (band[0] - _EPS_MM, band[1] + _EPS_MM)
+    )
+    for index, solid in enumerate(adapter_parts, start=1):
+        assert _volume(solid & outside) == 0.0, index
+
+    def _tool_path(angle_deg: float) -> Any:
+        return (
+            Rotation(0, 0, angle_deg)
+            * Location(((near_mm + far_mm) / 2.0, 0.0, adapter.mount_bolt_height_mm))
+            * Rotation(0, 90, 0)
+            * Cylinder(
+                boss_radius_mm,
+                far_mm - near_mm,
+                align=(Align.CENTER, Align.CENTER, Align.CENTER),
+            )
+        )
+
+    placed = _placed_drive_base(shipped, parts)
+    for angles in adapter.mount_bolt_angles_deg:
+        for angle_deg in angles:
+            path = _tool_path(angle_deg)
+            for name, solid in placed.items():
+                assert _volume(path & solid) == 0.0, (angle_deg, name)
+
+    # ⚠️ 空振りでないこと: アームの角度では筋が塞がる（座をそこへ置けない理由）。
+    blocked = _tool_path(adapter.arm_angles_deg[0])
+    assert sum(_volume(blocked & solid) for solid in placed.values()) > 0.0
 
 
 @requires_cad

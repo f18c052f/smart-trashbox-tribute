@@ -529,7 +529,8 @@ report = {
     "adapter_outer_radius_mm": adapter.outer_radius_mm,
     "adapter_seat_bottom_radius_mm": adapter.seat_bottom_radius_mm,
     "adapter_seat_top_radius_mm": adapter.seat_top_radius_mm,
-    "adapter_contact_radius_mm": adapter.contact_radius_mm,
+    "adapter_cut_radius_mm": adapter.cut_radius_mm,
+    "adapter_lip_width_mm": adapter.lip_width_mm,
     "adapter_retention_bolt_count": adapter.retention_bolt_count,
     "build_failed": False,
     "error_type": "",
@@ -622,7 +623,8 @@ def test_geometry_is_available_and_building_fails_loudly_without_the_shape_libra
     assert report["adapter_outer_radius_mm"] == adapter.outer_radius_mm
     assert report["adapter_seat_bottom_radius_mm"] == adapter.seat_bottom_radius_mm
     assert report["adapter_seat_top_radius_mm"] == adapter.seat_top_radius_mm
-    assert report["adapter_contact_radius_mm"] == adapter.contact_radius_mm
+    assert report["adapter_cut_radius_mm"] == adapter.cut_radius_mm
+    assert report["adapter_lip_width_mm"] == adapter.lip_width_mm
     assert report["adapter_retention_bolt_count"] == adapter.retention_bolt_count
     assert report["build_failed"] is True
     assert report["error_type"] == "CadUnavailableError"
@@ -1011,11 +1013,17 @@ def test_the_drive_base_fragments_fit_the_build_volume(
 
 
 # ---------------------------------------------------------------------------
-# 7. ゴミ箱固定アダプタ（タスク 3.3 / 要件 2.2, 6.1, 6.2, 6.5, 6.7）
+# 7. ゴミ箱固定アダプタ（タスク 3.3 / 要件 2.2, 6.1, 6.2, 6.5, 6.7, 6.10）
 #
-# ⚠️ **本節は形状ライブラリを要さない側である。** 座の径・テーパー・分割数・
-# 締結箇所は算術だけで決まり、実形状に対する不変条件（座が円筒断面を持たない、
-# 開口を狭めない、当たり面が実現している）は `test_chassis_invariants.py` が持つ。
+# ⚠️ **アダプタは座ではなくクランプである**（design.md 決定 4b）。ゴミ箱の底は
+# 平面部径まで抜かれ、残るのは外径との差ぶんの縁（片側 `lip_width_mm`）だけで
+# ある。⚠️ **下から支える平面はもう無い**——クランプは縁の下へ入って掴み、
+# 側壁を円錐の受け面で外から抱える。
+#
+# ⚠️ **本節は形状ライブラリを要さない側である。** 受け面の径・テーパー・切り
+# 取り径・縁の幅・分割数・締結箇所は算術だけで決まり、実形状に対する不変条件
+# （受け面が円筒断面を持たない、縁の下に掴み面がある、通過を狭めない、当たり面が
+# 実現している）は `test_chassis_invariants.py` が持つ。
 # ---------------------------------------------------------------------------
 
 
@@ -1044,9 +1052,9 @@ def test_the_adapter_dimensions_come_from_the_upstream_trash_can_measurements(
     ⚠️ **本 Spec 側が持つのは受けるための量（隙間・肉厚・立ち上がり・保持箇所）
     だけである**——同じ値を再定義しない。
     """
-    from chassis_mechanism.joints import _adapter_outer_diameter_mm
+    from chassis_mechanism.joints import _adapter_outer_diameter_mm, derive_joints
 
-    params, _ = shipped
+    params, layout = shipped
     can = params.trash_can  # type: ignore[attr-defined]
     spec = params.chassis.adapter  # type: ignore[attr-defined]
 
@@ -1058,14 +1066,88 @@ def test_the_adapter_dimensions_come_from_the_upstream_trash_can_measurements(
     assert adapter.outer_radius_mm == pytest.approx(
         _adapter_outer_diameter_mm(params) / 2.0  # type: ignore[arg-type]
     )
-    # 接触するのは底の**平面部**だけである（角の丸みは逃がす）。
-    assert adapter.contact_radius_mm == pytest.approx(can.bottom_flat_diameter_mm / 2.0)
-    assert adapter.contact_radius_mm < adapter.seat_bottom_radius_mm
-    # 底の肉厚は「ゴミ箱が提供する通過径」を決める（要件 6.7 の判定に効く）。
-    assert adapter.can_clear_radius_mm == pytest.approx(
-        can.bottom_outer_diameter_mm / 2.0 - can.bottom_thickness_mm
+    # 底は平面部径まで抜かれる（切り取り径の正は上流の平面部径である。要件 6.10）。
+    assert adapter.cut_radius_mm == pytest.approx(can.bottom_flat_diameter_mm / 2.0)
+    assert adapter.cut_radius_mm < adapter.seat_bottom_radius_mm
+    # 掴み代は「外径 − 平面部径」として残る縁である（要件 6.10）。
+    assert adapter.lip_outer_radius_mm == pytest.approx(
+        can.bottom_outer_diameter_mm / 2.0
+    )
+    assert adapter.lip_width_mm == pytest.approx(
+        (can.bottom_outer_diameter_mm - can.bottom_flat_diameter_mm) / 2.0
     )
     assert adapter.taper_deg == can.taper_deg
+    # ⚠️ **底の肉厚は形の側から消えたのではなく、締結の積み上がりへ移った。**
+    # 底が残っていた頃はここが「通過径」を決めていたが、底は抜かれた（決定 4b）
+    # ——いま肉厚が効くのは、クランプの肉と缶の側壁を貫くボルトの長さである。
+    retention = next(
+        joint
+        for joint in derive_joints(layout, params)  # type: ignore[arg-type]
+        if joint.name == "adapter__trash_can"
+    )
+    assert retention.bolt_length_mm == pytest.approx(
+        spec.wall_thickness_mm
+        + can.bottom_thickness_mm
+        + params.joint.insert_length_mm  # type: ignore[attr-defined]
+        + params.chassis.joint_local.fastener_length_margin_mm  # type: ignore[attr-defined]
+    )
+
+
+def test_the_cut_never_exceeds_the_upstream_bottom_flat_diameter(
+    shipped: tuple[object, object], adapter: AdapterGeometry
+) -> None:
+    """⚠️ **切り取り径は上流の底の平面部径以下である**（要件 6.10）。
+
+    ⚠️ **切断は不可逆である**（要件 6.11 / design.md 決定 4b）。平面部径を超えて
+    切れば、外径との差として残るはずの縁が消え、⚠️ **缶の重量を受ける座面が
+    どこにも無くなる**——缶は受け面のテーパーが噛むまで沈む。⚠️ **縁が担うのは
+    その座面であって、持ち上げ方向の拘束ではない**（要件 6.10 の改訂どおり
+    テーパーは持ち上げでは緩む側であり、上方向は受入基準 6.5 の締結が止める）。
+
+    ⚠️ **切り取り径を本 Spec の寸法パラメータとして持たない。** 上流が公開する
+    平面部径がそのまま上限であり、⚠️ そこを下回る値を選ぶ理由（掴み代を増やす）
+    は現時点で無い——増やせば缶の内側の通過が狭まり、要件 7.10 の段が通らなく
+    なる。
+    """
+    params, _ = shipped
+    can = params.trash_can  # type: ignore[attr-defined]
+
+    assert 2.0 * adapter.cut_radius_mm <= can.bottom_flat_diameter_mm
+    assert adapter.lip_width_mm > 0.0
+    assert adapter.lip_width_mm == pytest.approx(
+        adapter.lip_outer_radius_mm - adapter.cut_radius_mm
+    )
+    # 縁は受け面の内側にある（クランプは縁の下へ入り、側壁を外から抱える）。
+    assert (
+        adapter.cut_radius_mm
+        < adapter.lip_outer_radius_mm
+        < adapter.seat_bottom_radius_mm
+    )
+    # 掴み面はゴミ箱の底が載る高さ（`floor_top_height_mm`）の環であり、
+    # 縁の帯 [cut, lip_outer] を丸ごと覆う（実形状は invariants が測る）。
+    assert adapter.seat_bottom_radius_mm > adapter.lip_outer_radius_mm
+
+
+def test_a_bottom_flat_that_leaves_no_lip_is_rejected(
+    shipped: tuple[object, object],
+) -> None:
+    """⚠️ 縁が残らない採寸値を**黙って受けない**（要件 6.10）。
+
+    上流 `TrashCanMeasurements` は `bottom_flat == bottom_outer` を許す
+    （角の丸みが無い底を排除しないため）。⚠️ **そのゴミ箱では底を抜いた瞬間に
+    掴み代が消える**——本 Spec はそれを形の成立条件として拒否する。
+    ⚠️ 上流の値を書き換えて辻褄を合わせない（要件 1.3 / 6.4）。
+    """
+    params, layout = shipped
+    can = params.trash_can  # type: ignore[attr-defined]
+    with pytest.raises(GeometryError) as excinfo:
+        adapter_geometry(
+            _replace_can(
+                params, bottom_flat_diameter_mm=can.bottom_outer_diameter_mm
+            ),
+            layout,
+        )
+    assert "bottom_flat_diameter_mm" in str(excinfo.value)
 
 
 def test_the_seat_follows_the_frustum_and_is_not_a_cylinder(
@@ -1137,8 +1219,14 @@ def test_the_seat_is_re_derived_when_the_upstream_measurement_is_updated(
         layout,
     )
 
-    assert remeasured.contact_radius_mm == pytest.approx(measured_flat_mm / 2.0)
-    assert remeasured.contact_radius_mm < adapter.contact_radius_mm
+    assert remeasured.cut_radius_mm == pytest.approx(measured_flat_mm / 2.0)
+    assert remeasured.cut_radius_mm < adapter.cut_radius_mm
+    # ⚠️ **平面部径が小さくなれば掴み代はその半分ぶん広がる**（要件 6.10）。
+    # 切り取り径・縁の幅・通過の基準がまとめて追随する。
+    assert remeasured.lip_width_mm == pytest.approx(
+        adapter.lip_width_mm + (adapter.cut_radius_mm - remeasured.cut_radius_mm)
+    )
+    assert remeasured.lip_outer_radius_mm == pytest.approx(adapter.lip_outer_radius_mm)
     # ⚠️ 実物は書き換わっていない。
     assert UPSTREAM_DIMENSIONS_PATH.read_bytes() == original
 
@@ -1232,16 +1320,24 @@ def test_the_retention_bolts_press_the_tapered_wall_not_the_floor(
 ) -> None:
     """⚠️ 保持の締結はゴミ箱の**側面（テーパー面）**を押さえる（要件 6.5）。
 
-    ⚠️ **底へ穴を開けて点で引かない**（`joints.ASSUMPTIONS` の要件 6.8 の根拠）。
-    ボルトの軸は底の載る高さより上にあり、座の環が丸ごと立ち上がりに載る
-    ——これは駆動ベースの「接合面が座の環を載せられる厚さ」と同じ成立条件である。
+    ⚠️ **底へ穴を開けて点で引かない**——底はもう無い（決定 4b）。残っているのは
+    幅 `lip_width_mm` の縁だけであり、⚠️ **そこへ穴を開ければ掴み代を自分で
+    削ることになる**（`joints.ASSUMPTIONS` の要件 6.8 の根拠は、底を抜いた後は
+    「縁が薄く狭い」という形でいっそう強く効く）。ボルトの軸は縁の載る高さより
+    上にあり、座の環が丸ごと立ち上がりに載る——これは駆動ベースの「接合面が
+    座の環を載せられる厚さ」と同じ成立条件である。
+
+    ⚠️ **拘束の向きを取り違えない。** 水平方向はテーパーの受け面が全周で与え、
+    鉛直方向は縁の下へ入った掴み面が受ける（缶は落ちない）。⚠️ **持ち上げ方向を
+    止めているのは受け面ではなくこの貫通ボルトである**——テーパーは上へ抜ける
+    向きには緩む側であり、くさびとして効くのは沈む向きだけである。
     """
     boss_radius_mm = adapter.boss_diameter_mm / 2.0
     assert adapter.retention_bolt_height_mm - boss_radius_mm >= adapter.floor_top_height_mm
     assert adapter.retention_bolt_height_mm + boss_radius_mm <= adapter.rise_top_height_mm
-    # 締結は水平（半径方向）である。テーパー面を半径方向に押さえることが、
-    # 上方向の拘束（くさび）にもなる。
+    # 締結は水平（半径方向）であり、⚠️ 縁ではなく側壁を貫く。
     assert adapter.seat_top_radius_mm > adapter.seat_bottom_radius_mm
+    assert adapter.retention_bolt_height_mm > adapter.floor_top_height_mm
 
 
 def test_a_rise_shorter_than_the_boss_is_rejected(
