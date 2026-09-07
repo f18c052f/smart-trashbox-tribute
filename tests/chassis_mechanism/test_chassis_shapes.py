@@ -1113,15 +1113,18 @@ def test_the_adapter_dimensions_come_from_the_upstream_trash_can_measurements(
     assert adapter.outer_radius_mm == pytest.approx(
         _adapter_outer_diameter_mm(params) / 2.0  # type: ignore[arg-type]
     )
-    # 底は平面部径まで抜かれる（切り取り径の正は上流の平面部径である。要件 6.10）。
-    assert adapter.cut_radius_mm == pytest.approx(can.bottom_flat_diameter_mm / 2.0)
+    # ⚠️ **切り取り径は本 Spec の寸法パラメータである**（要件 6.10 / 決定 4b）。
+    # 上流の平面部径は**上限**であって値そのものではない——手で切る以上、
+    # 上限をそのまま採らない。
+    assert adapter.cut_radius_mm == pytest.approx(spec.bottom_cut_diameter_mm / 2.0)
+    assert 2.0 * adapter.cut_radius_mm < can.bottom_flat_diameter_mm
     assert adapter.cut_radius_mm < adapter.seat_bottom_radius_mm
-    # 掴み代は「外径 − 平面部径」として残る縁である（要件 6.10）。
+    # 掴み代は「底の外径 − 切り取り径」として残る縁である（要件 6.10, 6.11）。
     assert adapter.lip_outer_radius_mm == pytest.approx(
         can.bottom_outer_diameter_mm / 2.0
     )
     assert adapter.lip_width_mm == pytest.approx(
-        (can.bottom_outer_diameter_mm - can.bottom_flat_diameter_mm) / 2.0
+        (can.bottom_outer_diameter_mm - spec.bottom_cut_diameter_mm) / 2.0
     )
     assert adapter.taper_deg == can.taper_deg
     # ⚠️ **底の肉厚は形の側から消えたのではなく、締結の積み上がりへ移った。**
@@ -1151,15 +1154,17 @@ def test_the_cut_never_exceeds_the_upstream_bottom_flat_diameter(
     その座面であって、持ち上げ方向の拘束ではない**（要件 6.10 の改訂どおり
     テーパーは持ち上げでは緩む側であり、上方向は受入基準 6.5 の締結が止める）。
 
-    ⚠️ **切り取り径を本 Spec の寸法パラメータとして持たない。** 上流が公開する
-    平面部径がそのまま上限であり、⚠️ そこを下回る値を選ぶ理由（掴み代を増やす）
-    は現時点で無い——増やせば缶の内側の通過が狭まり、要件 7.10 の段が通らなく
-    なる。
+    ⚠️ **切り取り径は本 Spec の寸法パラメータであり、上流の平面部径は上限で
+    ある**（要件 6.10 / 決定 4b「手作業の余裕」）。⚠️ **上限をそのまま採らない**
+    ——切断は工作機械ではなく手で行い、⚠️ **誤差の効き方は片側である**（小さく
+    切れば縁が広がるだけだが、大きく切れば縁が消える）。
     """
     params, _ = shipped
     can = params.trash_can  # type: ignore[attr-defined]
 
     assert 2.0 * adapter.cut_radius_mm <= can.bottom_flat_diameter_mm
+    # ⚠️ 上限そのものではない（手切りの誤差の余裕が残っている）。
+    assert 2.0 * adapter.cut_radius_mm < can.bottom_flat_diameter_mm
     assert adapter.lip_width_mm > 0.0
     assert adapter.lip_width_mm == pytest.approx(
         adapter.lip_outer_radius_mm - adapter.cut_radius_mm
@@ -1175,26 +1180,62 @@ def test_the_cut_never_exceeds_the_upstream_bottom_flat_diameter(
     assert adapter.seat_bottom_radius_mm > adapter.lip_outer_radius_mm
 
 
-def test_a_bottom_flat_that_leaves_no_lip_is_rejected(
+def _replace_adapter(params: object, **changes: object) -> object:
+    """本 Spec 側のアダプタの寸法だけを差し替えた `ResolvedParams` を作る。"""
+    import dataclasses
+
+    chassis = params.chassis  # type: ignore[attr-defined]
+    return dataclasses.replace(
+        params,  # type: ignore[type-var]
+        chassis=dataclasses.replace(
+            chassis, adapter=dataclasses.replace(chassis.adapter, **changes)
+        ),
+    )
+
+
+def test_a_cut_diameter_that_leaves_no_lip_is_rejected(
     shipped: tuple[object, object],
 ) -> None:
-    """⚠️ 縁が残らない採寸値を**黙って受けない**（要件 6.10）。
+    """⚠️ 縁が残らない切り取り径を**黙って受けない**（要件 6.10, 6.11）。
 
-    上流 `TrashCanMeasurements` は `bottom_flat == bottom_outer` を許す
-    （角の丸みが無い底を排除しないため）。⚠️ **そのゴミ箱では底を抜いた瞬間に
-    掴み代が消える**——本 Spec はそれを形の成立条件として拒否する。
-    ⚠️ 上流の値を書き換えて辻褄を合わせない（要件 1.3 / 6.4）。
+    ⚠️ **形の成立条件は読み込みの検査に頼らない。** `config` は切り取り径が
+    上流の平面部径を超えることを拒否するが、形の側は「縁が残るか」だけを見る
+    ——⚠️ 平面部径が底の外径と等しいゴミ箱（角の丸みが無い底。上流はそれを
+    許す）では、上限まで切った瞬間に掴み代が消える。
     """
     params, layout = shipped
     can = params.trash_can  # type: ignore[attr-defined]
     with pytest.raises(GeometryError) as excinfo:
         adapter_geometry(
-            _replace_can(
-                params, bottom_flat_diameter_mm=can.bottom_outer_diameter_mm
-            ),
-            layout,
+            _replace_adapter(
+                params, bottom_cut_diameter_mm=can.bottom_outer_diameter_mm
+            ),  # type: ignore[arg-type]
+            layout,  # type: ignore[arg-type]
         )
-    assert "bottom_flat_diameter_mm" in str(excinfo.value)
+    message = str(excinfo.value)
+    assert "bottom_cut_diameter_mm" in message
+    assert "bottom_outer_diameter_mm" in message
+
+
+def test_the_cut_is_read_from_the_dimension_file_without_touching_code(
+    shipped: tuple[object, object], adapter: AdapterGeometry
+) -> None:
+    """⚠️ **切り取り径は設定値であり、変えれば縁と通過がまとめて追随する**
+    （要件 1.5 / 6.10）。
+
+    ⚠️ **小さく切れば縁が広がるだけである**——誤差の効き方が片側であることを、
+    導出の側でも固定する（design.md 決定 4b「手作業の余裕」）。
+    """
+    params, layout = shipped
+    tighter_mm = params.chassis.adapter.bottom_cut_diameter_mm - 8.0  # type: ignore[attr-defined]
+    tighter = adapter_geometry(
+        _replace_adapter(params, bottom_cut_diameter_mm=tighter_mm),  # type: ignore[arg-type]
+        layout,  # type: ignore[arg-type]
+    )
+    assert tighter.cut_radius_mm == pytest.approx(tighter_mm / 2.0)
+    assert tighter.lip_width_mm == pytest.approx(adapter.lip_width_mm + 4.0)
+    # ⚠️ 縁の外半径は缶の外径のままである（切り取りは内側だけを動かす）。
+    assert tighter.lip_outer_radius_mm == pytest.approx(adapter.lip_outer_radius_mm)
 
 
 def test_the_seat_follows_the_frustum_and_is_not_a_cylinder(
@@ -1236,8 +1277,10 @@ def test_the_seat_is_re_derived_when_the_upstream_measurement_is_updated(
 ) -> None:
     """⚠️ **上流の採寸値を測り直すと座の寸法が追随する**（要件 6.9 / 1.5）。
 
-    タスク 5.3 が `trash_can.bottom_flat_diameter_mm` の仮値を実測へ置き換える。
-    そのとき**実装コードを変えずに**座が動くことをここで固定する。
+    タスク 5.3 が `trash_can` の仮値を実測へ置き換える。そのとき**実装コードを
+    変えずに**座が動くことをここで固定する。⚠️ **動くのは上流が正である量だけで
+    ある**——切り取り径は本 Spec の寸法パラメータであり、平面部径は上限として
+    しか効かない（決定 4b）。
 
     ⚠️ **書き戻しは `tmp_path` の複製に対して行い、実物の
     `configs/catch_mechanism/dimensions.json` へは触れない。** 値は上流の
@@ -1256,24 +1299,25 @@ def test_the_seat_is_re_derived_when_the_upstream_measurement_is_updated(
     target.write_bytes(original.replace(b"\r\n", b"\n"))
 
     params, layout = shipped
-    measured_flat_mm = params.trash_can.bottom_flat_diameter_mm - 4.6  # type: ignore[attr-defined]
+    measured_outer_mm = params.trash_can.bottom_outer_diameter_mm - 4.6  # type: ignore[attr-defined]
     update_upstream_measurement(
-        "trash_can.bottom_flat_diameter_mm", measured_flat_mm, path=target
+        "trash_can.bottom_outer_diameter_mm", measured_outer_mm, path=target
     )
     reloaded = upstream_load_params(target).trash_can
     remeasured = adapter_geometry(
-        _replace_can(params, bottom_flat_diameter_mm=reloaded.bottom_flat_diameter_mm),  # type: ignore[arg-type]
+        _replace_can(params, bottom_outer_diameter_mm=reloaded.bottom_outer_diameter_mm),  # type: ignore[arg-type]
         layout,
     )
 
-    assert remeasured.cut_radius_mm == pytest.approx(measured_flat_mm / 2.0)
-    assert remeasured.cut_radius_mm < adapter.cut_radius_mm
-    # ⚠️ **平面部径が小さくなれば掴み代はその半分ぶん広がる**（要件 6.10）。
-    # 切り取り径・縁の幅・通過の基準がまとめて追随する。
-    assert remeasured.lip_width_mm == pytest.approx(
-        adapter.lip_width_mm + (adapter.cut_radius_mm - remeasured.cut_radius_mm)
+    assert remeasured.lip_outer_radius_mm == pytest.approx(measured_outer_mm / 2.0)
+    assert remeasured.seat_bottom_radius_mm == pytest.approx(
+        adapter.seat_bottom_radius_mm - 2.3
     )
-    assert remeasured.lip_outer_radius_mm == pytest.approx(adapter.lip_outer_radius_mm)
+    # ⚠️ **底の外径が小さくなれば掴み代はその半分ぶん狭まる**（要件 6.10）。
+    # ⚠️ **切り取り径は動かない**——それは本 Spec の寸法パラメータであり、
+    # 上流の平面部径は**上限**としてしか効かない（決定 4b「手作業の余裕」）。
+    assert remeasured.cut_radius_mm == pytest.approx(adapter.cut_radius_mm)
+    assert remeasured.lip_width_mm == pytest.approx(adapter.lip_width_mm - 2.3)
     # ⚠️ 実物は書き換わっていない。
     assert UPSTREAM_DIMENSIONS_PATH.read_bytes() == original
 

@@ -55,7 +55,7 @@ from dataclasses import dataclass, fields, is_dataclass
 from types import MappingProxyType, UnionType
 from typing import Union, get_args, get_origin, get_type_hints
 
-from catch_mechanism import JointPolicy, Provenance
+from catch_mechanism import JointPolicy, Provenance, TrashCanMeasurements
 
 from chassis_mechanism.errors import ParameterError
 
@@ -568,9 +568,25 @@ class AdapterSpec:
 
     ⚠️ **底の径とテーパー角は上流の `TrashCanMeasurements` が正である**
     （要件 1.3, 10.1）。本群が持つのは、その値を受けるためにこちらが決める量
-    （隙間・肉厚・立ち上がり・保持箇所の数）だけである。
+    （隙間・肉厚・立ち上がり・保持箇所の数）と、⚠️ **本 Spec が決める切り取り径**
+    だけである。
+
+    ⚠️ **切り取り径は上流の値の写しではない**（要件 6.10 / design.md 決定 4b
+    「手作業の余裕」）。上流が公開する底の平面部径は**上限**であって値そのもの
+    ではない——⚠️ **切断は工作機械ではなく手で行う**ため、上限をそのまま採ると
+    ⚠️ **誤差が片側にしか効かない**（小さく切れば縁が広がるだけだが、大きく
+    切れば縁が消える）。上限との突き合わせは `validate_against_upstream` が持つ。
 
     Attributes:
+        bottom_cut_diameter_mm: 底を抜くときの切り取り径（mm、要件 6.10）。
+            ⚠️ **上流 `TrashCanMeasurements.bottom_flat_diameter_mm` を上限と
+            する**が、⚠️ **上限をそのまま採らない**——手切りの誤差の余裕を残す。
+            外径との差として残る縁が缶の重量を受ける座面である（要件 6.11）。
+            出荷値 160.0 は、上限 Ø170（上流の平面部径）に対して**直径で
+            10mm** の余裕であり、⚠️ **+10mm ずれて切っても縁が残る**。
+            ⚠️ **真円である必要は無い**——掴み面は切り取り径が上限まで振れても
+            縁が載る範囲に渡って連続している（要件 6.12。実形状の検査は
+            `test_chassis_invariants.py`）。
         seat_clearance_mm: 座とゴミ箱の底との隙間（mm）。個体差を吸収する量で
             あり、0（隙間なし）も設定として成立する。
         wall_thickness_mm: 座の肉厚（mm）。
@@ -578,10 +594,11 @@ class AdapterSpec:
         retention_point_count: 保持箇所の数。1 以上。
 
     Raises:
-        ParameterError: 隙間が負または非有限の場合、肉厚・高さが正の有限値でない
-            場合、または保持箇所の数が 1 以上の整数でない場合。
+        ParameterError: 隙間が負または非有限の場合、切り取り径・肉厚・高さが正の
+            有限値でない場合、または保持箇所の数が 1 以上の整数でない場合。
     """
 
+    bottom_cut_diameter_mm: float
     seat_clearance_mm: float
     wall_thickness_mm: float
     rise_height_mm: float
@@ -589,10 +606,46 @@ class AdapterSpec:
 
     def __post_init__(self) -> None:
         """全不変条件を検証し、違反時は違反項目名と値を添えて拒否する。"""
+        _require_positive_finite(self.bottom_cut_diameter_mm, "bottom_cut_diameter_mm")
         _require_nonneg_finite(self.seat_clearance_mm, "seat_clearance_mm")
         _require_positive_finite(self.wall_thickness_mm, "wall_thickness_mm")
         _require_positive_finite(self.rise_height_mm, "rise_height_mm")
         _require_count(self.retention_point_count, "retention_point_count", 1)
+
+    def validate_against_upstream(self, trash_can: TrashCanMeasurements) -> None:
+        """切り取り径が上流の底の平面部径以下であることを検証する（要件 6.10）。
+
+        ⚠️ **構築時には行えない検査である**（`LocalJointLimits.
+        validate_against_upstream` と同じ理由）。上限は上流の設定ファイルを
+        読まなければ分からず、本モジュールはファイルを読まない。したがって
+        この検査は明示的な呼び出しとして分離されており、上流の
+        `TrashCanMeasurements` を手にした `config` が必ず呼ぶ。
+
+        ⚠️ **上限は「縁が残る」ための条件ではなく、「平面を切る」ための条件で
+        ある。** 平面部より外側は角の丸みであり、そこを切ると刃が丸みへ逃げる
+        ——縁が残るかどうかは形の側（`shapes.adapter_geometry`）が別に見る。
+
+        Args:
+            trash_can: 上流 `catch_mechanism` のゴミ箱の採寸値。
+
+        Raises:
+            ParameterError: 引数が `TrashCanMeasurements` でない場合、または
+                切り取り径が上流の平面部径を超える場合（メッセージに**両方の
+                値**を載せる——どちらへ寄せればよいかが分からなければ直せない）。
+        """
+        if not isinstance(trash_can, TrashCanMeasurements):
+            raise ParameterError(
+                f"trash_can={trash_can!r} は上流の TrashCanMeasurements で"
+                "なければならない（切り取り径の上限には上流の平面部径が要る）。"
+            )
+        if self.bottom_cut_diameter_mm > trash_can.bottom_flat_diameter_mm:
+            raise ParameterError(
+                f"adapter.bottom_cut_diameter_mm={self.bottom_cut_diameter_mm!r} は "
+                f"上流 TrashCanMeasurements.bottom_flat_diameter_mm="
+                f"{trash_can.bottom_flat_diameter_mm!r} 以下でなければならない"
+                "（⚠️ 切断は不可逆である。平面部より外へ切れば缶の重量を受ける"
+                "座面が消え、缶は受け面のテーパーが噛むまで沈む。要件 6.10）。"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1076,21 +1129,26 @@ class ChassisParams:
         # 自然な経路で壊れる。上流 `MechanismParams.provenance` も素の `dict` を持つ。
         object.__setattr__(self, "provenance", dict(self.provenance))
 
-    def validate_against_upstream(self, joint_policy: JointPolicy) -> None:
-        """上流の値と突き合わせる検査をまとめて行う（要件 2.9）。
+    def validate_against_upstream(
+        self, joint_policy: JointPolicy, trash_can: TrashCanMeasurements
+    ) -> None:
+        """上流の値と突き合わせる検査をまとめて行う（要件 2.9, 6.10）。
 
-        現在は接合部の当たり面の下限1件だけだが、⚠️ **`config` が呼ぶ入口を1つに
-        しておく**ことで、上流と突き合わせる検査が増えたときに呼び出し側を
-        書き換えずに済む。
+        ⚠️ **`config` が呼ぶ入口を1つにしておく**ことで、上流と突き合わせる検査が
+        増えたときに呼び出し側を書き換えずに済む（現在は当たり面の下限・段の
+        板厚・底の切り取り径の3件である）。
 
         Args:
             joint_policy: 上流 `catch_mechanism` の継手方針。
+            trash_can: 上流 `catch_mechanism` のゴミ箱の採寸値。
 
         Raises:
-            ParameterError: 上流の下限より緩い値を持つ場合、または段の板厚が
-                上流のインサート長を収めきれない場合。
+            ParameterError: 上流の下限より緩い値を持つ場合、段の板厚が上流の
+                インサート長を収めきれない場合、または底の切り取り径が上流の
+                平面部径を超える場合。
         """
         self.joint_local.validate_against_upstream(joint_policy)
+        self.adapter.validate_against_upstream(trash_can)
         # ⚠️ 段どうしの締結は半径方向であり、インサートは**段の肉の中**へ入る
         # （要件 2.6 / 決定 3）。板厚が上流のインサート長以下だと、記録された
         # インサートは肉を突き抜ける——⚠️ **足りない座を黙って浅く作らない**

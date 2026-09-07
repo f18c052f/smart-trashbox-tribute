@@ -157,6 +157,7 @@ def make_clearance(**overrides: object) -> ClearanceLimits:
 
 def make_adapter(**overrides: object) -> AdapterSpec:
     values: dict[str, object] = {
+        "bottom_cut_diameter_mm": 160.0,
         "seat_clearance_mm": 1.0,
         "wall_thickness_mm": 4.0,
         "rise_height_mm": 25.0,
@@ -549,10 +550,11 @@ def test_local_joint_limits_reject_a_looser_value_naming_both_numbers() -> None:
 def test_aggregate_delegates_the_upstream_check() -> None:
     """`ChassisParams` からも1呼び出しで検査できる（`config` が呼ぶ唯一の経路）。"""
     policy = make_upstream_joint_policy(min_bearing_area_mm2=100.0)
-    make_params().validate_against_upstream(policy)
+    can = make_upstream_trash_can()
+    make_params().validate_against_upstream(policy, can)
     loose = make_params(joint_local=make_joint_local(min_bearing_area_mm2=10.0))
     with pytest.raises(ParameterError):
-        loose.validate_against_upstream(policy)
+        loose.validate_against_upstream(policy, can)
 
 
 def test_upstream_check_rejects_a_non_policy_argument() -> None:
@@ -583,6 +585,7 @@ POSITIVE_LENGTH_CASES = [
     (make_base, "arm_width_mm"),
     (make_base, "arm_thickness_mm"),
     (make_clearance, "min_ground_clearance_mm"),
+    (make_adapter, "bottom_cut_diameter_mm"),
     (make_adapter, "wall_thickness_mm"),
     (make_adapter, "rise_height_mm"),
     (make_battery, "length_mm"),
@@ -1109,3 +1112,77 @@ def test_params_module_leaves_no_unfinished_marker() -> None:
     text = Path(params_module.__file__).read_text(encoding="utf-8")
     for marker in ("TODO", "FIXME", "TBD", "XXX"):
         assert marker not in text
+
+
+# ---------------------------------------------------------------------------
+# 底の切り取り径（要件 6.10 / design.md 決定 4b「手作業の余裕」）
+#
+# ⚠️ **切り取り径は本 Spec の寸法パラメータである。** 上限は上流が公開する底の
+# 平面部径だが、⚠️ **上限は構築時には分からない**——上流の設定ファイルを読むのは
+# `config` だけであり、`params` はファイルを読まない（モジュール docstring）。
+# したがってこの1件も `LocalJointLimits` と同じく `validate_against_upstream` と
+# いう**明示的な検査**として持つ。
+# ---------------------------------------------------------------------------
+
+
+def make_upstream_trash_can(**overrides: object) -> catch_mechanism.TrashCanMeasurements:
+    """上流のゴミ箱の採寸値。⚠️ **本 Spec の設定ファイルへ複製しない値**である。"""
+    values: dict[str, object] = {
+        "model_id": "test-can",
+        "opening_inner_diameter_mm": 210.0,
+        "top_outer_diameter_mm": 214.0,
+        "bottom_outer_diameter_mm": 180.0,
+        "bottom_flat_diameter_mm": 170.0,
+        "height_mm": 235.0,
+        "mass_g": 228.0,
+        "bottom_thickness_mm": 1.5,
+        "taper_deg": 4.865,
+    }
+    values.update(overrides)
+    return catch_mechanism.TrashCanMeasurements(**values)  # type: ignore[arg-type]
+
+
+def test_the_cut_diameter_accepts_a_value_below_the_upstream_flat_diameter() -> None:
+    """手切りの誤差余裕を残した値は通る（要件 6.10 / 決定 4b）。"""
+    can = make_upstream_trash_can(bottom_flat_diameter_mm=170.0)
+    make_adapter(bottom_cut_diameter_mm=160.0).validate_against_upstream(can)
+
+
+def test_the_cut_diameter_accepts_the_upstream_flat_diameter_itself() -> None:
+    """上限ちょうどは通る（⚠️ 境界を誤って弾かない）。"""
+    can = make_upstream_trash_can(bottom_flat_diameter_mm=170.0)
+    make_adapter(bottom_cut_diameter_mm=170.0).validate_against_upstream(can)
+
+
+def test_a_cut_diameter_above_the_upstream_flat_diameter_is_rejected() -> None:
+    """⚠️ **平面部径を超える切り取り径を拒否する**（メッセージに**両方の値**）。"""
+    can = make_upstream_trash_can(bottom_flat_diameter_mm=170.0)
+    with pytest.raises(ParameterError) as excinfo:
+        make_adapter(bottom_cut_diameter_mm=170.1).validate_against_upstream(can)
+    message = str(excinfo.value)
+    assert "adapter.bottom_cut_diameter_mm" in message
+    assert "170.1" in message
+    assert "170.0" in message
+
+
+def test_the_cut_check_rejects_a_non_measurement_argument() -> None:
+    """上流の型でない引数を拒否する（`LocalJointLimits` と同じ扱い）。"""
+    with pytest.raises(ParameterError):
+        make_adapter().validate_against_upstream(object())  # type: ignore[arg-type]
+
+
+def test_the_aggregate_delegates_the_cut_check_too() -> None:
+    """⚠️ **集約からの1呼び出しで切り取り径も検査される**（`config` が呼ぶ唯一の経路）。
+
+    ⚠️ **入口を1つに保つ**ことが「呼ばれない検証」を作らないための仕掛けである
+    （`ChassisParams.validate_against_upstream`）。
+    """
+    policy = make_upstream_joint_policy(min_bearing_area_mm2=100.0)
+    can = make_upstream_trash_can(bottom_flat_diameter_mm=170.0)
+    make_params(adapter=make_adapter(bottom_cut_diameter_mm=160.0)).validate_against_upstream(
+        policy, can
+    )
+    too_wide = make_params(adapter=make_adapter(bottom_cut_diameter_mm=175.0))
+    with pytest.raises(ParameterError) as excinfo:
+        too_wide.validate_against_upstream(policy, can)
+    assert "bottom_cut_diameter_mm" in str(excinfo.value)

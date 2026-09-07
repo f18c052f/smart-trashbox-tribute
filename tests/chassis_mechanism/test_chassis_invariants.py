@@ -37,17 +37,25 @@ from chassis_mechanism.layout import derive_layout
 from chassis_mechanism.errors import GeometryError
 from chassis_mechanism.joints import DECK_SEAT_JOINT_NAME
 from chassis_mechanism.shapes import (
+    ADAPTER_SEGMENT_PART_NAME,
+    ASSEMBLY_ORDER,
     BATTERY_TRAY_PART_NAME,
     BOARD_DECK_PART_NAME,
     CATCH_DECK_PART_NAME,
+    HUB_PLATE_PART_NAME,
     MIN_HAND_ACCESS_MM,
+    MOTOR_ARM_PART_NAME,
     SERVICE_STAND_PART_NAME,
+    TRASH_CAN_PART_NAME,
     StandGeometry,
     adapter_geometry,
+    assembly_reach_violations,
+    assembly_steps,
     battery_tray_geometry,
     build_parts,
     deck_stack_geometry,
     drive_base_geometry,
+    part_names,
     stand_geometry,
     stand_inputs,
 )
@@ -1480,8 +1488,11 @@ def test_the_adapter_never_narrows_the_passage_the_trash_can_offers(
 
     ⚠️ **基準は改訂で変わった。** 底が残っていた頃の通過は「底の内面（Ø177）
     から上へ広がる円錐」であったが、底は抜かれた（決定 4b）。⚠️ **いまの通過は
-    「切り取り径 Ø170（＝上流の平面部径）から `taper_deg` で広がる円錐」であり、
-    開口の平面（＝縁が載る高さ）から始まる**——基準が移った理由は
+    「切り取り径（＝寸法パラメータ `adapter.bottom_cut_diameter_mm`。出荷値
+    Ø160）から `taper_deg` で広がる円錐」であり、開口の平面（＝縁が載る高さ）
+    から始まる**。⚠️ **手切りの余裕を採ったぶん禁止領域はさらに小さくなった
+    （＝主張はさらに弱い）**——締まりを与えているのは下半分の反証側である
+    ——基準が移った理由は
     「厳しくするため」ではなく、⚠️ **そこが**いま**ゴミ箱が提供している通過
     そのものだから**である。
 
@@ -1510,7 +1521,10 @@ def test_the_adapter_never_narrows_the_passage_the_trash_can_offers(
     params, _ = shipped
     can = params.trash_can
     opening_mm = adapter.floor_top_height_mm
-    assert adapter.cut_radius_mm == pytest.approx(can.bottom_flat_diameter_mm / 2.0)
+    assert adapter.cut_radius_mm == pytest.approx(
+        params.chassis.adapter.bottom_cut_diameter_mm / 2.0
+    )
+    assert 2.0 * adapter.cut_radius_mm <= can.bottom_flat_diameter_mm
     passage = _cone_probe(
         adapter.cut_radius_mm,
         adapter.seat_slope,
@@ -3193,3 +3207,169 @@ def test_nothing_intrudes_into_the_component_envelope_above_the_board_deck(
         deck.catch_tube_outer_radius_mm**2 - deck.catch_tube_inner_radius_mm**2
     )
     assert deck.usable_area_mm2 - shadow_area_mm2 < deck.required_area_mm2
+
+
+# ---------------------------------------------------------------------------
+# 8. 手切りの誤差の帯と、組立の順序（要件 6.12 / 7.14 / design.md 決定 4b）
+#
+# ⚠️ **切断は工作機械ではなく手で行う。** 要件 6.12 は掴み面を「切り取り径が
+# 上限まで振れても縁が載る範囲」に渡って連続させることを求めており、⚠️ **誤差の
+# 効き方は片側である**——小さく切れば縁が広がるだけだが、大きく切れば縁が消える。
+#
+# 要件 7.14 は⚠️ **組み上げられること**を求める。⚠️ **「組み上がった状態で
+# 干渉しない」ことは組み上げられることを意味しない**——缶は上へ広がる円錐台で
+# あり、切り取った開口より大きい段はそこを通れない。
+# ---------------------------------------------------------------------------
+
+
+def _lip_ring_below_the_grip_face(adapter: Any, cut_diameter_mm: float) -> Any:
+    """切り取り径 `cut_diameter_mm` で切ったときに残る縁の、**すぐ下**の環。"""
+    grip_mm = adapter.floor_top_height_mm
+    z_range = (grip_mm - _SLAB_MM, grip_mm)
+    return _full_cylinder(adapter.lip_outer_radius_mm, z_range) - _full_cylinder(
+        cut_diameter_mm / 2.0, (z_range[0] - _EPS_MM, z_range[1] + _EPS_MM)
+    )
+
+
+@requires_cad
+def test_the_grip_face_covers_every_cut_the_hand_can_land(
+    shipped: tuple[Any, Any], adapter: Any, adapter_parts: tuple[Any, ...]
+) -> None:
+    """⚠️ **切り取り径が上限まで振れても縁は掴み面に載る**（要件 6.12）。
+
+    ⚠️ **出荷の切り取り径1点だけを見ない。** 手で切る以上、実際の径は帯の中の
+    どこかに落ちる——⚠️ **上限（上流の平面部径）まで振れても縁が掴み面へ載る**
+    ことが要件 6.12 の意味である。ここでは帯の中の複数の径について、⚠️ **残る
+    縁の帯 `[切り取り径/2, 縁の外半径]` のすぐ下が全周で材料である**ことを
+    実形状に対して測る（欠けた扇が1つでもあれば体積が足りなくなる）。
+    """
+    params, _ = shipped
+    can = params.trash_can
+    shipped_cut_mm = params.chassis.adapter.bottom_cut_diameter_mm
+    upper_bound_mm = can.bottom_flat_diameter_mm
+    assert shipped_cut_mm < upper_bound_mm
+
+    # ⚠️ **帯の内端は掴み面の内縁（裾の内側）である**——そこより小さく切ると
+    # 縁の内側が中央の開口へはみ出す。⚠️ 外端は縁の外半径（＝底の外半径）で
+    # あり、掴み面はその外側（受け面の内径）まで続いている。
+    band_low_mm = _BOTH_SIDES_MM * adapter.skirt_inner_radius_mm
+    assert band_low_mm < shipped_cut_mm
+    assert adapter.seat_bottom_radius_mm > adapter.lip_outer_radius_mm
+
+    for cut_diameter_mm in (121.0, 140.0, shipped_cut_mm, 165.0, upper_bound_mm):
+        expected_mm3 = (
+            math.pi
+            * (adapter.lip_outer_radius_mm**2 - (cut_diameter_mm / 2.0) ** 2)
+            * _SLAB_MM
+        )
+        measured_mm3 = sum(
+            _volume(solid & _lip_ring_below_the_grip_face(adapter, cut_diameter_mm))
+            for solid in adapter_parts
+        )
+        assert measured_mm3 == pytest.approx(expected_mm3, rel=1e-6), cut_diameter_mm
+
+    # ⚠️ 空振りでないこと: 帯の内端より小さく切れば、縁の内側は掴み面から外れる。
+    too_small_mm = band_low_mm - 1.0
+    expected_mm3 = (
+        math.pi
+        * (adapter.lip_outer_radius_mm**2 - (too_small_mm / 2.0) ** 2)
+        * _SLAB_MM
+    )
+    measured_mm3 = sum(
+        _volume(solid & _lip_ring_below_the_grip_face(adapter, too_small_mm))
+        for solid in adapter_parts
+    )
+    assert measured_mm3 < expected_mm3
+
+
+@requires_cad
+def test_the_recorded_assembly_order_is_geometrically_reachable(
+    shipped: tuple[Any, Any]
+) -> None:
+    """⚠️ **組立手順の順序で、各部品が所定の位置へ到達できる**（要件 7.14）。
+
+    ⚠️ **組み上がり状態の無干渉（要件 9.1）とは別の主張である。** ここが見るのは
+    「その時点で既に置かれている部品と干渉せずに到達できる経路があるか」であり、
+    ⚠️ **缶を段の上から被せることはできない**という種類の欠陥はここでしか出ない。
+    """
+    params, layout = shipped
+    assert assembly_reach_violations(params, layout) == ()
+
+
+@requires_cad
+def test_placing_the_decks_before_the_can_is_caught(
+    shipped: tuple[Any, Any]
+) -> None:
+    """⚠️ **空振りでないこと: 段を缶より先に置く順序は落ちる**（要件 7.14）。
+
+    ⚠️ **これが逃げた欠陥そのものである。** 段（基板デッキ Ø173.6 / 受け止め
+    デッキ Ø185.4）は切り取った開口（Ø160）より大きく、⚠️ **缶を段の上から
+    降ろせない**。組み上がった状態はどちらの順序でも同じであるため、
+    組み上がりの干渉検査はこれを1つも捉えない。
+    """
+    params, layout = shipped
+    wrong_order = (
+        HUB_PLATE_PART_NAME,
+        MOTOR_ARM_PART_NAME,
+        BATTERY_TRAY_PART_NAME,
+        BOARD_DECK_PART_NAME,
+        CATCH_DECK_PART_NAME,
+        TRASH_CAN_PART_NAME,
+        ADAPTER_SEGMENT_PART_NAME,
+    )
+    assert sorted(wrong_order) == sorted(ASSEMBLY_ORDER), "順序だけが違う"
+    violations = assembly_reach_violations(params, layout, order=wrong_order)
+    assert violations != ()
+    blocked = {violation.part_name for violation in violations}
+    blockers = {violation.blocked_by for violation in violations}
+    assert blocked == {TRASH_CAN_PART_NAME}
+    assert any(name.startswith(BOARD_DECK_PART_NAME) for name in blockers)
+    assert any(name.startswith(CATCH_DECK_PART_NAME) for name in blockers)
+    assert all(violation.overlap_mm3 > 0.0 for violation in violations)
+
+
+def test_the_recorded_assembly_order_names_every_part_once() -> None:
+    """⚠️ **順序は部品を1つも落とさない**（落とせば検査は黙って弱くなる）。
+
+    ⚠️ **形状ライブラリを要さない**——順序と据え付けの向きは算術である。
+    """
+    params = load_params()
+    layout = derive_layout(params)
+    steps = assembly_steps(params, layout)
+    names = [step.part_name for step in steps]
+    assert len(names) == len(set(names))
+    assert set(names) == set(part_names(params)) - {
+        name for name in part_names(params) if name.startswith(f"{SERVICE_STAND_PART_NAME}_")
+    } | {TRASH_CAN_PART_NAME}
+    # ⚠️ 缶は造形物ではない（購入部品である）。
+    assert TRASH_CAN_PART_NAME not in part_names(params)
+    # 缶は段より先、アダプタ断片より先である（design.md 組立手順 10 → 11）。
+    assert names.index(TRASH_CAN_PART_NAME) < names.index(BOARD_DECK_PART_NAME)
+    assert names.index(TRASH_CAN_PART_NAME) < names.index("adapter_segment_1")
+
+
+def test_an_order_that_drops_a_part_is_rejected() -> None:
+    """⚠️ **部品を落とした順序を黙って通さない**（検査の抜け道を塞ぐ）。"""
+    params = load_params()
+    layout = derive_layout(params)
+    with pytest.raises(GeometryError) as excinfo:
+        assembly_steps(params, layout, order=(HUB_PLATE_PART_NAME,))
+    assert TRASH_CAN_PART_NAME in str(excinfo.value)
+
+
+def test_an_order_that_names_a_part_twice_is_rejected() -> None:
+    """⚠️ **同じ部品を2度置く順序を黙って通さない**（2度目は自分自身と当たる）。"""
+    params = load_params()
+    layout = derive_layout(params)
+    with pytest.raises(GeometryError) as excinfo:
+        assembly_steps(params, layout, order=ASSEMBLY_ORDER + (HUB_PLATE_PART_NAME,))
+    assert HUB_PLATE_PART_NAME in str(excinfo.value)
+
+
+def test_an_order_that_names_an_unknown_part_is_rejected() -> None:
+    """⚠️ 未知の名を含む順序を、その名を示して拒否する。"""
+    params = load_params()
+    layout = derive_layout(params)
+    with pytest.raises(GeometryError) as excinfo:
+        assembly_steps(params, layout, order=ASSEMBLY_ORDER + ("wide_rim",))
+    assert "wide_rim" in str(excinfo.value)

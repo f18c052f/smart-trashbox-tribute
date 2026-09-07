@@ -158,6 +158,7 @@ from chassis_mechanism.joints import (
 from chassis_mechanism.layout import ChassisLayout
 
 __all__ = [
+    "ASSEMBLY_ORDER",
     "MIN_HAND_ACCESS_MM",
     "PART_NAMES",
     "ADAPTER_SEGMENT_PART_NAME",
@@ -167,7 +168,10 @@ __all__ = [
     "HUB_PLATE_PART_NAME",
     "MOTOR_ARM_PART_NAME",
     "SERVICE_STAND_PART_NAME",
+    "TRASH_CAN_PART_NAME",
     "AdapterGeometry",
+    "AssemblyReachViolation",
+    "AssemblyStep",
     "BatteryTrayGeometry",
     "BuiltPart",
     "DeckStackGeometry",
@@ -175,6 +179,8 @@ __all__ = [
     "StandGeometry",
     "StandInputs",
     "adapter_geometry",
+    "assembly_reach_violations",
+    "assembly_steps",
     "battery_tray_geometry",
     "build_adapter_segments",
     "build_battery_tray",
@@ -182,6 +188,7 @@ __all__ = [
     "build_drive_base",
     "build_parts",
     "build_service_stand_legs",
+    "build_trash_can_shell",
     "deck_stack_geometry",
     "drive_base_geometry",
     "measure_part",
@@ -1602,10 +1609,15 @@ def build_drive_base(
 # 土台が使う。したがって⚠️ **底を下から支える座はもう作れない**——アダプタは、
 # 切り取りで残った縁と円錐台の側壁を掴むクランプになる。
 #
-# 切り取り径は上流の**平面部径**を超えない（要件 6.10）。外径との差として残る
-# 環（片側 `lip_width_mm`）がそのまま掴み代である。断片が中央部とアームの上に
-# 載って外側へ張り出すこと、点数を上流の円環の導出（`joints.segment_counts()`）
-# から採ることは変わらない（要件 2.1）。
+# 切り取り径は⚠️ **本 Spec の寸法パラメータ**（`adapter.bottom_cut_diameter_mm`）
+# であり、上流の**平面部径**を上限とする（要件 6.10 / 決定 4b「手作業の余裕」）。
+# ⚠️ **上限をそのまま採らない**——切断は手で行い、⚠️ **誤差は片側にしか効かない**
+# （小さく切れば縁が広がるだけだが、大きく切れば縁が消える）。外径との差として残る
+# 環（片側 `lip_width_mm`）がそのまま掴み代である。⚠️ **掴み面は切り取り径が上限
+# まで振れても縁が載る範囲に渡って連続している**（要件 6.12。出荷値では
+# r=60.4〜91 に連続しており、Ø121〜Ø180 のどこで切っても縁はこの面に載る）。
+# 断片が中央部とアームの上に載って外側へ張り出すこと、点数を上流の円環の導出
+# （`joints.segment_counts()`）から採ることは変わらない（要件 2.1）。
 #
 # 断面（半径方向の断面。z は接地面からの高さ）:
 #
@@ -1645,7 +1657,7 @@ def build_drive_base(
 #
 # ## ⚠️ 通過を狭めない（要件 6.7）
 #
-# 通過の基準は**切り取り開口**（`bottom_flat_diameter_mm`）から `taper_deg` で
+# 通過の基準は**切り取り開口**（`adapter.bottom_cut_diameter_mm`）から `taper_deg` で
 # 広がる円錐である。⚠️ **底の内面ではない**——底はもう無い。アダプタは縁の下と
 # 側壁の外にしか材料を持たず、この円錐の内側には1つも入らない。中央は段
 # （タスク 3.4）が通れるよう開いており、⚠️ 開口より下では床が環として残るため
@@ -1693,9 +1705,11 @@ class AdapterGeometry:
         seat_top_radius_mm: 受け面の上端の半径。⚠️ 下端と等しくない。
         seat_slope: 受け面の勾配（＝ `tan(taper_deg)`）。
         taper_deg: 上流のテーパー角（度）。
-        cut_radius_mm: 底の切り取り径の半分（＝上流の平面部径の半分。要件 6.10）。
-            ⚠️ **通過の基準でもある**——ここから `seat_slope` で広がる円錐の
-            内側には材料が1つも無い。
+        cut_radius_mm: 底の切り取り径の半分（＝寸法パラメータ
+            `adapter.bottom_cut_diameter_mm` の半分。要件 6.10）。⚠️ **上流の
+            平面部径の半分ではない**——平面部径は上限であり、手切りの誤差の
+            余裕ぶん内側を切る（決定 4b）。⚠️ **通過の基準でもある**——ここから
+            `seat_slope` で広がる円錐の内側には材料が1つも無い。
         lip_outer_radius_mm: 切り取りで残る縁の外半径（＝底の外半径）。
         lip_width_mm: 残る縁の幅（mm、片側）。⚠️ **これが掴み代である。**
         floor_bottom_height_mm: 床の下面（＝中央部とアームの上面）。
@@ -1904,25 +1918,29 @@ def adapter_geometry(
     skirt_outer_radius_mm = skirt_inner_radius_mm + adapter.wall_thickness_mm
     skirt_bottom_height_mm = drive_base.underside_height_mm
 
-    # ⚠️ **底は平面部径まで抜かれる**（要件 6.10 / 決定 4b）。残る縁が掴み代で
-    # あり、⚠️ **切り取り径を本 Spec 側の寸法パラメータとして持たない**——
-    # 上限は上流の平面部径そのものである。
-    cut_radius_mm = can.bottom_flat_diameter_mm / 2.0
+    # ⚠️ **切り取り径は本 Spec の寸法パラメータである**（要件 6.10 / 決定 4b
+    # 「手作業の余裕」）。上流の平面部径は**上限**であって値そのものではない
+    # ——⚠️ **切断は工作機械ではなく手で行う**ため、上限をそのまま採ると
+    # ⚠️ **誤差が片側にしか効かない**（小さく切れば縁が広がるだけだが、大きく
+    # 切れば縁が消える）。上限との突き合わせは `config` の読み込み経路が
+    # `AdapterSpec.validate_against_upstream` で済ませている——⚠️ **ここで
+    # 上流の値を写して切り取り径を作らない。**
+    cut_radius_mm = adapter.bottom_cut_diameter_mm / 2.0
     lip_outer_radius_mm = can.bottom_outer_diameter_mm / 2.0
     lip_width_mm = lip_outer_radius_mm - cut_radius_mm
     if lip_width_mm <= 0.0:
         raise GeometryError(
-            f"底を平面部径まで抜くと縁が残らない（座面の幅 {lip_width_mm!r}mm）"
-            f"——bottom_flat_diameter_mm={can.bottom_flat_diameter_mm!r} が "
-            f"bottom_outer_diameter_mm={can.bottom_outer_diameter_mm!r} と"
-            "等しく、⚠️ 缶の重量を受ける座面が消える（要件 6.10）。"
+            f"底を切り取り径まで抜くと縁が残らない（座面の幅 {lip_width_mm!r}mm）"
+            f"——bottom_cut_diameter_mm={adapter.bottom_cut_diameter_mm!r} が "
+            f"bottom_outer_diameter_mm={can.bottom_outer_diameter_mm!r} 以上で"
+            "あり、⚠️ 缶の重量を受ける座面が消える（要件 6.10, 6.11）。"
             "⚠️ 縁は持ち上げ方向を止めない。上方向の拘束は要件 6.5 の締結が担う。"
         )
     if cut_radius_mm <= skirt_outer_radius_mm:
         raise GeometryError(
             f"底の切り取り径の半径 {cut_radius_mm!r}mm が裾の外側 "
             f"{skirt_outer_radius_mm!r}mm 以下であり、床が縁の下へ届かない"
-            f"（bottom_flat_diameter_mm={can.bottom_flat_diameter_mm!r}、"
+            f"（bottom_cut_diameter_mm={adapter.bottom_cut_diameter_mm!r}、"
             f"hub_outer_diameter_mm={base.hub_outer_diameter_mm!r}）。"
         )
 
@@ -3581,3 +3599,433 @@ def build_battery_tray(
             metrics=measure_part(BATTERY_TRAY_PART_NAME, solid),
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# 組立の順序が幾何的に成立すること（要件 7.14 / design.md 決定 4b「組立の順序」）
+#
+# ## ⚠️ 「組み上がった状態で干渉しない」ことは、組み上げられることを意味しない
+#
+# 要件 9.1 の検査（`test_chassis_invariants.py` の組み上がり干渉）は**最終形**
+# だけを見る。⚠️ **順序を1つも見ていない**——缶は上へ広がる円錐台であり、
+# 切り取った開口（出荷値 Ø160）より大きい段（基板デッキ Ø173.6 / 受け止め
+# デッキ Ø185.4）は⚠️ **そこを通れない**。したがって缶を段の上から被せることは
+# できず、段は缶の口（Ø210）から落とし込むほかない。⚠️ **この欠陥は最終形の
+# 検査を1つも落とさずに成立する。**
+#
+# 本節は design.md「組立手順」が記録する順序（`ASSEMBLY_ORDER`）で、⚠️ **各部品が
+# その時点で既に置かれている部品と干渉せずに所定の位置へ到達できる経路を持つ**
+# ことを、⚠️ **構築したソリッドに対して**確かめる。
+#
+# ## ⚠️ 掃引は「並進1回」に限る（この検査が捉えられる範囲）
+#
+# 各部品の到達経路は**1方向の並進**として表す——段と缶は真上から降ろし
+# （`_AXIAL_APPROACH`）、円環の断片とトレイは据え付けの二等分線の向きから
+# 半径方向に差し込む（要件 6.6 / 決定 4b）。⚠️ **一般の運動計画ではない。**
+# 捉えられるのは「その向きへ真っ直ぐ入れたときに当たる」ことであり、
+# ⚠️ **傾けて入れる・回しながら入れるといった経路を試さない**——したがって
+# 本検査が違反を報告したとき、それは「この向きでは入らない」であって
+# 「どうやっても入らない」ではない。⚠️ **逆向きの読み替えはできる**——
+# 違反が無ければ、その向きの並進で確かに入る。
+#
+# ## ⚠️ 掃引した体積は面から作る（サンプリングではない）
+#
+# 向き d から入る部品 S が掃く体積は {p + t·d : p ∈ S, t >= 0} である。
+# ⚠️ **経路上の何点かへ置いて確かめる形にしない**——点と点の間で当たる形を
+# 見落とす。S の境界のうち d に**逆らって**向いた面（法線と d の内積が負の面）を
+# d の向きへ押し出した角柱の和が、S 自身と合わせてこの体積そのものである
+# （その向きの直線上にある材料の区間の**下端**は、必ずそのような面に載る）。
+# ---------------------------------------------------------------------------
+
+
+TRASH_CAN_PART_NAME: Final[str] = "trash_can"
+"""ゴミ箱の名（⚠️ **購入部品であり造形物ではない**——`PART_NAMES` に入れない）。
+
+組立の順序の検査では**部品の1つとして**現れる。⚠️ **缶を並べずに順序を確かめる
+ことはできない**——通れない開口を持っているのは缶だからである。
+"""
+
+ASSEMBLY_ORDER: Final[tuple[str, ...]] = (
+    HUB_PLATE_PART_NAME,
+    MOTOR_ARM_PART_NAME,
+    BATTERY_TRAY_PART_NAME,
+    TRASH_CAN_PART_NAME,
+    ADAPTER_SEGMENT_PART_NAME,
+    BOARD_DECK_PART_NAME,
+    CATCH_DECK_PART_NAME,
+)
+"""design.md「組立手順」が記録する据え付けの順序（要件 7.14）。
+
+⚠️ **記録の正は design.md「組立手順」の表である。** ここにあるのは、その表のうち
+**造形物と缶を置く操作だけを取り出した並び**である（手順 7 → 8 → 10 → 11 に
+対応する。ホイール・ブラケット・配線・実測の各手順は据え付ける形を持たないため
+ここには現れない）。
+
+⚠️ **缶はアダプタ断片より先である**（手順 10: 缶を据えてから断片を半径方向へ
+差し込む。掴み面は縁の**下**にあり、缶を上から落とし込んで留めることはできない）。
+⚠️ **段は缶より後である**（手順 11: 段は切り取った開口より大きく、缶を段の上から
+被せることはできない）。
+"""
+
+_AXIAL_APPROACH: Final[tuple[float, float, float]] = (0.0, 0.0, 1.0)
+"""真上から降ろす部品の到達の向き（⚠️ **向きの表明であって寸法ではない**）。"""
+
+_APPROACH_NORMAL_TOLERANCE: Final[float] = 1e-4
+"""面の法線が到達の向きへ「逆らっている」と言うための刻み（無次元）。
+
+⚠️ **寸法ではない。** 到達の向きと直交する面（軸に平行な円筒面など）は掃引に
+何も足さないため、その周りの数値誤差を除くための刻みである。
+"""
+
+_MIN_SWEPT_SECTION_MM2: Final[float] = 0.01
+"""掃引の角柱が「断面を持つ」と言うための下限（mm^2）。
+
+⚠️ **寸法ではなく数値上の下限である。** 到達の向きとほぼ平行な曲面（半径方向の
+ボルト穴の円筒面など）を押し出すと、断面がほぼ 0 の退化した角柱になり、
+⚠️ **ブール演算が破綻して意味の無い体積を返す**。そうした面は掃引に何も足さない
+（材料の区間の下端はそこに載らない）ため、断面がこの下限に満たない角柱は数えない。
+"""
+
+_CONTACT_TOLERANCE_MM3: Final[float] = 1e-6
+"""重なりを「有る」と言うための下限（mm^3）。
+
+⚠️ **寸法ではない。** 面で接するだけの部品どうし（段の下面と立ち上がりの上端、
+掴み面と缶の縁）は重なりを持たないが、ブール演算はその境界で丸めを残す。
+"""
+
+
+@dataclass(frozen=True, slots=True)
+class AssemblyStep:
+    """組立の1手（部品1点と、その部品が到達する向き）。
+
+    ⚠️ **形状オブジェクトを持たない**（`AdapterGeometry` と同じ規律）。本型は
+    数値だけで構成され、形状ライブラリの無い環境でも生成・比較できる——
+    ⚠️ **順序と向きが正しいかどうかを知るために CAD を要求しない。**
+
+    Attributes:
+        part_name: 部品名。`part_names(params)` の要素、または
+            `TRASH_CAN_PART_NAME`。
+        approach: 部品が**やって来る**向き（機体座標の単位ベクトル）。
+            部品は「所定の位置 ＋ t × approach」（t >= 0）から降りてくる。
+    """
+
+    part_name: str
+    approach: tuple[float, float, float]
+
+
+@dataclass(frozen=True, slots=True)
+class AssemblyReachViolation:
+    """到達できない1件（要件 7.14）。
+
+    Attributes:
+        part_name: 到達できない部品の名。
+        blocked_by: その経路を塞いでいる、**既に置かれている**部品の名。
+        overlap_mm3: 掃引した体積と、塞いでいる部品との重なり（mm^3）。
+    """
+
+    part_name: str
+    blocked_by: str
+    overlap_mm3: float
+
+
+def _radial_approach(angle_deg: float) -> tuple[float, float, float]:
+    """半径方向（機体外向き）の到達の向き（⚠️ 単位ベクトル）。"""
+    radians = math.radians(angle_deg)
+    return (math.cos(radians), math.sin(radians), 0.0)
+
+
+def assembly_steps(
+    params: ResolvedParams,
+    layout: ChassisLayout,
+    *,
+    order: Sequence[str] = ASSEMBLY_ORDER,
+) -> tuple[AssemblyStep, ...]:
+    """据え付けの順序を、部品1点ずつの手へ展開する（要件 7.14）。
+
+    ⚠️ **形状を構築しない。** 本関数は算術のみで完結し、形状ライブラリの無い
+    環境でも評価できる（`adapter_geometry` と同じ規律）。
+
+    ⚠️ **点数はここで数え直さない**（要件 2.1）——`joints.segment_counts()` が
+    正であり、部品名の組み立て方は `part_names` と同じ規約に従う。
+
+    到達の向きは部品の据わり方から決まる（⚠️ **手で選んだ向きを設定値として
+    持たない**）:
+
+    - **中央部・段・缶**: 真上から降ろす。段は缶の口から落とし込む（決定 4b）
+    - **モータ取付部**: 舌が二股へ入る向き、すなわちその輪の取付角の外向き
+    - **バッテリトレイ**: 耳が受け持つアームの外向き（`joints` の
+      `BATTERY_TRAY_ARM_INDEX`）。⚠️ 耳はアームを両側から挟むため、アームに
+      沿って半径方向に差し込む
+    - **アダプタ断片**: 断片の二等分線の外向き（要件 6.6。缶を据えたまま
+      半径方向に差し込む）
+
+    Args:
+        params: `config.load_params()` の戻り値。
+        layout: `layout.derive_layout()` の戻り値。
+        order: 据え付ける部品の**種類**の並び。既定は design.md「組立手順」が
+            記録する `ASSEMBLY_ORDER`。
+
+    Returns:
+        据え付ける順の手の列。
+
+    Raises:
+        GeometryError: `order` に未知の名が含まれる場合、同じ部品が2度現れる
+            場合、または造形する部品と缶を1つでも落としている場合。
+            ⚠️ **落とした順序を黙って通さない**——通せば、検査は落とした部品に
+            ついて何も言わないまま成功する。
+    """
+    machine_names = tuple(
+        name
+        for name in part_names(params)
+        if not name.startswith(f"{SERVICE_STAND_PART_NAME}_")
+    ) + (TRASH_CAN_PART_NAME,)
+
+    adapter = adapter_geometry(params, layout)
+    tray = battery_tray_geometry(params, layout)
+    counts = segment_counts(params)
+
+    def _members(base_name: str) -> tuple[str, ...]:
+        if base_name == TRASH_CAN_PART_NAME:
+            return (TRASH_CAN_PART_NAME,)
+        count = counts[base_name]
+        if count == _UNSPLIT_PART_COUNT:
+            return (base_name,)
+        return tuple(f"{base_name}_{index}" for index in range(1, count + 1))
+
+    steps: list[AssemblyStep] = []
+    for base_name in order:
+        if base_name != TRASH_CAN_PART_NAME and base_name not in PART_NAMES:
+            raise GeometryError(
+                f"組立の順序に未知の部品 {base_name!r} が含まれる"
+                f"（指定できるのは {PART_NAMES!r} と {TRASH_CAN_PART_NAME!r} である）。"
+            )
+        members = _members(base_name)
+        if base_name == MOTOR_ARM_PART_NAME:
+            approaches = [
+                _radial_approach(angle_deg) for angle_deg in layout.wheel_angles_deg
+            ]
+        elif base_name == BATTERY_TRAY_PART_NAME:
+            approaches = [_radial_approach(tray.arm_angle_deg)] * len(members)
+        elif base_name == ADAPTER_SEGMENT_PART_NAME:
+            approaches = [
+                _radial_approach(start_deg + adapter.segment_span_deg / 2.0)
+                for start_deg in adapter.segment_start_angles_deg
+            ]
+        else:
+            approaches = [_AXIAL_APPROACH] * len(members)
+        steps.extend(
+            AssemblyStep(part_name=name, approach=approach)
+            for name, approach in zip(members, approaches, strict=True)
+        )
+
+    named = [step.part_name for step in steps]
+    duplicated = sorted({name for name in named if named.count(name) > 1})
+    if duplicated:
+        raise GeometryError(
+            "組立の順序に同じ部品が2度現れる: "
+            + "、".join(duplicated)
+            + "（⚠️ 2度目は既に置かれている自分自身と当たる——順序の誤りである）。"
+        )
+    missing = sorted(set(machine_names) - set(named))
+    if missing:
+        raise GeometryError(
+            "組立の順序が部品を落としている: "
+            + "、".join(missing)
+            + "（要件 7.14: 各部品が所定の位置へ到達できることを検査する。"
+            "⚠️ 落とした部品について検査は何も言わない）。"
+        )
+    return tuple(steps)
+
+
+def build_trash_can_shell(params: ResolvedParams, layout: ChassisLayout) -> object:
+    """底を抜いたゴミ箱の代用形状を構築する（要件 7.14 の入力）。
+
+    ⚠️ **造形物ではない。** 缶は購入部品であり、ここで作るのは組立の順序を形で
+    確かめるための代用形状である（`build_parts` はこれを返さない）。
+
+    ⚠️ **寸法は上流の採寸値と切り取り径だけから立てる**——底の外径・肉厚・
+    テーパー角・全高（上流が正）と、`adapter.bottom_cut_diameter_mm`（本 Spec が
+    正）である。⚠️ **段の導出値を1つも使わない**——使えば「自分の値と自分の値が
+    一致する」恒真の検査になる。
+
+    ⚠️ **縁の下面は平らな環として置く。** 実物の縁の下面は角の丸みで上へ反って
+    いるため、この置き方は実物より下へ張り出す——⚠️ 干渉の判定は保守側に倒れる
+    （`test_chassis_invariants.py` の `_trash_can_model` と同じ扱い）。
+
+    Args:
+        params: `config.load_params()` の戻り値。
+        layout: `layout.derive_layout()` の戻り値。
+
+    Returns:
+        build123d の `Part`。⚠️ 中核層へは渡らない。
+
+    Raises:
+        GeometryError: アダプタの幾何が成立しない場合（伝播）。
+        CadUnavailableError: 形状ライブラリが導入されていない場合。
+    """
+    build123d = _require_shape_library()
+    can = params.trash_can
+    adapter = adapter_geometry(params, layout)
+
+    def cone(bottom_radius_mm: float, z_range: tuple[float, float]) -> Any:
+        z_min, z_max = z_range
+        height_mm = z_max - z_min
+        return build123d.Location((0.0, 0.0, z_min)) * build123d.Cone(
+            bottom_radius_mm,
+            bottom_radius_mm + height_mm * adapter.seat_slope,
+            height_mm,
+            align=None,
+        )
+
+    def cylinder(radius_mm: float, z_range: tuple[float, float]) -> Any:
+        z_min, z_max = z_range
+        return build123d.Location((0.0, 0.0, z_min)) * build123d.Cylinder(
+            radius_mm, z_max - z_min, align=None
+        )
+
+    floor_mm = adapter.floor_top_height_mm
+    top_mm = floor_mm + can.height_mm
+    outer_radius_mm = can.bottom_outer_diameter_mm / 2.0
+
+    wall = cone(outer_radius_mm, (floor_mm, top_mm)) - cone(
+        outer_radius_mm - can.bottom_thickness_mm,
+        (floor_mm - _TOOL_OVERSHOOT_MM, top_mm + _TOOL_OVERSHOOT_MM),
+    )
+    lip_range = (floor_mm, floor_mm + can.bottom_thickness_mm)
+    lip = cylinder(outer_radius_mm, lip_range) - cylinder(
+        adapter.cut_radius_mm,
+        (lip_range[0] - _TOOL_OVERSHOOT_MM, lip_range[1] + _TOOL_OVERSHOOT_MM),
+    )
+    return wall + lip
+
+
+def _placed_machine_parts(
+    params: ResolvedParams, layout: ChassisLayout
+) -> dict[str, object]:
+    """機体を構成する部品を**機体座標へ据え付けて**名前で引ける形にする。
+
+    ⚠️ **アームは据え付けの角度へ回す**——`build_drive_base` は3本に**同一の
+    ソリッド**を返すため、回さずに並べると3本が重なる。⚠️ **整備スタンドの脚は
+    機体の部品ではなく**、脚の局所座標で構築されている（要件 5.3）ため除く。
+    """
+    build123d = _require_shape_library()
+    placed: dict[str, object] = {}
+    for part in build_parts(params, layout):
+        if part.name.startswith(f"{SERVICE_STAND_PART_NAME}_"):
+            continue
+        solid = part.solid
+        if part.name.startswith(f"{MOTOR_ARM_PART_NAME}_"):
+            index = int(part.name.rsplit("_", 1)[1])
+            solid = build123d.Rotation(0, 0, layout.wheel_angles_deg[index - 1]) * solid
+        placed[part.name] = solid
+    placed[TRASH_CAN_PART_NAME] = build_trash_can_shell(params, layout)
+    return placed
+
+
+def _extent_along(
+    solid: object, direction: tuple[float, float, float]
+) -> tuple[float, float]:
+    """外接箱を `direction` へ射影した範囲（⚠️ 実形状の範囲を**覆う**）。"""
+    box = solid.bounding_box()  # type: ignore[attr-defined]
+    projections = [
+        x_mm * direction[0] + y_mm * direction[1] + z_mm * direction[2]
+        for x_mm in (box.min.X, box.max.X)
+        for y_mm in (box.min.Y, box.max.Y)
+        for z_mm in (box.min.Z, box.max.Z)
+    ]
+    return min(projections), max(projections)
+
+
+def _approach_overlap_mm3(
+    solid: object, obstacle: object, direction: tuple[float, float, float]
+) -> float:
+    """`direction` から入る `solid` が掃く体積と、`obstacle` の重なり（mm^3）。
+
+    掃引は `solid` 自身と、⚠️ **`direction` に逆らって向いた面**を `direction` の
+    向きへ押し出した角柱の和である（本節の冒頭を参照）。押し出す長さは
+    ⚠️ **障害物を越えるところまでで足りる**——それより先で当たることはない。
+
+    ⚠️ **曲面の向きは面の中央の法線で代表させる。** 平面・機体の軸に同軸な円筒・
+    機体の軸まわりの円錐——本 Spec の部品が持つ面はどれも、法線と `direction` の
+    内積の符号が面の上で変わらないため、この代表は厳密である。⚠️ **符号が変わる
+    曲面（半径方向の穴の円筒面）は断面がほぼ 0 の角柱にしかならず**、
+    `_MIN_SWEPT_SECTION_MM2` がそれを落とす——⚠️ 退化した角柱はブール演算を
+    破綻させ、意味の無い体積を返す。
+    """
+    build123d = _require_shape_library()
+    reach_mm = _extent_along(obstacle, direction)[1] - _extent_along(solid, direction)[0]
+    if reach_mm <= 0.0:
+        # ⚠️ 障害物は到達の向きの**後ろ**にある——掃引はそこへ届かない。
+        return 0.0
+    reach_mm += _TOOL_OVERSHOOT_MM
+
+    overlap_mm3 = float((solid & obstacle).volume)  # type: ignore[operator]
+    vector = build123d.Vector(*direction)
+    for face in solid.faces():  # type: ignore[attr-defined]
+        normal = face.normal_at()
+        along = (
+            normal.X * direction[0]
+            + normal.Y * direction[1]
+            + normal.Z * direction[2]
+        )
+        if along >= -_APPROACH_NORMAL_TOLERANCE:
+            continue
+        prism = build123d.extrude(face, amount=reach_mm, dir=vector)
+        if float(prism.volume) < _MIN_SWEPT_SECTION_MM2 * reach_mm:
+            continue
+        overlap_mm3 += float((prism & obstacle).volume)
+    return overlap_mm3
+
+
+def assembly_reach_violations(
+    params: ResolvedParams,
+    layout: ChassisLayout,
+    *,
+    order: Sequence[str] = ASSEMBLY_ORDER,
+) -> tuple[AssemblyReachViolation, ...]:
+    """据え付けの順序が幾何的に成立することを、実形状に対して検査する（要件 7.14）。
+
+    ⚠️ **組み上がり状態の無干渉（要件 9.1）とは別の主張である。** ここが見るのは
+    「その時点で**既に置かれている**部品と干渉せずに到達できる経路があるか」で
+    あり、⚠️ **缶を段の上から被せることはできない**という種類の欠陥は、最終形の
+    検査を1つも落とさずに成立する。
+
+    ⚠️ **捉えられる範囲を取り違えない**（本節の冒頭）。経路は各部品につき
+    **1方向の並進**であり、傾けて入れる経路は試さない。⚠️ **違反が無いことは
+    「その向きの並進で入る」ことの主張であり、違反があることは「どうやっても
+    入らない」ことの主張ではない。**
+
+    Args:
+        params: `config.load_params()` の戻り値。
+        layout: `layout.derive_layout()` の戻り値。
+        order: 据え付ける部品の**種類**の並び。既定は design.md「組立手順」が
+            記録する `ASSEMBLY_ORDER`。
+
+    Returns:
+        到達できない（部品, 塞いでいる部品）の組。順序が成立していれば空である。
+
+    Raises:
+        GeometryError: 幾何が成立しない場合、または `order` が部品を落として
+            いる場合（`assembly_steps` からの伝播）。
+        ParameterError: 材料が上流の許可一覧に無い場合（`build_parts` からの伝播）。
+        CadUnavailableError: 形状ライブラリが導入されていない場合。
+    """
+    steps = assembly_steps(params, layout, order=order)
+    placed = _placed_machine_parts(params, layout)
+
+    violations: list[AssemblyReachViolation] = []
+    installed: list[str] = []
+    for step in steps:
+        solid = placed[step.part_name]
+        for earlier in installed:
+            overlap_mm3 = _approach_overlap_mm3(solid, placed[earlier], step.approach)
+            if overlap_mm3 > _CONTACT_TOLERANCE_MM3:
+                violations.append(
+                    AssemblyReachViolation(
+                        part_name=step.part_name,
+                        blocked_by=earlier,
+                        overlap_mm3=overlap_mm3,
+                    )
+                )
+        installed.append(step.part_name)
+    return tuple(violations)

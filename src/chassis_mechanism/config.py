@@ -38,7 +38,10 @@ Invariants）。出所を持たない寸法値が設計へ流れる形を作ら�
 `JointPolicy` 以上であることは、上流の設定ファイルを読まなければ判定できないため
 `params` の構築時検証には置けない（`params` モジュール docstring）。したがって
 `ResolvedParams` を組み立てる**唯一の**私的関数 `_resolve_params` が
-`ChassisParams.validate_against_upstream` を呼ぶ。⚠️ **構築箇所を1つに保つこと
+`ChassisParams.validate_against_upstream` を呼ぶ。⚠️ **底の切り取り径
+（`adapter.bottom_cut_diameter_mm`）が上流の底の平面部径以下であることも同じ
+経路で見る**（要件 6.10 / design.md 決定 4b）——上限を知るのはこの層だけで
+あり、⚠️ 切断は不可逆である。⚠️ **構築箇所を1つに保つこと
 自体が検証の一部である**——2箇所目ができた時点で、突き合わせを通らない
 `ResolvedParams` を作れてしまう。呼ばれない検証は何も拒否しない。
 
@@ -404,7 +407,7 @@ def _resolve_params(chassis: ChassisParams, label: str) -> ResolvedParams:
     """
     upstream = upstream_load_params()
     try:
-        chassis.validate_against_upstream(upstream.joint)
+        chassis.validate_against_upstream(upstream.joint, upstream.trash_can)
     except ParameterError as exc:
         # メッセージは自分の値と上流の値の**両方**を持っている（`params` 側）。
         # どのファイルを直せばよいかだけを補って再送する。

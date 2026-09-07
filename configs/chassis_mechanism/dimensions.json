@@ -1,5 +1,6 @@
 {
   "adapter": {
+    "bottom_cut_diameter_mm": 160.0,
     "retention_point_count": 3,
     "rise_height_mm": 20.0,
     "seat_clearance_mm": 1.0,
@@ -88,6 +89,7 @@
     "terminal_block_width_mm": null
   },
   "provenance": {
+    "adapter.bottom_cut_diameter_mm": "assumed",
     "adapter.retention_point_count": "assumed",
     "adapter.rise_height_mm": "assumed",
     "adapter.seat_clearance_mm": "assumed",

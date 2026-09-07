@@ -736,7 +736,7 @@ def test_digest_is_pinned_to_a_stable_literal() -> None:
     """
     assert (
         parameters_digest(load_params().chassis)
-        == "sha256:d7d505da40e5965c5d06b7e3918328addae0cb3950fb0702c57e6dc948924fdd"
+        == "sha256:802dbd9304b7ab6413fd7deb781454dee9f61bae45533bb6cda50cf513aa5832"
     )
 
 
@@ -1014,3 +1014,54 @@ def test_config_imports_only_the_upstream_public_entry_point() -> None:
     assert {name.split(".")[0] for name in imported} & forbidden_roots == set()
     upstream_modules = {name for name in imported if name.split(".")[0] == "catch_mechanism"}
     assert upstream_modules <= {"catch_mechanism"}
+
+
+# ---------------------------------------------------------------------------
+# 底の切り取り径と上流の平面部径の突き合わせ（要件 6.10 / 決定 4b「手作業の余裕」）
+#
+# ⚠️ **呼ばれない検証は何も拒否しない。** 上限（上流の平面部径）を知るのは
+# `config` だけであるため、読み込み経路が必ずこれを呼ぶことをここで固定する
+# （当たり面の下限と同じ扱い）。
+# ---------------------------------------------------------------------------
+
+
+def test_a_bottom_cut_above_the_upstream_flat_diameter_is_rejected(tmp_path: Path) -> None:
+    """⚠️ **平面部径を超える切り取り径を、両方の値を示して拒否する**（要件 6.10）。
+
+    ⚠️ **切断は不可逆である。** 平面部径を超えて切れば、缶の重量を受ける座面が
+    どこにも無くなる——設定ファイルの段階で止める。
+    """
+    upstream_flat_mm = upstream_load_params().trash_can.bottom_flat_diameter_mm
+    document = _shipped_document()
+    above = upstream_flat_mm + 0.1
+    document["adapter"]["bottom_cut_diameter_mm"] = above
+    with pytest.raises(ParameterError) as excinfo:
+        load_params(_write(tmp_path, document))
+    message = str(excinfo.value)
+    assert repr(above) in message
+    assert repr(upstream_flat_mm) in message
+    assert "bottom_cut_diameter_mm" in message
+
+
+def test_a_bottom_cut_at_the_upstream_flat_diameter_is_accepted(tmp_path: Path) -> None:
+    """上限ちょうどは通る（境界を誤って弾かない）。"""
+    upstream_flat_mm = upstream_load_params().trash_can.bottom_flat_diameter_mm
+    document = _shipped_document()
+    document["adapter"]["bottom_cut_diameter_mm"] = upstream_flat_mm
+    resolved = load_params(_write(tmp_path, document))
+    assert resolved.chassis.adapter.bottom_cut_diameter_mm == upstream_flat_mm
+
+
+def test_the_shipped_cut_keeps_room_for_the_hand_cut_error() -> None:
+    """⚠️ **出荷値は上限をそのまま採っていない**（決定 4b「手作業の余裕」）。
+
+    ⚠️ **切断は工作機械ではなく手で行う。** 上限（平面部径）をそのまま採ると、
+    ⚠️ **誤差が片側にしか効かない**——小さく切れば縁が広がるだけだが、大きく
+    切れば縁が消える。出荷値はその片側の誤差を吸収できるだけ内側にある。
+    """
+    resolved = load_params()
+    cut_mm = resolved.chassis.adapter.bottom_cut_diameter_mm
+    flat_mm = resolved.trash_can.bottom_flat_diameter_mm
+    assert cut_mm < flat_mm
+    # 誤差の余裕は「縁が消える径」までの差である（⚠️ 直径で数える）。
+    assert flat_mm - cut_mm >= 10.0
