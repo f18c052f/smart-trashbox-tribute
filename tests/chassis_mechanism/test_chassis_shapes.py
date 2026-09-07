@@ -31,6 +31,7 @@ from pathlib import Path
 import pytest
 from catch_mechanism import Envelope, check_envelope
 
+from chassis_mechanism import shapes as shapes_module
 from chassis_mechanism.config import load_params
 from chassis_mechanism.errors import (
     CadUnavailableError,
@@ -3120,6 +3121,88 @@ def test_the_gate_carries_every_kind_of_violation_it_has_already_computed(
     assert "dowel" in message
 
 
+def test_the_envelope_failure_carries_both_of_the_other_two_kinds(
+    shipped: tuple[object, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """⚠️ **3種が同時に起きたとき、外接箱の失敗が残り2種を**両方**載せる。**
+
+    上の検査（`test_the_gate_carries_every_kind_of_violation_it_has_already_computed`）
+    が通るのは隙間＋実現の2種であり、送出されるのは `ClearanceError` である。
+    ⚠️ **外接箱の枝は別の連結を組み立てている**（`clearance_also + realisation_also`）
+    ——そこを一度も踏まなければ、片方を落とす書き間違いが緑のまま残る
+    （タスク 3.6 のレビュー指摘3）。
+
+    ⚠️ **3種を同時に起こす**: 床との隙間を落とし、造形面を小さくし、実現されない
+    ダボを数えさせる。送出されるのは `GeometryError`（外接箱）であり、⚠️ **隙間も
+    ダボも同じメッセージに載る**。
+    """
+    import dataclasses
+
+    from chassis_mechanism import joints as joints_module
+
+    params, _ = shipped
+    tripped = _too_low_for_the_floor(params)
+    # ⚠️ 造形面を小さくして外接箱の枝を踏ませる（一律には縮めない。上流の分割数
+    # 導出が先に落ちる。`test_the_gate_lists_every_build_volume_excess_of_every_part`）。
+    tripped = dataclasses.replace(
+        tripped,
+        printing=dataclasses.replace(
+            tripped.printing, build_x_mm=160.0, build_z_mm=45.0
+        ),
+    )
+    layout = derive_layout(tripped)  # type: ignore[arg-type]
+    derived = joints_module.derive_joints(layout, tripped)  # type: ignore[arg-type]
+    with_dowels = tuple(
+        dataclasses.replace(joint, dowel_count=2)
+        if joint.name.startswith("hub_plate__motor_arm_")
+        else joint
+        for joint in derived
+    )
+    monkeypatch.setattr(
+        "chassis_mechanism.shapes.derive_joints",
+        lambda *_args, **_kwargs: with_dowels,
+    )
+    with pytest.raises(GeometryError) as excinfo:
+        check_before_build(tripped, layout)  # type: ignore[arg-type]
+    message = str(excinfo.value)
+    # 1. 送出された型そのものの内容（外接箱の超過）。
+    assert "battery_tray" in message
+    assert "13.599999999999994mm 超過" in message
+    # 2. ⚠️ 併せて載る床との隙間（`clearance_also`）。
+    assert "20.5mm 下回る" in message
+    # 3. ⚠️ 併せて載る要素の未実現（`realisation_also`）。
+    #    ⚠️ **2 と 3 の両方**が同時に出ることが本件の主眼である。
+    assert "hub_plate__motor_arm_1" in message
+    assert "dowel" in message
+
+
+GATE_NAMES: frozenset[str] = frozenset(
+    {"check_before_build", "check_before_building_stand"}
+)
+
+
+def _builders_and_what_they_call_first(source: str) -> dict[str, set[str]]:
+    """`build_*` 関数ごとに、⚠️ **本体の先頭**で呼んでいる名前の集合を返す。
+
+    docstring を1文目として飛ばし、その次の文で呼ばれている名前だけを見る
+    ——⚠️ **「どこかで呼んでいる」では足りない**。関門は形を作る前に立つ。
+    """
+    tree = ast.parse(source)
+    found: dict[str, set[str]] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        if not node.name.startswith("build_"):
+            continue
+        first = node.body[1] if len(node.body) > 1 else node.body[0]
+        found[node.name] = {
+            child.func.id
+            for child in ast.walk(first)
+            if isinstance(child, ast.Call) and isinstance(child.func, ast.Name)
+        }
+    return found
+
+
 def test_every_public_builder_passes_through_the_gate(shipped: tuple[object, object]) -> None:
     """⚠️ **関門を迂回できる入口が無い**（要件 2.3, 4.4 / タスク 3.7 の前提）。
 
@@ -3127,24 +3210,48 @@ def test_every_public_builder_passes_through_the_gate(shipped: tuple[object, obj
     入口が1つでもあれば、そこから無検査の生成物が出る。整備スタンドだけは
     `StandInputs` しか受け取らないため（要件 5.2）、材料と外接箱に閉じた
     スタンド用の関門を通る。
+
+    ⚠️ **走査が何件見つけたかを固定する**（タスク 3.6 のレビュー指摘 / タスク 3.7
+    がこの固定に寄りかかるため）。「見つけた全件が関門を通る」だけでは、命名規約が
+    変わったりソースの取得先がずれたりして⚠️ **1件も見つからなかった場合に緑の
+    まま通る**。下限は `shapes.__all__` が公開している `build_*` の集合であり、
+    ⚠️ **手で数えた定数ではない**——構築の入口が増えれば下限も自動で上がる。
     """
-    tree = ast.parse(SHAPES_SOURCE.read_text(encoding="utf-8"))
-    gates = {"check_before_build", "check_before_building_stand"}
-    offenders: list[str] = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.FunctionDef):
-            continue
-        if not node.name.startswith("build_"):
-            continue
-        first = node.body[1] if len(node.body) > 1 else node.body[0]
-        called = {
-            child.func.id
-            for child in ast.walk(first)
-            if isinstance(child, ast.Call) and isinstance(child.func, ast.Name)
-        }
-        if not called & gates:
-            offenders.append(f"{node.name} (line {node.lineno})")
+    inspected = _builders_and_what_they_call_first(
+        SHAPES_SOURCE.read_text(encoding="utf-8")
+    )
+    offenders = sorted(
+        name for name, called in inspected.items() if not called & GATE_NAMES
+    )
     assert offenders == [], f"関門を通らない構築の入口がある: {offenders}"
+
+    exported = {name for name in shapes_module.__all__ if name.startswith("build_")}
+    assert exported, "⚠️ `shapes.__all__` に構築の入口が1つも無い（走査の前提が崩れた）"
+    missing = sorted(exported - set(inspected))
+    assert missing == [], f"公開されているのに走査が見つけていない入口: {missing}"
+    assert len(inspected) >= len(exported) >= 8
+
+
+def test_the_builder_scan_would_notice_an_ungated_builder_or_an_empty_scan() -> None:
+    """⚠️ 上の走査が**空振りではない**ことの反例（タスク 3.6 のレビュー指摘）。
+
+    3つを示す。(1) 関門を呼ばない構築関数は検出される、(2) ⚠️ **同じ形の関数が
+    関門を呼んでいれば検出されない**（反例が下限そのものを疑っていない証拠）、
+    (3) 構築関数が1つも無いソースでは走査が空になる——⚠️ **その空を捉えるのが
+    件数の下限である。**
+    """
+    ungated = 'def build_thing(params):\n    """doc"""\n    return 1\n'
+    assert _builders_and_what_they_call_first(ungated) == {"build_thing": set()}
+
+    gated = (
+        'def build_thing(params):\n'
+        '    """doc"""\n'
+        "    check_before_build(params, layout)\n"
+        "    return 1\n"
+    )
+    assert _builders_and_what_they_call_first(gated)["build_thing"] & GATE_NAMES
+
+    assert _builders_and_what_they_call_first("def helper():\n    return 1\n") == {}
 
 
 @requires_cad

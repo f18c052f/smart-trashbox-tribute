@@ -469,7 +469,11 @@ def find_module_level_cad_imports(module_name: str, source: str) -> list[str]:
 def test_no_cad_import_outside_shapes_and_export_in_current_tree() -> None:
     """現ツリーの全モジュールに形状ライブラリの import が無い。
 
-    `shapes` / `export` は未作成のため、現時点では「どこにも無い」ことが正しい。
+    ⚠️ **`shapes` / `export` は走査の対象外である**（`find_cad_import_violations`
+    は `CAD_LAYER_MODULES` を素通しする）。この2つは design.md「Allowed
+    Dependencies」が形状ライブラリの import を**許す**唯一の場所であり、実際に
+    関数内で import している。したがって本件が述べているのは「⚠️ **許された2つ
+    以外のどこにも無い**」ことである。
     """
     for module_name, source in _current_sources().items():
         violations = find_cad_import_violations(module_name, source)

@@ -285,9 +285,15 @@ def test_no_joint_counts_a_positioning_element_that_no_part_realises() -> None:
     二重に主張するだけ**である（`joints._NO_DOWELS`）。
 
     ⚠️ **要件 2.7 の区別は消えていない**——`bearing_area_mm2` はボルト座だけを
-    数え、嵌め合いの面を1度も算入しない（`test_changing_the_dowel_diameter_
-    does_not_move_any_bearing_area`）。数え上げを戻すなら形の側に穴を置くこと
-    を、`shapes.check_before_build` が関門として要求する。
+    数え、嵌め合いの面を1度も算入しない。根拠は `joints.BEARING_AREA_FORMULA`
+    （ボルト座の環だけを `bolt_count` ぶん積み、⚠️ ダボも嵌め合いの面も1度も
+    現れない）と、それが実形状と一致することを測る
+    `test_chassis_invariants.py::test_the_measured_bolt_seat_area_matches_the_bearing_area_recorded_by_joints`
+    である。⚠️ **`test_changing_the_dowel_diameter_does_not_move_any_bearing_area`
+    ではない**——あれはダボの**径**を動かしても当たり面が動かないことを見る検査で
+    あり、「何を数えているか」を述べていない（タスク 3.6 のレビュー指摘）。
+    数え上げを戻すなら形の側に穴を置くことを、`shapes.check_before_build` が
+    関門として要求する。
     """
     specs = _derived(_params())
     assert [spec.name for spec in specs if spec.dowel_count > 0] == []
