@@ -41,15 +41,18 @@ Handling」の「書き出しは原子的: 一時領域を経て確定する。�
 ⚠️ 観測（`measurements.json`）は識別子に入らない——観測のたびに形状の再生成が
 要求されてはならない（design.md 「Logical Data Model」）。
 
-⚠️ **出荷される記録の中身はタスク 4.2 が作る。** 本モジュールが用意するのは
+⚠️ **出荷される記録の中身はタスク 4.2 が作った。** 本モジュールが用意するのは
 記録の**仕組み**（書き出し・原子性・識別子照合）であり、
 `configs/chassis_mechanism/geometry-baseline.json` そのものは、実形状から全部品の
-指標を生成できるようになった時点（tasks.md タスク 4.2「現在の寸法パラメータから
-全部品を生成し、指標の記録を作る」）で初めて出荷される。⚠️ **作り物の指標を
+指標を生成できるようになった時点で
+`python -m chassis_mechanism build --update-baseline` が書き出した
+（18 部品ぶんの指標。⚠️ **手で書いた数ではない**）。⚠️ **作り物の指標を
 置いて場所を埋めない**——上流 `GeometryBaseline` は部品0件の記録を拒む
-（「部品を持たない記録は、どんな再生成結果とも一致してしまう」）ため、いま置ける
-のは「実部品を騙る数値」だけになる。記録が無ければ `load_baseline` がパスを示して
+（「部品を持たない記録は、どんな再生成結果とも一致してしまう」）ため、置けるのは
+「実部品を騙る数値」だけになる。記録が無ければ `load_baseline` がパスを示して
 失敗する（上流 `metrics` docstring「⚠️ **記録が無ければ失敗する。**」）。
+記録が現在の実装と整合していることは
+`tests/chassis_mechanism/test_chassis_geometry_regression.py` が固定している。
 
 依存の制約（design.md「Allowed Dependencies」/「Dependency Direction」）:
     本モジュールは中核層 `{assembly, baseline}` に属し、`errors` / `params` /
@@ -92,9 +95,10 @@ DEFAULT_BASELINE_PATH: Final[Path] = (
 （`src` レイアウト）。⚠️ **上流の記録（`configs/catch_mechanism/`）とは別物である**
 ——受け口の部品と駆動ベースの部品は別の寸法から決まり、別の識別子を持つ。
 
-⚠️ **このファイルはまだ出荷されていない。** 中身を作るのはタスク 4.2 であり、
-それまでこのパスを読もうとすれば上流 `load_baseline` がパスを示して失敗する
-（本モジュール docstring 参照）。
+⚠️ **このファイルは出荷済みである**（タスク 4.2）。中身は
+`python -m chassis_mechanism build --update-baseline` が実形状から書き出したもので
+あり、⚠️ **手で編集しない**（design.md「Domain Model」: 導出結果を手で編集しない）。
+記録が無ければ上流 `load_baseline` がパスを示して失敗する（本モジュール docstring 参照）。
 """
 
 _SCHEMA_VERSION_KEY: Final[str] = "schema_version"

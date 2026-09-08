@@ -621,11 +621,11 @@ def _cmd_check(args: argparse.Namespace) -> int:
     記録の有無に関わらず未了項目が標準エラーへ出る。
 
     ⚠️ **記録が無ければ失敗する。** 既定の記録
-    `configs/chassis_mechanism/geometry-baseline.json` を作るのは**タスク 4.2**で
-    あり、それまでこの経路は「記録が無い」ことをパスつきで報せるところまで完走
-    する（上流 `load_baseline` が終了コード 2 の `ParameterError` を送出する）。
-    ⚠️ **無いことを成功にしない**——部品を持たない記録はどんな再生成結果とも
-    一致してしまう。
+    `configs/chassis_mechanism/geometry-baseline.json` は**タスク 4.2 が出荷した**
+    ため既定の経路は完走するが、`--baseline` に無いパスを与えた場合は
+    「記録が無い」ことをパスつきで報せて終了コード 2 で失敗する（上流
+    `load_baseline` の `ParameterError`）。⚠️ **無いことを成功にしない**——部品を
+    持たない記録はどんな再生成結果とも一致してしまう。
     """
     params, layout = _params_and_layout(args)
     print(f"{PROGRAM} check: 寸法 {args.dimensions or DEFAULT_DIMENSIONS_PATH} を読み、幾何を導出した")
@@ -714,7 +714,7 @@ def _existing_tolerances(path: Path) -> tuple[float, float]:
 def _update_baseline(
     path: Path, params: ResolvedParams, measured: Mapping[str, PartMetrics]
 ) -> None:
-    """形状指標の記録を書き出す（要件 1.12 の書き出し経路。タスク 4.2 が用いる）。
+    """形状指標の記録を書き出す（要件 1.12 の書き出し経路。タスク 4.2 が用いた）。
 
     ⚠️ **識別子は寸法パラメータだけから作る**（`config.parameters_digest`）。
     観測（`measurements.json`）を含めると、観測のたびに形状の再生成が要求される。
@@ -889,7 +889,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--baseline",
         type=Path,
         default=DEFAULT_BASELINE_PATH,
-        help="照合する形状指標の記録。⚠️ 既定の記録を作るのはタスク 4.2 である。",
+        help=(
+            "照合する形状指標の記録。省略時は出荷の記録"
+            f"（{DEFAULT_BASELINE_PATH}）である。"
+        ),
     )
 
     layout_parser = subparsers.add_parser(

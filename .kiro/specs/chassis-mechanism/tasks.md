@@ -320,7 +320,7 @@
   - _Depends: 3.7_
   - _Boundary: Cli_
 
-- [ ] 4.2 形状指標の記録を初期化し、照合の回帰テストを追加する
+- [x] 4.2 形状指標の記録を初期化し、照合の回帰テストを追加する
   - 現在の寸法パラメータから全部品を生成し、指標の記録を作る
   - 再生成した指標と記録を照合し、体積の相対差と外接箱の絶対差が許容内であることを検査する
   - 部品の在／不在を符号化して扱い、部品が消えた場合も不一致として検出する
@@ -1061,3 +1061,55 @@ design.md `#### Joints` Risks はこの照合を `test_chassis_invariants.py` �
   ⚠️ **「組み上がった状態で干渉しない」ことは組み上げられることを意味しない**——
   要件 7.14 として、既に置かれた部品と干渉せずに所定位置へ到達できることを
   実形状の掃引で検査するようにした（誤った順序では缶が段4点に阻まれる）
+
+### 4.2 が残した申し送り
+
+- **形状指標の記録を出荷した**: `configs/chassis_mechanism/geometry-baseline.json`
+  （18 部品・LF・キー整列）。⚠️ **手で編集しない**——作り方は
+  `python -m chassis_mechanism build --update-baseline` ただ1つであり、出荷ファイルが入口の
+  出力とバイト単位で一致することを
+  `test_chassis_geometry_regression.py::test_the_entry_point_reproduces_the_shipped_record_byte_for_byte`
+  が固定している。⚠️ **寸法を変えたら記録の再生成まで含めて完了である**
+  （`layout.json` / `joint-schedule.json` と同じ規律）
+- **既定の `check` が終了コード 0 になった**: 4.1 の時点では記録が無く 2 で失敗していた。
+  ⚠️ 形状ライブラリ非導入の環境でも既定の `check --digest-only` は 0 になる
+  （`test_digest_only_check_succeeds_against_the_shipped_record_without_the_shape_library`）
+- **照合の失敗は「寸法を1つ変えて実際に作り直す」ことで固定した**: 記録の数字を手でずらす検査は
+  ⚠️ **許容差が寸法変更を飲み込む幅であっても緑のまま**であり、記録が飾りになっていることを
+  見逃す。出荷の許容差（体積 相対 1e-6 / 外接箱 絶対 1e-3mm）に対し、
+  `battery.tray_wall_thickness_mm` を +0.1mm した変更で生じる乖離は体積 相対 3.9e-2
+  （許容差の約 39,000 倍）・外接箱 0.3mm（300 倍）である。⚠️ **許容差 0 は採れない**
+  ——変更に関係しない `board_deck` の体積も相対 1e-15 級で動く
+- **在／不在は寸法変更で起こせる**: `board.can_clearance_mm` を半分にすると基板デッキの外径が
+  造形可能寸法を超え、`board_deck` が消えて `board_deck_1..3` が現れる。
+  ⚠️ **分割数は設定値ではなく導出であり（要件 2.1）、寸法1つで部品名の集合が動く**
+- **4.3 へ（⚠️ 本タスクは識別子の関門を意図的に迂回している）**: 寸法を変えれば
+  `parameters_digest` も動くため、素直に `check --dimensions <変更後>` を実行すると
+  `baseline.verify_digest` が先に落ち、⚠️ **指標の照合まで到達しない**。
+  `test_check_fails_when_one_dimension_changed` は記録の写しの識別子だけを変更後へ揃えて
+  照合させている。⚠️ **識別子の失敗経路そのものは 4.3 の所有のままである**
+- **6.7 / 7.1 へ（⚠️ 代表値の記入は記録の再生成まで含めて完了である）**: 実効転がり半径が動くと
+  鉛直スタックが動き、形状指標も動く。4.1 が挙げた2件（`test_the_shipped_simulator_config_agrees_with_the_current_geometry`
+  と `layout.json` のバイト一致）に加え、⚠️ **`geometry-baseline.json` の再生成
+  （`python -m chassis_mechanism build --update-baseline`）も要る**。
+  ⚠️ **`parameters_digest` は動かない**（観測は識別子に入らない）ため、
+  識別子照合はこの陳腐化を検出しない——検出するのは指標の照合だけである
+- **記録は形状ライブラリの版を持つ（`generator_version`）**: 照合には使わないが記録の一部であるため、
+  ⚠️ **build123d の版を上げると `test_the_entry_point_reproduces_the_shipped_record_byte_for_byte` が
+  落ちる**。版を上げた場合は記録の再生成まで含めて完了である（現在の出荷値は `build123d 0.11.1`）
+
+### 4.2 のレビューが残した指摘（いずれも非阻却）
+
+- **分割の非退化ガードが docstring より弱い**:
+  `test_chassis_geometry_regression.py` の `assert len(expected) > 1` は
+  「分割される部品が1つも無いと退化する」という docstring の主張より弱く、
+  ⚠️ **連番を持つ名前が1つも無くても通る**。`any(name[-1].isdigit() for name in expected)`
+  相当を足せば docstring と一致する
+- **許容差の引き継ぎは本ファイルからは観測できない**: バイト一致テストの docstring は
+  「写しから始めるのは許容差の引き継ぎも同時に通すため」と述べるが、⚠️ **出荷の許容差
+  （1e-6 / 1e-3）が `cli` の既定値と同値である**ため、現時点でその主張は観測できない
+  （引き継ぎ自体は `test_chassis_cli.py` が固定済み）。将来の意図としては正しいので
+  文面は残してよいが、「いまは既定値と一致しているため観測できない」と添えると誤読が減る
+- **`--baseline` の help に環境依存の絶対パスが出る**: `DEFAULT_BASELINE_PATH` を
+  そのまま埋め込んでいるため `--help` の出力が実行環境に依存する。リポジトリ相対で
+  示す選択肢もある
