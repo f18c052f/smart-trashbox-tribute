@@ -4376,3 +4376,724 @@ def test_the_part_masses_come_from_the_measured_volumes_and_the_upstream_density
         )
     # ⚠️ **目安であって合否条件ではない**——それでも「0 グラムの部品」は形の破綻である。
     assert min(mass.mass_g for mass in masses.values()) > 0.0
+
+
+# ---------------------------------------------------------------------------
+# 13. 接合面の法線と積層方向、搭載物の最下面（タスク 4.4 / 要件 2.8, 2.9, 7.1）
+#
+# ⚠️ **`joints` の宣言は形状を見ていない。** `joints` は build123d を import
+# できない層であり（モジュール docstring「実形状との一致は
+# `test_chassis_invariants.py`（`cad` extra、タスク 4.4）が検査する」）、
+# `print_normal_axis` は**設計の決定を表明した文字列**にすぎない。上の 1〜12 節は
+# 接合部の家族ごとに**当たり面の面積**を実形状と突き合わせたが、⚠️ **面積は
+# 向きについて何も言わない**——法線が積層方向を向いていても面積は変わらない。
+#
+# 本節が足すのは3つである。
+#
+#   - **全数であること**: 記録された接合部の**すべて**に実形状の面が対応する。
+#     ⚠️ **家族ごとの検査は、家族が増えたときに黙って素通りする。**
+#   - **向きが宣言どおりであること**: 面の法線を**面から読み出して**分類し、
+#     宣言した軸（`x` は半径方向、`y` は接線方向。`ALLOWED_PRINT_NORMAL_AXES`）と
+#     突き合わせる。⚠️ **法線を検索条件に与えて「見つかった」と言わない**
+#     ——それでは向きは仮定であって観測ではない（1〜12 節の `_planar_faces_on_plane`
+#     は面積を測るために法線を条件に使っている。ここでは条件に使わない）。
+#   - **積層方向が存在すること**: 部品ごとに、⚠️ **その部品の接合面のどれとも
+#     一致しない向き**が1つ以上あること。要件 2.8 が禁じるのは
+#     「接合面の法線が積層方向と一致する配置」であり、⚠️ そのような向きが
+#     1つも無ければ、どう寝かせて造形しても禁忌を避けられない。
+#
+# ⚠️ **対象は `JointSpec` として記録された接合部だけである**（design.md 決定 4b
+# 「⚠️ **要件 2.8 が禁じるのは層間剥離で荷重を受ける継手であり、圧縮の座では
+# ない**」）。面で押し合う圧縮の座——アダプタの床の上面（缶の縁が載る座）、
+# トレイのポケットの縁の上端（回り止め。12 節）、立ち上がりの下端の環——は
+# 接合部ではなく、法線が積層方向を向いていてよい。⚠️ **その線引きを注釈では
+# なく形で固定する**のが
+# `test_counting_the_compression_seat_as_a_joint_leaves_no_layer_direction`
+# である。
+# ---------------------------------------------------------------------------
+
+_RADIAL_CLASS = "radial"
+"""法線が機体の半径方向を向く面（`joints` の `print_normal_axis == "x"`）。"""
+
+_TANGENTIAL_CLASS = "tangential"
+"""法線が機体の接線方向を向く面（`joints` の `print_normal_axis == "y"`）。"""
+
+_LAYER_CLASS = "layer"
+"""法線が鉛直（機体座標の `z`）を向く面。⚠️ **平置きで造形すれば積層方向である。**"""
+
+_SKEW_CLASS = "skew"
+"""上のどれでもない向き。⚠️ **「その他」を黙って通さないために名前を与える。**"""
+
+_DIRECTION_TOL = 1e-6
+"""単位ベクトルの向きが「一致する」と言える内積の許容差。"""
+
+_SPAN_TOL = 1e-9
+"""法線の並びが張る空間の次元を数えるときの、直交化残差の下限。"""
+
+
+def _axis_class(angle_deg: float, unit: tuple[float, float, float]) -> str:
+    """法線を、その接合部の**station（角度）**の円筒座標系で分類する。
+
+    ⚠️ **面の中心の角度ではなく接合部の角度で見る。** 座は station から半径
+    方向・接線方向へ広がっており、面の中心はその角度から外れている——面の中心の
+    角度で組んだ基底で測れば、半径方向の面が「斜め」に見える。
+    """
+    radians = math.radians(angle_deg)
+    radial = (math.cos(radians), math.sin(radians), 0.0)
+    tangential = (-math.sin(radians), math.cos(radians), 0.0)
+    if abs(abs(unit[2]) - 1.0) < _DIRECTION_TOL:
+        return _LAYER_CLASS
+    if abs(unit[2]) > _DIRECTION_TOL:
+        return _SKEW_CLASS
+    if abs(sum(a * b for a, b in zip(unit, radial))) > 1.0 - _DIRECTION_TOL:
+        return _RADIAL_CLASS
+    if abs(sum(a * b for a, b in zip(unit, tangential))) > 1.0 - _DIRECTION_TOL:
+        return _TANGENTIAL_CLASS
+    return _SKEW_CLASS
+
+
+def _outward_radial_boss_region(
+    solid: Any, *, angle_deg: float, height_mm: float, radius_mm: float
+) -> Any:
+    """半径方向のボルトの軸に同軸な円筒のうち、⚠️ **機体の軸から外向きの半分**。
+
+    ⚠️ **`_radial_boss_region` は両側へ伸びる。** 面積を測るときは法線と半径で
+    絞るため問題にならないが、⚠️ **法線を読み出す側では反対側（角度 +180°）に
+    ある別の断片の割り面が混ざる**——出荷の配置では保持ボルトの角度 60° の
+    反対側 240° がちょうど断片の割り面であり、接線方向の面が2枚拾われる。
+    それらはどの接合部の当たり面でもない。
+    """
+    from build123d import Align, Cylinder, Location, Rotation
+
+    return solid & (
+        Rotation(0, 0, angle_deg)
+        * Location((0.0, 0.0, height_mm))
+        * Rotation(0, 90, 0)
+        * Cylinder(radius_mm, _PROBE_MM, align=(Align.CENTER, Align.CENTER, Align.MIN))
+    )
+
+
+def _planar_face_normals(region: Any) -> list[Any]:
+    """切り出した範囲に残る**平面**の法線を、⚠️ **面から読み出して**返す。
+
+    ⚠️ **円筒面は返さない**——切り出しに使う円筒そのものの側面が混ざるためで
+    ある（切り出しの道具を測ってしまう）。
+    """
+    from build123d import GeomType
+
+    return [
+        face.normal_at()
+        for face in region.faces()
+        if face.geom_type == GeomType.PLANE
+    ]
+
+
+def _unit(normal: Any) -> tuple[float, float, float]:
+    """`build123d` の法線を素のタプルへ落とす（⚠️ 正規化はしない。既に単位である）。"""
+    return (float(normal.X), float(normal.Y), float(normal.Z))
+
+
+def _trough_faces(leg: Any, geometry: StandGeometry) -> list[Any]:
+    """脚の谷（ホイールの等距離面）の面を、⚠️ **幾何量だけで**選ぶ。
+
+    条件は「円筒面であること」と「その面のどの点も車軸の線から
+    `socket_radius_mm` の距離にあること」だけである（生成名も面の数も使わない）。
+    車軸の線は `y = 0`・`z = wheel_center_height_mm` を通り、脚の局所座標の
+    `x` 方向へ伸びる——⚠️ **その向きは `build_service_stand_legs` が決めており、
+    ここで仮定しているのではない**（下の `test_the_stand_trough_...` が実形状から
+    その向きを取り出す）。
+    """
+    from build123d import GeomType
+
+    selected: list[Any] = []
+    for face in leg.faces():
+        if face.geom_type != GeomType.CYLINDER:
+            continue
+        points = [face.position_at(u, 0.5) for u in (0.02, 0.25, 0.5, 0.75, 0.98)]
+        if all(
+            abs(
+                math.hypot(
+                    float(point.Y), float(point.Z) - geometry.wheel_center_height_mm
+                )
+                - geometry.socket_radius_mm
+            )
+            < 1e-6
+            for point in points
+        ):
+            selected.append(face)
+    return selected
+
+
+@pytest.fixture(scope="module")
+def realised_joint_faces(
+    shipped: tuple[Any, Any],
+    parts: dict[str, Any],
+    drive_base: Any,
+    adapter: Any,
+    adapter_parts: tuple[Any, ...],
+    tray: Any,
+    deck: Any,
+    board_deck_solids: tuple[Any, ...],
+    geometry: StandGeometry,
+    legs: tuple[Any, ...],
+) -> dict[str, tuple[tuple[str, float, tuple[float, float, float]], ...]]:
+    """記録された接合部ごとに、⚠️ **実形状の接合面の法線**を測って返す。
+
+    値は `(部品名, station の角度, 法線)` の並びである。⚠️ **法線は面から読み
+    出す**——検索条件には与えない。
+
+    ⚠️ **接合部の名前をここで書き下している**のは、名前の一覧が `derive_joints`
+    の側にあり、⚠️ **突き合わせが「全数か」を言えるようにするため**である
+    （`test_every_recorded_joint_shows_a_face_...` が集合の一致を見る）。
+    家族が増えれば、ここに面を測る手口が無い接合部として現れる。
+    """
+    _, layout = shipped
+    faces: dict[str, tuple[tuple[str, float, tuple[float, float, float]], ...]] = {}
+
+    # 中央部↔モータ取付部: 二股の壁（ボルト頭とナットが当たる面）。据え付け前の
+    # 局所座標であり、station は 0°（`build_drive_base` はアームを回さず返す）。
+    for index in range(1, len(layout.wheel_angles_deg) + 1):
+        entries: list[tuple[str, float, tuple[float, float, float]]] = []
+        for radius_mm in drive_base.bolt_radii_mm:
+            region = _tangential_boss_region(
+                parts[f"{MOTOR_ARM_PART_NAME}_{index}"].solid,
+                angle_deg=0.0,
+                radius_mm=radius_mm,
+                height_mm=drive_base.bolt_height_mm,
+                probe_mm=drive_base.boss_diameter_mm / 2.0,
+            )
+            entries += [
+                (f"{MOTOR_ARM_PART_NAME}_{index}", 0.0, _unit(normal))
+                for normal in _planar_face_normals(region)
+            ]
+        faces[f"{HUB_PLATE_PART_NAME}__{MOTOR_ARM_PART_NAME}_{index}"] = tuple(entries)
+
+    # 中央部↔アダプタ断片: 裾の座ぐり（半径方向）。
+    for index in range(1, adapter.segment_count + 1):
+        entries = []
+        for angle_deg in adapter.mount_bolt_angles_deg[index - 1]:
+            region = _outward_radial_boss_region(
+                adapter_parts[index - 1],
+                angle_deg=angle_deg,
+                height_mm=adapter.mount_bolt_height_mm,
+                radius_mm=adapter.boss_diameter_mm / 2.0 + _EPS_MM,
+            )
+            entries += [
+                (f"{ADAPTER_SEGMENT_PART_NAME}_{index}", angle_deg, _unit(normal))
+                for normal in _planar_face_normals(region)
+            ]
+        faces[f"{HUB_PLATE_PART_NAME}__{ADAPTER_SEGMENT_PART_NAME}_{index}"] = tuple(
+            entries
+        )
+
+    # アダプタ↔ゴミ箱: 保持ボルトの座ぐり（半径方向）。⚠️ 断片をまたぐ1件の接合部。
+    entries = []
+    for angle_deg in adapter.retention_bolt_angles_deg:
+        for index, solid in enumerate(adapter_parts, start=1):
+            region = _outward_radial_boss_region(
+                solid,
+                angle_deg=angle_deg,
+                height_mm=adapter.retention_bolt_height_mm,
+                radius_mm=adapter.boss_diameter_mm / 2.0 + _EPS_MM,
+            )
+            if _volume(region) == 0.0:
+                continue
+            entries += [
+                (f"{ADAPTER_SEGMENT_PART_NAME}_{index}", angle_deg, _unit(normal))
+                for normal in _planar_face_normals(region)
+            ]
+    faces[f"adapter__{TRASH_CAN_PART_NAME}"] = tuple(entries)
+
+    # モータ取付部↔バッテリトレイ: 耳の外面（接線方向）。
+    entries = []
+    for radius_mm in tray.bolt_radii_mm:
+        region = _tangential_boss_region(
+            parts[BATTERY_TRAY_PART_NAME].solid,
+            angle_deg=tray.arm_angle_deg,
+            radius_mm=radius_mm,
+            height_mm=tray.bolt_height_mm,
+            probe_mm=tray.boss_diameter_mm / 2.0,
+        )
+        entries += [
+            (BATTERY_TRAY_PART_NAME, tray.arm_angle_deg, _unit(normal))
+            for normal in _planar_face_normals(region)
+        ]
+    faces[f"{MOTOR_ARM_PART_NAME}_{tray.arm_index}__{BATTERY_TRAY_PART_NAME}"] = tuple(
+        entries
+    )
+
+    # アダプタ↔段積み土台: 立ち上がりの外周が床の内縁に掴まれる帯（円筒面）。
+    # ⚠️ **平面ではない**——法線は帯の上を掃くため、複数の母線で読み出す。
+    entries = []
+    band = _full_cylinder(
+        _PROBE_MM, (adapter.floor_bottom_height_mm, adapter.floor_top_height_mm)
+    )
+    for index, solid in enumerate(board_deck_solids, start=1):
+        name = (
+            BOARD_DECK_PART_NAME
+            if deck.board_segment_count == 1
+            else f"{BOARD_DECK_PART_NAME}_{index}"
+        )
+        region = solid & band
+        for face in _cylindrical_faces_at_radius(region, deck.riser_outer_radius_mm):
+            for u in (0.02, 0.25, 0.5, 0.75, 0.98):
+                point = face.position_at(u, 0.5)
+                entries.append(
+                    (
+                        name,
+                        math.degrees(math.atan2(float(point.Y), float(point.X))),
+                        _unit(face.normal_at(point)),
+                    )
+                )
+    faces[DECK_SEAT_JOINT_NAME] = tuple(entries)
+
+    # 段どうし: 立ち上がり側の座ぐり（半径方向）。
+    for index, angles_deg in enumerate(deck.deck_bolt_angles_deg, start=1):
+        entries = []
+        for angle_deg in angles_deg:
+            for solid_index, solid in enumerate(board_deck_solids, start=1):
+                name = (
+                    BOARD_DECK_PART_NAME
+                    if deck.board_segment_count == 1
+                    else f"{BOARD_DECK_PART_NAME}_{solid_index}"
+                )
+                region = _outward_radial_boss_region(
+                    solid,
+                    angle_deg=angle_deg,
+                    height_mm=deck.deck_bolt_height_mm,
+                    radius_mm=deck.boss_diameter_mm / 2.0 + _EPS_MM,
+                )
+                if _volume(region) == 0.0:
+                    continue
+                entries += [
+                    (name, angle_deg, _unit(normal))
+                    for normal in _planar_face_normals(region)
+                ]
+        faces[f"{BOARD_DECK_PART_NAME}__{CATCH_DECK_PART_NAME}_{index}"] = tuple(entries)
+
+    # 整備スタンド↔ホイール: 谷（円筒面）。⚠️ **station の概念が無い**——法線は
+    # 谷の上を掃くため、角度は 0° を置く（分類には使わない。下の専用の検査が見る）。
+    for index, leg in enumerate(legs, start=1):
+        entries = []
+        for face in _trough_faces(leg.solid, geometry):
+            for u in (0.02, 0.25, 0.5, 0.75, 0.98):
+                entries.append(
+                    (
+                        f"{SERVICE_STAND_PART_NAME}_{index}",
+                        0.0,
+                        _unit(face.normal_at(face.position_at(u, 0.5))),
+                    )
+                )
+        faces[f"{SERVICE_STAND_PART_NAME}_{index}__wheel_{index}"] = tuple(entries)
+
+    return faces
+
+
+_DECLARED_AXIS_CLASSES = {
+    "x": _RADIAL_CLASS,
+    "y": _TANGENTIAL_CLASS,
+}
+"""`print_normal_axis` が名指す軸と、機体座標での面の向きの対応。
+
+⚠️ **`joints.ALLOWED_PRINT_NORMAL_AXES` の docstring がこの対応の正である**
+（「`x` は半径方向、`y` は接線方向の面である」）。⚠️ **軸が増えたら気付ける
+ようにする**——下の検査が鍵の集合を `ALLOWED_PRINT_NORMAL_AXES` と突き合わせる。
+"""
+
+
+def _curved_cradle_joint_names(shipped: tuple[Any, Any]) -> frozenset[str]:
+    """接合面が**平面ではない**接合部（整備スタンドの谷）の名前。
+
+    ⚠️ **谷は円筒面であり、法線は面の上を掃く。** 半径方向・接線方向の
+    どちらか一方に分類できる面ではないため、軸の突き合わせの対象にしない
+    ——代わりに `test_the_stand_trough_leaves_only_the_axle_free_for_the_layer_direction`
+    が「掃いた先に何が無いか」を見る。⚠️ **件数は脚数から導く**（ここで数え直さない）。
+    """
+    params, _ = shipped
+    return frozenset(
+        f"{SERVICE_STAND_PART_NAME}_{index}__wheel_{index}"
+        for index in range(1, params.chassis.stand.leg_count + 1)
+    )
+
+
+@requires_cad
+def test_every_recorded_joint_shows_a_face_whose_normal_is_the_axis_it_declares(
+    shipped: tuple[Any, Any],
+    realised_joint_faces: dict[str, tuple[tuple[str, float, tuple[float, float, float]], ...]],
+) -> None:
+    """⚠️ **記録された接合部が全数、宣言どおりの向きの面を実形状に持つ**（要件 2.8, 2.9）。
+
+    ⚠️ **本検査の主題は面積ではなく向きである。** 1〜12 節は当たり面の**面積**を
+    家族ごとに突き合わせたが、面積は法線について何も言わない——座を寝かせても
+    面積は変わる必要が無い。ここでは法線を**面から読み出して**分類し、
+    `print_normal_axis` と突き合わせる。
+
+    ⚠️ **全数であることが主張の半分である。** 家族ごとの検査は、接合部の家族が
+    増えたときに黙って素通りする（本 Spec は「宣言された機構を1つも観測できない
+    テスト」を既に一度出している）。ここでは `derive_joints` が返す名前の集合と、
+    面を測れた接合部の集合が**一致する**ことを見る。
+    """
+    from chassis_mechanism.joints import ALLOWED_PRINT_NORMAL_AXES, LAYER_NORMAL_AXIS
+
+    params, layout = shipped
+    assert set(_DECLARED_AXIS_CLASSES) == set(ALLOWED_PRINT_NORMAL_AXES)
+    assert LAYER_NORMAL_AXIS not in _DECLARED_AXIS_CLASSES
+
+    specs = {spec.name: spec for spec in derive_joints(layout, params)}
+    assert set(realised_joint_faces) == set(specs)
+
+    curved = _curved_cradle_joint_names(shipped)
+    assert curved <= set(specs)
+    assert len(curved) == params.chassis.stand.leg_count
+
+    for name, spec in specs.items():
+        entries = realised_joint_faces[name]
+        assert entries, f"{name}: 実形状に接合面が1つも無い"
+        if name in curved:
+            continue
+        observed = {
+            _axis_class(angle_deg, normal) for _, angle_deg, normal in entries
+        }
+        assert observed == {_DECLARED_AXIS_CLASSES[spec.print_normal_axis]}, (
+            name,
+            spec.print_normal_axis,
+            sorted(observed),
+        )
+        assert _LAYER_CLASS not in observed, name
+
+
+@requires_cad
+def test_a_seat_cut_across_the_layer_direction_is_caught(
+    shipped: tuple[Any, Any], drive_base: Any, parts: dict[str, Any]
+) -> None:
+    """⚠️ **空振りでないこと**: 座を寝かせれば、同じ手口が積層方向を向いた面を拾う。
+
+    ⚠️ **上の検査は「見つかった面が宣言どおりの向きである」と述べている。**
+    それが空振りでないためには、⚠️ **向きの違う面が置かれたときに拾えること**を
+    示さなければならない——法線を検索条件に与える測り方では、寝かせた座は
+    「面が無い」ではなく「見えない」になる。
+
+    ここでは構築済みのアームの座の範囲へ**測るためだけに**水平な座ぐりを削り、
+    同じ手口が `layer` を返すことを見る。⚠️ **削っていないアームは
+    `tangential` だけを返す**（この反例が向きの判定そのものを疑っていない証拠）。
+    """
+    _, _ = shipped
+    arm = parts[f"{MOTOR_ARM_PART_NAME}_1"].solid
+    radius_mm = drive_base.bolt_radii_mm[0]
+    boss_radius_mm = drive_base.boss_diameter_mm / 2.0
+
+    def classes(solid: Any) -> set[str]:
+        region = _tangential_boss_region(
+            solid,
+            angle_deg=0.0,
+            radius_mm=radius_mm,
+            height_mm=drive_base.bolt_height_mm,
+            probe_mm=boss_radius_mm,
+        )
+        return {
+            _axis_class(0.0, _unit(normal)) for normal in _planar_face_normals(region)
+        }
+
+    assert classes(arm) == {_TANGENTIAL_CLASS}
+
+    # 座の範囲に、法線が上を向く平面（＝平置きなら積層方向を向く面）を作る。
+    pocket_top_mm = drive_base.bolt_height_mm + boss_radius_mm / 2.0
+    lying_seat = arm - _box(
+        (radius_mm - boss_radius_mm / 2.0, radius_mm + boss_radius_mm / 2.0),
+        (-_PROBE_MM, _PROBE_MM),
+        (pocket_top_mm, _PROBE_MM),
+    )
+    # ⚠️ 削った跡には半径方向の側面も現れる——見るのは **`layer` が現れること**である。
+    assert _LAYER_CLASS in classes(lying_seat)
+
+
+def _orthonormal_span(
+    normals: tuple[tuple[float, float, float], ...]
+) -> list[tuple[float, float, float]]:
+    """法線の並びが張る空間の正規直交基底（⚠️ 3 次元のグラム・シュミット）。"""
+    basis: list[tuple[float, float, float]] = []
+    for normal in normals:
+        residual = list(normal)
+        for vector in basis:
+            projection = sum(a * b for a, b in zip(residual, vector))
+            residual = [a - projection * b for a, b in zip(residual, vector)]
+        length = math.sqrt(sum(a * a for a in residual))
+        if length > _SPAN_TOL:
+            basis.append(tuple(a / length for a in residual))  # type: ignore[arg-type]
+    return basis
+
+
+def _layer_directions(
+    normals: tuple[tuple[float, float, float], ...]
+) -> list[tuple[float, float, float]]:
+    """どの法線とも直交する向きの正規直交基底＝**積層方向として採れる向き**。
+
+    ⚠️ **空であることが要件 2.8 の破れである**——接合面の法線が3次元を張って
+    しまえば、どう寝かせて造形しても、どれかの面の法線が積層方向と一致する。
+    """
+    basis = _orthonormal_span(normals)
+    free: list[tuple[float, float, float]] = []
+    for axis in ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)):
+        residual = list(axis)
+        for vector in basis + free:
+            projection = sum(a * b for a, b in zip(residual, vector))
+            residual = [a - projection * b for a, b in zip(residual, vector)]
+        length = math.sqrt(sum(a * a for a in residual))
+        if length > _SPAN_TOL:
+            free.append(tuple(a / length for a in residual))  # type: ignore[arg-type]
+    return free
+
+
+def _is_free_direction(
+    normals: tuple[tuple[float, float, float], ...],
+    direction: tuple[float, float, float],
+) -> bool:
+    """`direction` がどの法線とも一致していない（＝直交している）こと。"""
+    return all(
+        abs(sum(a * b for a, b in zip(normal, direction))) < _DIRECTION_TOL
+        for normal in normals
+    )
+
+
+def _normals_by_part(
+    realised: dict[str, tuple[tuple[str, float, tuple[float, float, float]], ...]]
+) -> dict[str, tuple[tuple[float, float, float], ...]]:
+    """接合面の法線を、⚠️ **それを持つ部品ごとに**まとめ直す。
+
+    ⚠️ **造形姿勢は部品の性質であり、接合部の性質ではない。** 1つの部品が複数の
+    接合部に加わるとき、積層方向はそのすべてを同時に避けなければならない。
+    """
+    by_part: dict[str, list[tuple[float, float, float]]] = {}
+    for entries in realised.values():
+        for part_name, _, normal in entries:
+            by_part.setdefault(part_name, []).append(normal)
+    return {name: tuple(values) for name, values in by_part.items()}
+
+
+@requires_cad
+def test_every_part_admits_a_layer_direction_that_no_joint_face_of_it_takes(
+    shipped: tuple[Any, Any],
+    realised_joint_faces: dict[str, tuple[tuple[str, float, tuple[float, float, float]], ...]],
+) -> None:
+    """⚠️ **接合面の法線が積層方向と一致する部品が無い**（要件 2.8 / A-5）。
+
+    ⚠️ **`print_normal_axis` は接合部ごとの宣言であり、部品については何も言わない。**
+    造形姿勢は部品の性質である——1つの部品が複数の接合部に加わるとき、積層方向は
+    そのすべての法線を同時に避けなければならず、⚠️ **避けられる向きが1つも
+    無ければ、宣言がどれも `z` でなくても要件 2.8 は満たせない。**
+
+    ここでは部品ごとに、⚠️ **実形状の接合面の法線が張る空間**を求め、その直交
+    補空間（＝積層方向として採れる向き）が空でないことを見る。⚠️ 出荷の機体では
+    駆動ベース・アダプタ・段・トレイが鉛直（平置き）を採れ、⚠️ **整備スタンドの
+    脚だけは車軸方向しか採れない**——谷の法線が鉛直を含むためである
+    （下の `test_the_stand_trough_...` がその向きを実形状から取り出す）。
+    """
+    params, _ = shipped
+    by_part = _normals_by_part(realised_joint_faces)
+    upright = (0.0, 0.0, 1.0)
+
+    stand_names = {
+        f"{SERVICE_STAND_PART_NAME}_{index}"
+        for index in range(1, params.chassis.stand.leg_count + 1)
+    }
+    assert stand_names <= set(by_part)
+
+    # ⚠️ **覆えている部品をその場で固定する。** 接合部の当たり面は**片側の部材**に
+    # 実現しており（ボルト頭が当たる側。1〜12 節が測っているのと同じ面）、
+    # ⚠️ **相手側の部材はこの並びに現れない**——中央部（相手はアームとアダプタ
+    # 断片）、受け止めデッキ（相手は基板デッキ）がそれである。配線ガイドは
+    # そもそも `JointSpec` を持たない（`joints.ASSUMPTIONS`: 取付ねじは構造の
+    # 接合部ではない）。⚠️ **黙って減れば抜け道になる**ため集合で押さえる。
+    assert set(by_part) == (
+        {f"{MOTOR_ARM_PART_NAME}_{index}" for index in range(1, 4)}
+        | {f"{ADAPTER_SEGMENT_PART_NAME}_{index}" for index in range(1, 4)}
+        | {BATTERY_TRAY_PART_NAME, BOARD_DECK_PART_NAME}
+        | stand_names
+    ), sorted(by_part)
+    assert HUB_PLATE_PART_NAME not in by_part
+
+    for name, normals in sorted(by_part.items()):
+        free = _layer_directions(normals)
+        assert free, f"{name}: 接合面の法線が3次元を張っており、積層方向が採れない"
+        if name in stand_names:
+            # 谷は鉛直を向く面を含む。⚠️ **平置きでは造形できない脚である。**
+            assert not _is_free_direction(normals, upright), name
+            assert len(free) == 1, name
+        else:
+            assert _is_free_direction(normals, upright), name
+
+
+@requires_cad
+def test_counting_the_compression_seat_as_a_joint_leaves_no_layer_direction(
+    shipped: tuple[Any, Any],
+    adapter: Any,
+    adapter_parts: tuple[Any, ...],
+    realised_joint_faces: dict[str, tuple[tuple[str, float, tuple[float, float, float]], ...]],
+) -> None:
+    """⚠️ **空振りでないこと**、かつ ⚠️ **要件 2.8 の範囲そのものの固定である。**
+
+    design.md 決定 4b は「⚠️ **要件 2.8 が禁じるのは層間剥離で荷重を受ける継手で
+    あり、圧縮の座ではない**」と範囲を定めている。⚠️ **その線引きは注釈のままでは
+    観測できない。**
+
+    アダプタの床の上面は、底を抜いた缶の縁が載る**圧縮の座**である（決定 4b:
+    「外径と切り取り径の差として残る縁が、そのまま缶の重量を受ける座面になる」）。
+    その面の法線は鉛直であり、⚠️ **これを接合面として数えた瞬間、アダプタ断片の
+    法線は3次元を張って積層方向が1つも採れなくなる**——上の検査は本当に噛む。
+
+    ⚠️ **数えない側（＝`JointSpec` として記録された接合部だけ）では鉛直が採れる**
+    ことを同時に固定する（この反例が判定そのものを疑っていない証拠）。
+    """
+    _, _ = shipped
+    by_part = _normals_by_part(realised_joint_faces)
+    name = f"{ADAPTER_SEGMENT_PART_NAME}_1"
+    joint_normals = by_part[name]
+    free = _layer_directions(joint_normals)
+    assert len(free) == 1, free
+    assert abs(abs(free[0][2]) - 1.0) < 1e-6, free
+
+    # 缶の縁が載る座（床の上面）を**実形状から**取り出す。
+    seats = _planar_faces_on_plane(
+        adapter_parts[0], (0.0, 0.0, 1.0), adapter.floor_top_height_mm
+    )
+    assert seats, "缶の縁が載る座が実形状に無い"
+    assert sum(float(face.area) for face in seats) > 0.0
+    seat_normals = tuple(_unit(face.normal_at()) for face in seats)
+    assert all(abs(abs(normal[2]) - 1.0) < 1e-6 for normal in seat_normals)
+
+    assert _layer_directions(joint_normals + seat_normals) == []
+
+
+@requires_cad
+def test_the_stand_trough_leaves_only_the_axle_free_for_the_layer_direction(
+    shipped: tuple[Any, Any],
+    geometry: StandGeometry,
+    legs: tuple[Any, ...],
+    realised_joint_faces: dict[str, tuple[tuple[str, float, tuple[float, float, float]], ...]],
+) -> None:
+    """⚠️ **谷は圧縮の受け皿であり、造形姿勢を1つに決めてしまう**（要件 2.8, 5.6）。
+
+    谷はホイールの等距離面（車軸と同軸の円筒）であり、⚠️ **法線は面の上を掃く**
+    ——谷の底では鉛直、両側の壁では接線方向へ倒れる。したがって
+    ⚠️ **法線と一致しない向きは車軸方向ただ1つ**であり、脚の造形姿勢はそれで
+    決まる（`joints` モジュール docstring:「締結の向きが鉛直になる接合部が
+    あるが、それは『その部品を横倒しで造形する』ことで避ける」）。
+
+    ⚠️ **本検査は車軸の向きを仮定しない。** 掃いた法線から直交補空間を求め、
+    その向きが**谷の円筒の軸**——`build_service_stand_legs` が抜いた円筒の
+    向き——と一致することを、⚠️ **谷の面の点が車軸の線から等距離であること**で
+    確かめる。
+
+    ⚠️ **空振りでないこと**: 同じ判定に鉛直を渡せば「採れない」と答える
+    （谷の底の法線がそれだからである）。
+    """
+    params, _ = shipped
+    for index, leg in enumerate(legs, start=1):
+        name = f"{SERVICE_STAND_PART_NAME}_{index}__wheel_{index}"
+        normals = tuple(normal for _, _, normal in realised_joint_faces[name])
+        assert normals, name
+
+        free = _layer_directions(normals)
+        assert len(free) == 1, (name, free)
+        axle = free[0]
+        # ⚠️ 谷の面のどの点も、この向きの線から `socket_radius_mm` だけ離れている
+        # ——すなわちこの向きが円筒の軸（＝車軸）である。
+        assert abs(abs(axle[0]) - 1.0) < 1e-6, (name, axle)
+        for face in _trough_faces(leg.solid, geometry):
+            for u in (0.02, 0.5, 0.98):
+                point = face.position_at(u, 0.5)
+                assert math.hypot(
+                    float(point.Y), float(point.Z) - geometry.wheel_center_height_mm
+                ) == pytest.approx(geometry.socket_radius_mm, abs=1e-6)
+
+        # ⚠️ 鉛直は採れない（谷の底の法線がそれである）。
+        assert not _is_free_direction(normals, (0.0, 0.0, 1.0)), name
+        assert any(abs(normal[2] - 1.0) < 1e-6 for normal in normals), name
+        # ⚠️ 壁は接線方向へ倒れており、モータ反力を受ける向きの面が実在する。
+        assert any(abs(normal[1]) > 0.9 for normal in normals), name
+
+    assert len(legs) == params.chassis.stand.leg_count
+
+
+@requires_cad
+def test_the_battery_tray_floor_is_below_every_recorded_mounted_item(
+    shipped: tuple[Any, Any], tray: Any, parts: dict[str, Any]
+) -> None:
+    """⚠️ **バッテリが「全搭載物の中で最も低い」ことを、搭載物の記録に対して見る**（要件 7.1）。
+
+    ⚠️ **`test_the_battery_is_the_lowest_mounted_item_on_the_machine` とは
+    見ている集合が違う。** あちらは `build_parts` が返す**造形部品**を比べており、
+    ⚠️ **搭載物そのもの（バッテリ・基板・端子台）は1件も入っていない**——
+    部品の底面を比べても、その部品が何をどの高さで保持しているかは分からない。
+
+    ⚠️ **「全搭載物」の正は `ChassisParams.mass_items()` である**（要件 7.8:
+    「各搭載物の質量と保持高さを記録し」）。合成重心の見積もりが読むのと同じ
+    並びであり、⚠️ **要否が未決の搭載物は現れない**（端子台）。ここでは
+    トレイの**実形状の最下面**を、その並びのすべての保持高さと比べる。
+
+    ⚠️ **床との隙間の一覧（`clearance.CLEARANCE_ITEM_NAMES`）とは別の集合である。**
+    あちらにはモータ胴体・ブラケットが入っており、⚠️ **それらはトレイより低い**
+    ——駆動ユニットは機体が**担ぐ**搭載物ではなく、機体の端部にぶら下がる駆動系
+    そのものである（要件 5.3 が整備スタンドの支持面として名指しする面である）。
+    要件 7.1 が言う「最下部」は搭載物の中での順序であり、駆動ユニットを含めた
+    機体全体の最下点ではない。
+    """
+    params, _ = shipped
+    items = params.chassis.mass_items()
+    assert items, "搭載物の記録が空である（要件 7.8）"
+    assert "battery" in {item.name for item in items}
+
+    tray_bottom_mm = float(parts[BATTERY_TRAY_PART_NAME].solid.bounding_box().min.Z)
+    assert tray_bottom_mm == pytest.approx(tray.floor_bottom_height_mm, abs=1e-6)
+
+    by_name = {item.name: item for item in items}
+    battery_hold_mm = by_name["battery"].hold_height_mm
+    # ⚠️ 記録された保持高さは、実形状のポケットの中にある。
+    assert tray_bottom_mm < battery_hold_mm
+    assert tray.battery_bottom_height_mm <= battery_hold_mm <= tray.battery_top_height_mm
+
+    for item in items:
+        assert tray_bottom_mm < item.hold_height_mm, item.name
+        if item.name == "battery":
+            continue
+        assert battery_hold_mm < item.hold_height_mm, item.name
+
+    # ⚠️ **駆動ユニットは搭載物ではない**（この検査の範囲を、比べてはならない
+    # 相手を名指しすることで固定する）。
+    _, layout = shipped
+    assert layout.vertical.motor_body_bottom_height_mm < tray_bottom_mm
+
+
+@requires_cad
+def test_a_mounted_item_held_below_the_battery_is_caught(
+    shipped: tuple[Any, Any], tray: Any, parts: dict[str, Any]
+) -> None:
+    """⚠️ **空振りでないこと**: 基板の保持高さをトレイの下へ落とせば検査は落ちる。
+
+    ⚠️ 出荷の値では基板は 100mm、バッテリは 44mm、トレイの下面は 28mm である
+    ——⚠️ **差が大きいほど「通って当たり前」に見える**ため、通らない配置を
+    実際に作って、同じ比べ方が捉えることを示す。⚠️ **触っていない側は通る**。
+    """
+    import dataclasses
+
+    params, _ = shipped
+    tray_bottom_mm = float(parts[BATTERY_TRAY_PART_NAME].solid.bounding_box().min.Z)
+    items = params.chassis.mass_items()
+    battery_hold_mm = {item.name: item for item in items}["battery"].hold_height_mm
+    assert all(
+        tray_bottom_mm < item.hold_height_mm for item in items
+    )  # ⚠️ 触っていない側は通る
+
+    sunk = dataclasses.replace(
+        params.chassis,
+        board=dataclasses.replace(
+            params.chassis.board, hold_height_mm=tray_bottom_mm - 1.0
+        ),
+    )
+    sunk_items = {item.name: item for item in sunk.mass_items()}
+    assert sunk_items["board"].hold_height_mm < tray_bottom_mm
+    assert sunk_items["board"].hold_height_mm < battery_hold_mm
+    assert not all(
+        tray_bottom_mm < item.hold_height_mm for item in sunk.mass_items()
+    )
+    assert tray.floor_bottom_height_mm == pytest.approx(tray_bottom_mm, abs=1e-6)
