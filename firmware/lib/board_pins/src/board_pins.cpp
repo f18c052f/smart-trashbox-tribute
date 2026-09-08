@@ -138,5 +138,14 @@ constexpr PinAssignment kCompileTimeCheckSamplePlan[2] = {
 static_assert(checkPinPlan(kCompileTimeCheckSamplePlan).ok(),
               "checkPinPlan が成立する割当を ok() として評価できない");
 
+// --- 出荷する端子割当が成立検査を通ること（タスク 1.5、要件 2.1〜2.7）------
+// ホスト（native）にはホストテスト（test/native/test_pin_plan/）で同じ事実を
+// 実行時にも確かめるものがあるが、実機側にはテストが無い。この
+// `static_assert` が、実機ビルドで `kShippedPinPlan` が壊れた場合（後から
+// 誰かが値をいじって衝突・禁止端子を作った場合）に、実機へ書き込む前に
+// コンパイルで検出できる唯一の場所になる。
+static_assert(checkPinPlan(kShippedPinPlan).ok(),
+              "出荷する端子割当（kShippedPinPlan）が成立検査を通らない");
+
 }  // namespace
 }  // namespace board_pins

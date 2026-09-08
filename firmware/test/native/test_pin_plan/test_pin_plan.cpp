@@ -29,6 +29,9 @@
 // 成立検査そのもの（checkPinPlan）と出荷する割当の具体値はタスク 1.4 / 1.5 が
 // 追加する。本ファイルはその時点で拡張される。
 
+using board_pins::gpioFor;
+using board_pins::kShippedPinPlan;
+using board_pins::kShippedPinPlanCount;
 using board_pins::PinAssignment;
 using board_pins::PinRole;
 using board_pins::PinViolation;
@@ -419,6 +422,78 @@ void test_check_pin_plan_is_constexpr_evaluable(void) {
   TEST_ASSERT_FALSE(checkPinPlan(kCompileTimeInvalidPlan).ok());
 }
 
+// ---------------------------------------------------------------------------
+// E. 出荷する端子割当（要件 2.1, 4.7, 6.5、タスク 1.5）
+//
+// ⚠️ kCompileTimeCheckSamplePlan（src/board_pins.cpp）とは別物。あちらは
+// checkPinPlan がコンパイル時に評価できることだけを示す2件のサンプルであり、
+// こちらが実機へ書き込む出荷値そのものである。
+// ---------------------------------------------------------------------------
+
+// E-1: 出荷する割当が要件 2.2〜2.6 の成立検査を全件通る（観測可能な完了状態）。
+void test_shipped_plan_passes_check_pin_plan(void) {
+  const auto diag = checkPinPlan(kShippedPinPlan);
+  TEST_ASSERT_TRUE(diag.ok());
+  TEST_ASSERT_EQUAL_UINT16(0, diag.global);
+  for (std::uint8_t i = 0; i < kShippedPinPlanCount; ++i) {
+    TEST_ASSERT_EQUAL_UINT16(0, diag.per_assignment[i]);
+  }
+}
+
+// E-2: 要件 2.1 — 3輪ぶんのエンコーダ（A相・B相）・モータ出力（PWM・方向）・
+// バッテリ電圧監視・机上確認用可変抵抗のすべてに端子が割り当たっている。
+void test_shipped_plan_covers_every_required_use(void) {
+  TEST_ASSERT_EQUAL_UINT8(14, kShippedPinPlanCount);
+  for (std::uint8_t wheel = 0; wheel < 3; ++wheel) {
+    TEST_ASSERT_NOT_EQUAL(kUnassigned, gpioFor(kShippedPinPlan, PinRole::kEncoderA, wheel));
+    TEST_ASSERT_NOT_EQUAL(kUnassigned, gpioFor(kShippedPinPlan, PinRole::kEncoderB, wheel));
+    TEST_ASSERT_NOT_EQUAL(kUnassigned, gpioFor(kShippedPinPlan, PinRole::kMotorPwm, wheel));
+    TEST_ASSERT_NOT_EQUAL(kUnassigned, gpioFor(kShippedPinPlan, PinRole::kMotorDir, wheel));
+  }
+  TEST_ASSERT_NOT_EQUAL(kUnassigned, gpioFor(kShippedPinPlan, PinRole::kBatterySense, kNoWheel));
+  TEST_ASSERT_NOT_EQUAL(kUnassigned, gpioFor(kShippedPinPlan, PinRole::kBenchPot, kNoWheel));
+}
+
+// E-3: 要件 4.7 — エンコーダ入力(A相・B相)がいずれも入力専用端子
+// （34/35/36/39）を避けている。オープンコレクタ出力かどうかが未確認である
+// 以上、内部プルアップの無い端子を避けるのが安全側である。
+void test_shipped_plan_keeps_encoders_off_input_only_gpios(void) {
+  for (std::uint8_t i = 0; i < kShippedPinPlanCount; ++i) {
+    const PinAssignment &a = kShippedPinPlan[i];
+    if (a.role == PinRole::kEncoderA || a.role == PinRole::kEncoderB) {
+      TEST_ASSERT_FALSE(table_contains(kInputOnlyGpios, kInputOnlyGpioCount, a.gpio));
+    }
+  }
+}
+
+// E-4: 要件 6.5 — バッテリ電圧監視が ADC1 の系統（32〜39）に載っている。
+void test_shipped_plan_puts_battery_sense_on_adc1(void) {
+  const std::int8_t battery_gpio = gpioFor(kShippedPinPlan, PinRole::kBatterySense, kNoWheel);
+  TEST_ASSERT_TRUE(table_contains(kAdc1Gpios, kAdc1GpioCount, battery_gpio));
+}
+
+// E-5: gpioFor が見つからない用途/輪の組では kUnassigned を返す
+// （番兵として安全に使えることの確認）。
+void test_gpio_for_returns_unassigned_when_not_found(void) {
+  // 出荷値には輪3（0始まりで存在しない4輪目）のエンコーダが無い。
+  TEST_ASSERT_EQUAL_INT8(kUnassigned, gpioFor(kShippedPinPlan, PinRole::kEncoderA, 3));
+}
+
+// E-6: 全 GPIO が重複しない（checkPinPlan の kDuplicate 検査と重なる観点だが、
+// 「出荷値そのものが14本とも別々の端子である」ことを直接示す）。
+void test_shipped_plan_uses_fourteen_distinct_gpios(void) {
+  for (std::uint8_t i = 0; i < kShippedPinPlanCount; ++i) {
+    for (std::uint8_t j = i + 1; j < kShippedPinPlanCount; ++j) {
+      TEST_ASSERT_NOT_EQUAL(kShippedPinPlan[i].gpio, kShippedPinPlan[j].gpio);
+    }
+  }
+}
+
+// E-7: 要件 2.7 の前提 — 出荷値そのものが実機へ書き込むことなく
+// コンパイル時に評価できる（`src/board_pins.cpp` の static_assert が実機側も
+// 固定するが、ホスト側でもここで直接示す）。
+static_assert(checkPinPlan(kShippedPinPlan).ok(), "出荷する端子割当が成立検査を通らない");
+
 int main(int argc, char **argv) {
   (void)argc;
   (void)argv;
@@ -456,6 +531,13 @@ int main(int argc, char **argv) {
   RUN_TEST(test_detects_adc1_channel_overflow);
   RUN_TEST(test_unassigned_gpio_is_flagged_without_triggering_other_checks);
   RUN_TEST(test_check_pin_plan_is_constexpr_evaluable);
+
+  RUN_TEST(test_shipped_plan_passes_check_pin_plan);
+  RUN_TEST(test_shipped_plan_covers_every_required_use);
+  RUN_TEST(test_shipped_plan_keeps_encoders_off_input_only_gpios);
+  RUN_TEST(test_shipped_plan_puts_battery_sense_on_adc1);
+  RUN_TEST(test_gpio_for_returns_unassigned_when_not_found);
+  RUN_TEST(test_shipped_plan_uses_fourteen_distinct_gpios);
 
   return UNITY_END();
 }

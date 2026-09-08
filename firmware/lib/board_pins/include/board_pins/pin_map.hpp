@@ -2,11 +2,12 @@
 
 // board_pins: 端子割当の単一の正（teleop-bringup タスク 1.3、要件 2.1）。
 //
-// 本ヘッダは「1本の端子割当をどう表すか」だけを定める。ESP32 classic の
-// 端子特性（入力専用・ストラッピング・内蔵フラッシュ用・ADC1 の系統）と
-// ペリフェラルの本数は `pin_rules.hpp` が持ち、成立検査の述語も同ヘッダが
-// 後続タスク（1.4）で追加する。出荷する具体的な端子番号はタスク 1.5 が
-// 本ヘッダへ追加する。
+// 本ヘッダは「1本の端子割当をどう表すか」（`PinRole` / `PinAssignment`）に
+// 加えて、出荷する具体的な端子番号（`kShippedPinPlan`、タスク 1.5）と、
+// それを役割から引く `gpioFor()` を持つ。ESP32 classic の端子特性
+// （入力専用・ストラッピング・内蔵フラッシュ用・ADC1 の系統）とペリフェラル
+// の本数、成立検査の述語（`checkPinPlan`）は `pin_rules.hpp` が持つ
+// （タスク 1.4）。
 //
 // ⚠️ **ペリフェラルの API を一切参照しない。** `driver/*.h` / `esp_adc/*.h`
 // を include しない。これによりホスト（`[env:native]`）と実機
@@ -65,5 +66,73 @@ struct PinAssignment {
   std::uint8_t wheel_index = kNoWheel;
   std::int8_t gpio = kUnassigned;
 };
+
+// ---------------------------------------------------------------------------
+// 出荷する端子割当（タスク 1.5、要件 2.1, 4.7, 6.5）。
+//
+// ESP32 DevKit（`platformio.ini` の `board = esp32dev`、WROOM-32・PSRAM 無し）
+// を前提に、以下を避けて選んでいる（`pin_rules.hpp` の各表・研究ログ
+// research.md "ESP32 の端子制約" が根拠）:
+//   - ストラッピング端子 0/2/5/12/15
+//   - 内蔵フラッシュ用端子 6〜11
+//   - UART0（USB シリアル、書き込み・ログに使用）の 1/3
+//   - 入力専用端子 34/35/36/39（エンコーダ・モータ出力のいずれも避ける。
+//     エンコーダについては要件 4.7 が要求する。モータ出力は 2.3 の成立検査
+//     が出力用途への割当自体を禁じるため、避けなければ端子割当が成立しない）
+//
+// ⚠️ **モータ出力は輪ごとに2本（kMotorPwm + kMotorDir）を占める。**
+// `drivetrain_control/ports.hpp` の `MotorOutputPort::write()` は
+// `WheelOutputs`（輪ごとの符号つきデューティ [-1, +1] 1個）だけを渡す契約で
+// あり、その境界だけを見れば回転方向はデューティの符号で表現でき、GPIO を
+// 分ける理由が無いように見える。しかし ESP32 の LEDC（PWM 生成器）はデュー
+// ティの大きさしか出力できず、符号（回転方向）を運べない。受け取った
+// デューティの符号を物理的なモータ回転方向へ変換するには、ドライバIC
+// （2輪駆動でよく使われる TB6612FNG / DRV8833 系の H ブリッジ）の DIR 入力
+// へ別の GPIO を与える必要がある。この変換はアダプタ層（タスク 3.2
+// MotorLedcAdapter、本タスクの対象外）が行うが、そのために必要な GPIO は
+// 端子割当の正（本ファイル）が持たねばならない。`pin_map.hpp` の
+// `PinRole::kMotorDir`（タスク 1.3 で導入済み）と `pin_rules.hpp` の
+// `isOutputRole` / `isGeneratorRole` の使い分け（kMotorDir は素の GPIO
+// 出力であり LEDC チャネルを消費しない、というタスク 1.4 の既存コメント）
+// は、この決定を前提に書かれている。本タスクはその前提のとおり両ロールへ
+// 具体的な端子を与える。
+inline constexpr std::uint8_t kShippedPinPlanCount = 14;
+inline constexpr PinAssignment kShippedPinPlan[kShippedPinPlanCount] = {
+    // 輪0
+    {PinRole::kEncoderA, 0, 4},
+    {PinRole::kEncoderB, 0, 13},
+    {PinRole::kMotorPwm, 0, 19},
+    {PinRole::kMotorDir, 0, 23},
+    // 輪1
+    {PinRole::kEncoderA, 1, 14},
+    {PinRole::kEncoderB, 1, 16},
+    {PinRole::kMotorPwm, 1, 21},
+    {PinRole::kMotorDir, 1, 25},
+    // 輪2
+    {PinRole::kEncoderA, 2, 17},
+    {PinRole::kEncoderB, 2, 18},
+    {PinRole::kMotorPwm, 2, 22},
+    {PinRole::kMotorDir, 2, 26},
+    // 輪に紐づかない用途
+    {PinRole::kBatterySense, kNoWheel, 32},  // ADC1（要件 6.5）
+    {PinRole::kBenchPot, kNoWheel, 33},      // ADC1（要件 2.4 の対象外だが、
+                                              // 可変抵抗の読み取りには変換器
+                                              // が要るため実務上 ADC1 を選ぶ）
+};
+
+// 端子割当の集合から、用途（と輪、輪に紐づかない用途は既定で `kNoWheel`）に
+// 対応する端子番号を引く。以降のアダプタ（タスク 3.1〜3.3, 7.1）は GPIO
+// 番号をリテラルで持たず、本関数と `kShippedPinPlan` だけを参照すること
+// （観測可能な完了状態、タスク 1.5）。該当が無ければ `kUnassigned` を返す。
+template <std::uint8_t N>
+constexpr std::int8_t gpioFor(const PinAssignment (&plan)[N], PinRole role,
+                              std::uint8_t wheel_index = kNoWheel) noexcept {
+  for (std::uint8_t i = 0; i < N; ++i) {
+    if (plan[i].role == role && plan[i].wheel_index == wheel_index) {
+      return plan[i].gpio;
+    }
+  }
+  return kUnassigned;
+}
 
 }  // namespace board_pins
