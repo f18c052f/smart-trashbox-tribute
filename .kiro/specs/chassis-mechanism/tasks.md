@@ -329,7 +329,7 @@
   - _Requirements: 1.12_
   - _Depends: 4.1_
 
-- [ ] 4.3 (P) パラメータ変更と記録の不整合検出を追加する
+- [x] 4.3 (P) パラメータ変更と記録の不整合検出を追加する
   - 形状を再生成せずに、記録の識別子と現在の寸法パラメータの識別子だけを突き合わせる検査を追加する
   - 観測可能な完了状態: 形状ライブラリ非導入の環境で、寸法変更後の不整合が検出されるテストが通る
   - _Requirements: 1.12_
@@ -549,6 +549,32 @@
   - _Depends: 7.1, 7.2_
 
 ## Implementation Notes
+### 4.3 が残した申し送り
+
+- **⚠️ 恒真テストを撤去すること（`/kiro-validate-impl` または群の確定時）**:
+  `tests/chassis_mechanism/test_chassis_cli.py::test_the_observation_is_not_merged_into_the_parameters_digest`
+  は ⚠️ **落ちようがない**。`tmp_path` へ観測ファイルを書くが**どのコード経路もそれを
+  読まず**、主張は `parameters_digest(_params().chassis)` を2回比べる `f(x) == f(x)`
+  である。4.3 のレビューが機械的に裏取りした——⚠️ **「観測が識別子の入力へ漏れる」変異の
+  下で当該テストは生存し、4.3 の `test_recording_an_observation_does_not_stale_the_shipped_record`
+  は死ぬ**。自分が名乗っている当のバグに対して盲目である。
+  ⚠️ **修理でも据え置きでもなく撤去が正しい**: (a) 真の不変条件は 4.3 のテストが記録照合の
+  実経路で完全に覆っている、(b) 残せば「守られている」という誤った信号を出し続ける
+  （現に査読を2回通過した）、(c) 同じ位置に残すと名前だけが重複してどちらが本物か
+  読めなくなる。⚠️ **4.1 でコミット済みであり 4.3 の境界外のため、そこでは触っていない**
+- **`verify_digest` の失敗文が常に既定の寸法パスを名指しする**: `--dimensions <別>` を
+  与えた場合でも `DEFAULT_DIMENSIONS_PATH` を挙げる（「別のパスから読んだ場合はそちらを
+  見ること」と添えてはいる）。⚠️ **その文が要る状況でこそ誤解を招く**。本番コードの変更に
+  なるため 4.3 では直していない
+- **`test_chassis_baseline.py` にモジュール直下の `shapes` / `build123d` の import を
+  足さないこと**: 6 節の子プロセスが本ファイルを CAD 遮断スタブの下で `exec_module`
+  するため、直下の import は遮断を壊す。7 節の補助（`_entry_probe_code` /
+  `_nocad_stub_with_marker` / `_run_module_blocked` / `_shipped_record_digest`）は再利用可能
+- **`_STUB_MESSAGE not in stderr` は単独では区別能力を持たない**: 「検出した」と
+  「CAD 欠如で失敗した」を実際に分けているのは `exit_code == EXIT_MISMATCH` と
+  `exit_code != EXIT_CAD_UNAVAILABLE` の対である（当該表明はスタブの生 ImportError が
+  漏れた場合の補助的な防御）
+
 
 ### 実物が必要なタスク
 

@@ -28,6 +28,14 @@ tasks.md タスク 2.5 の「観測可能な完了状態」——「寸法を1�
    ——`PYTHONPATH` の先頭へ `ImportError` を送出するスタブを置く。
    ⚠️ **本リポジトリの `.venv` には形状ライブラリが導入済み**であり、遮断せずに
    通しても全件緑になる。遮断が効いていることを親子の両方で毎回確かめる。
+5. ⚠️ **タスク 4.3 の観測可能な完了状態**（7 節）: 上の 4 は**作り物の記録**に
+   対する検出であり、⚠️ **出荷された記録**
+   （`configs/chassis_mechanism/geometry-baseline.json`、タスク 4.2）が寸法変更で
+   古びることは言えない。7 節は入口（`check --digest-only`）を通して、形状
+   ライブラリ非導入の環境で出荷記録が古いと判定されること・その判定が形状を1つも
+   作らないこと・観測（`measurements.json`）ではその判定が起きないことを固定する。
+   ⚠️ **skip しない。** 完了状態が名指しする環境で条件付きに飛ばせば、その環境で
+   何も観測されないまま緑になる。
 
 ## ⚠️ 出荷ファイルを書き換えない
 
@@ -64,12 +72,18 @@ from catch_mechanism import (
     PRESENT,
     GeometryBaseline,
     PartMetrics,
+    Provenance,
     compare_metrics,
     load_baseline,
 )
 from catch_mechanism import ConsistencyError as UpstreamConsistencyError
 
 from chassis_mechanism import baseline as baseline_module
+from chassis_mechanism import cli as cli_module
+from chassis_mechanism.assembly import (
+    DEFAULT_MEASUREMENTS_PATH,
+    REPRESENTATIVE_DIAMETER_PATH,
+)
 from chassis_mechanism.baseline import (
     DEFAULT_BASELINE_PATH,
     dump_baseline,
@@ -834,3 +848,333 @@ def test_the_blocked_report_agrees_with_the_in_process_one(tmp_path: Path) -> No
 
     for key in ("recorded_digest", "current_digest", "detected", "error_type", "message"):
         assert blocked[key] == here[key], f"{key} が遮断の有無で食い違う"
+
+
+# ---------------------------------------------------------------------------
+# 7. ⚠️ タスク 4.3: **出荷された記録**に対する寸法変更の検出
+# ---------------------------------------------------------------------------
+#
+# 上の 6 節（タスク 2.5）は `verify_digest` そのものを、⚠️ **作り物の記録**
+# （`probe_alpha` / `probe_beta`）に対して固定した。記録の器が働くことは言えるが、
+# 出荷された記録（`configs/chassis_mechanism/geometry-baseline.json`、タスク 4.2）が
+# 実際に古びるかどうかは言えない——本節はそこを埋める。
+#
+# ⚠️ **タスク 4.2 は識別子の関門を意図的に迂回した。**
+# `test_chassis_geometry_regression.py::test_check_fails_when_one_dimension_changed`
+# は記録の写しの識別子を変更後へ揃えてから指標を照合させており、その docstring は
+# 「識別子の失敗そのものはタスク 4.3 が固定する別の失敗である」と述べている。
+# 本節がその失敗を所有する。
+#
+# ⚠️ **遮断の確認は、計測する実行と同一のプロセスで行う。** 別プロセスで
+# 「スタブが効く」ことを確かめても、計測した側で効いていた保証にはならない。
+# 下の2つの検査はそれぞれ別の方法で同一プロセスの証拠を取る:
+#   - `_entry_probe_code`: 実行の冒頭で `import build123d` を試し、その結果を
+#     照合の結果と**同じ JSON** に載せる。
+#   - `_nocad_stub_with_marker`: `sitecustomize` が起動時に遮断の成否を印へ書く。
+#     ⚠️ `python -m chassis_mechanism` の**実プロセスの終了コード**を測る側は
+#     コードを差し込めないため、起動時フックで同一プロセスの証拠を残す。
+
+
+_STUB_STATE_BLOCKED = "blocked"
+_STUB_STATE_AVAILABLE = "available"
+
+_SITECUSTOMIZE_SOURCE = """
+import sys
+from pathlib import Path
+
+try:
+    import build123d  # noqa: F401
+except ImportError:
+    state = {blocked!r}
+else:
+    state = {available!r}
+sys.modules.pop("build123d", None)
+Path({marker!r}).write_text(state, encoding="utf-8")
+"""
+
+_ENTRY_PROBE_BODY = """
+import io
+import json
+import sys
+from contextlib import redirect_stderr, redirect_stdout
+
+# ⚠️ 遮断の確認を、照合と同じプロセスの中で行う。
+try:
+    import build123d  # noqa: F401
+except ImportError:
+    blocked = True
+else:
+    blocked = False
+sys.modules.pop("build123d", None)
+
+from chassis_mechanism import cli as probe_cli
+
+out, err = io.StringIO(), io.StringIO()
+with redirect_stdout(out), redirect_stderr(err):
+    code = probe_cli.main(
+        ["check", "--digest-only", "--dimensions", DIMENSIONS]
+    )
+
+print(
+    json.dumps(
+        {
+            "stub_blocked_the_shape_library": blocked,
+            "exit_code": code,
+            "mismatch_code": probe_cli.EXIT_MISMATCH,
+            "cad_code": probe_cli.EXIT_CAD_UNAVAILABLE,
+            "ok_code": probe_cli.EXIT_OK,
+            "stdout": out.getvalue(),
+            "stderr": err.getvalue(),
+            "shape_library_modules": sorted(
+                name
+                for name in sys.modules
+                if name.split(".")[0] in ("build123d", "OCP")
+            ),
+            "upstream_cad_modules": sorted(
+                name
+                for name in sys.modules
+                if name in ("catch_mechanism.shapes", "catch_mechanism.export")
+            ),
+        }
+    )
+)
+"""
+
+
+def _entry_probe_code(dimensions: Path) -> str:
+    """子プロセスへ渡すソース（変更後の寸法設定に対して入口を1回だけ呼ぶ）。"""
+    return f"DIMENSIONS = {str(dimensions)!r}\n{_ENTRY_PROBE_BODY}"
+
+
+def _nocad_stub_with_marker(tmp_path: Path, marker: Path) -> Path:
+    """遮断スタブに加え、起動時に遮断の成否を `marker` へ書く置き場を返す。
+
+    ⚠️ **`sitecustomize` は `site` が解釈器の起動時に import する。** そのため
+    `python -m chassis_mechanism` のようにソースを差し込めない実行でも、
+    **その実行自身**が遮断されていたかどうかを残せる。本リポジトリの `.venv` には
+    `sitecustomize` / `usercustomize` のいずれも存在しないため、ここで置くものが
+    何かを覆い隠すことはない。
+    """
+    stub_dir = _nocad_stub(tmp_path)
+    (stub_dir / "sitecustomize.py").write_text(
+        _SITECUSTOMIZE_SOURCE.format(
+            blocked=_STUB_STATE_BLOCKED,
+            available=_STUB_STATE_AVAILABLE,
+            marker=str(marker),
+        ),
+        encoding="utf-8",
+    )
+    return stub_dir
+
+
+def _run_module_blocked(
+    args: list[str], stub_dir: Path
+) -> subprocess.CompletedProcess[str]:
+    """形状ライブラリを遮断した実プロセスで `python -m chassis_mechanism` を走らせる。"""
+    return subprocess.run(  # noqa: S603
+        [sys.executable, "-m", "chassis_mechanism", *args],
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        encoding="utf-8",
+        env=_blocked_env(stub_dir),
+        timeout=300.0,
+        check=False,
+    )
+
+
+def _shipped_record_digest() -> str:
+    """出荷された記録が運んでいる識別子（⚠️ 本ファイルへ値を書き写さない）。"""
+    return load_baseline(DEFAULT_BASELINE_PATH).parameters_digest
+
+
+def _measurements_with_representative(path: Path, *, diameter_mm: float) -> Path:
+    """代表値が埋まった観測記録を `path` へ書く（3輪とも同じ径＝平均と一致）。
+
+    ⚠️ **出荷の観測記録は書き換えない。** 出荷ファイルを読んで写しを作る。
+    """
+    document = json.loads(DEFAULT_MEASUREMENTS_PATH.read_text(encoding="utf-8"))
+    for wheel in document["wheels"]:
+        wheel["effective_rolling_diameter_mm"] = diameter_mm
+        wheel["method"] = "static_loaded"
+        wheel["limitation_note"] = "転動を伴わないため、周方向のたわみは捉えられない。"
+    document["representative_wheel_diameter_mm"] = diameter_mm
+    for index in range(len(document["wheels"])):
+        document["provenance"][
+            f"wheels.{index}.effective_rolling_diameter_mm"
+        ] = Provenance.MEASURED.value
+    document["provenance"][REPRESENTATIVE_DIAMETER_PATH] = Provenance.MEASURED.value
+    path.write_text(
+        json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    return path
+
+
+def _effective_rolling_radius_mm(argv: list[str]) -> float:
+    """`layout` サブコマンドを走らせ、導出記録の実効転がり半径を読む。"""
+    assert cli_module.main(argv) == cli_module.EXIT_OK
+    output = Path(argv[argv.index("--output") + 1])
+    document = json.loads(output.read_text(encoding="utf-8"))
+    value = document["vertical"]["effective_rolling_radius_mm"]
+    assert isinstance(value, (int, float)), value
+    return float(value)
+
+
+def test_a_changed_dimension_stales_the_shipped_record_without_the_shape_library(
+    tmp_path: Path,
+) -> None:
+    """⚠️ **観測可能な完了状態**（tasks.md 4.3）。
+
+    「形状ライブラリ非導入の環境で、寸法変更後の不整合が検出される」——2つの性質を
+    1回の実行で同時に見る:
+
+    1. **検出が成立する**: 寸法を1つ変えただけで、⚠️ **出荷された記録**に対する
+       `check --digest-only` が終了コード 1（検査の不一致）になり、記録側と現在の
+       識別子の**双方**が失敗メッセージに載る（要件 1.12 / `errors.ConsistencyError`）。
+    2. **形状ライブラリを要さない**: 同じプロセスで `import build123d` が
+       `ImportError` になっており、照合を終えた時点でも形状ライブラリと上流 CAD 層は
+       `sys.modules` に1つも現れない。
+
+    ⚠️ **終了コード 3（形状環境が無い）ではない**ことを併せて見る。3 で落ちるなら
+    「非導入だから失敗した」だけであり、寸法変更を検出したことにならない。
+    """
+    changed = _one_dimension_changed(tmp_path / "work")
+    completed = _run_blocked(_entry_probe_code(changed), _nocad_stub(tmp_path))
+
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(completed.stdout)
+
+    # (2) 形状ライブラリ非導入の環境であること（⚠️ 計測した実行そのもので確認）。
+    assert payload["stub_blocked_the_shape_library"] is True, (
+        "遮断が効いていない実行を「非導入の環境」と呼んでいる"
+    )
+    assert payload["shape_library_modules"] == [], (
+        "形状ライブラリが子プロセスの sys.modules に現れている"
+    )
+    assert payload["upstream_cad_modules"] == [], (
+        "上流の CAD 層モジュールが読み込まれている（経路が形状層へ触れている）"
+    )
+
+    # (1) 検出が成立していること。
+    assert payload["exit_code"] == payload["mismatch_code"], payload["stderr"]
+    assert payload["exit_code"] != payload["cad_code"], (
+        "形状環境が無いことによる失敗であり、寸法変更の検出ではない"
+    )
+    current = parameters_digest(load_params(changed).chassis)
+    recorded = _shipped_record_digest()
+    assert recorded != current, "寸法を変えたのに識別子が動いていない（前提が崩れている）"
+    assert recorded in payload["stderr"], "記録側の識別子が失敗に載っていない"
+    assert current in payload["stderr"], "現在の識別子が失敗に載っていない"
+    assert str(DEFAULT_BASELINE_PATH) in payload["stderr"], (
+        "どの記録が古いのかが失敗から読めない"
+    )
+    assert _STUB_MESSAGE not in payload["stderr"], (
+        "遮断スタブ自身の ImportError が失敗の理由になっている"
+    )
+
+
+def test_the_entry_point_exits_with_the_mismatch_code_without_the_shape_library(
+    tmp_path: Path,
+) -> None:
+    """`python -m chassis_mechanism` の**実プロセスの終了コード**が 1 になる。
+
+    上の検査は `cli.main` の戻り値を見るが、⚠️ **利用者と CI が見るのはプロセスの
+    終了コードである**。`__main__` が戻り値を落としていれば、寸法変更を検出しても
+    CI は緑のまま通る。
+
+    ⚠️ **遮断の証拠は、この実行自身が残す**（`sitecustomize` が起動時に印を書く）。
+    別プロセスで遮断を確かめても、計測した実行で効いていた保証にはならない。
+    """
+    marker = tmp_path / "stub-state.txt"
+    stub_dir = _nocad_stub_with_marker(tmp_path, marker)
+    changed = _one_dimension_changed(tmp_path / "work")
+
+    completed = _run_module_blocked(
+        ["check", "--digest-only", "--dimensions", str(changed)], stub_dir
+    )
+
+    assert marker.read_text(encoding="utf-8") == _STUB_STATE_BLOCKED, (
+        "計測した実行そのもので形状ライブラリの遮断が効いていない"
+    )
+    assert completed.returncode == cli_module.EXIT_MISMATCH, (
+        f"stdout={completed.stdout!r} stderr={completed.stderr!r}"
+    )
+    assert _shipped_record_digest() in completed.stderr
+    assert parameters_digest(load_params(changed).chassis) in completed.stderr
+
+
+def test_the_stale_record_is_detected_before_any_shape_is_built(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """⚠️ **古さの判定は形状を1つも作らずに終わる**（要件 1.12 / design.md `#### Baseline`）。
+
+    `test_chassis_cli.py::test_check_digest_only_does_not_regenerate_shapes` は
+    ⚠️ **識別子が一致する側**（記録が新しく、照合が成功する経路）しか見ていない。
+    失敗する側で形状を作りに行っていれば、⚠️ **不整合を報せるために CAD が要る**
+    ことになり、「形状ライブラリ非導入の環境で検出できる」は成立しない。
+
+    ⚠️ `shapes` は関数の中で import する。本ファイルはモジュール読み込み時に
+    形状ライブラリへ到達してはならない——6 節の子プロセスが本ファイルを
+    そのまま import するためである。
+    """
+    from chassis_mechanism import shapes as shapes_module
+
+    def _explode(*args: object, **kwargs: object) -> None:
+        raise AssertionError("識別子だけの照合が形状を再生成した")
+
+    monkeypatch.setattr(shapes_module, "build_parts", _explode)
+    changed = _one_dimension_changed(tmp_path / "work")
+
+    assert (
+        cli_module.main(
+            ["check", "--digest-only", "--dimensions", str(changed)]
+        )
+        == cli_module.EXIT_MISMATCH
+    )
+
+
+def test_recording_an_observation_does_not_stale_the_shipped_record(
+    tmp_path: Path,
+) -> None:
+    """⚠️ **観測は識別子を動かさない**（design.md `#### Baseline` / 「Logical Data Model」）。
+
+    識別子が観測を含めば、⚠️ **採寸を1つ書き込むたびに形状の再生成が要求される**。
+    要件 1.12 が守るのは「寸法パラメータを変えたら記録を作り直せ」であって
+    「組立て後に測ったら作り直せ」ではない。
+
+    ⚠️ **観測が空振りでないことを先に示す。** 代表値を書き込むと実効転がり半径が
+    実際に動く（`layout` の導出記録で確かめる）。そのうえで、出荷された記録に対する
+    `check --digest-only` は同じ観測記録を渡しても正常終了する。
+
+    `test_chassis_cli.py::test_the_observation_is_not_merged_into_the_parameters_digest`
+    は `parameters_digest` を2回呼んで同値であることを見るが、⚠️ **観測記録を
+    どの経路も読んでいない**ため、識別子の入力に観測が混ざる変更を捕まえない。
+    ここでは**記録の照合そのもの**を通す。
+    """
+    measurements = _measurements_with_representative(
+        tmp_path / "measurements.json", diameter_mm=58.5
+    )
+
+    without = _effective_rolling_radius_mm(
+        ["layout", "--output", str(tmp_path / "layout-nominal.json")]
+    )
+    with_observation = _effective_rolling_radius_mm(
+        [
+            "layout",
+            "--output",
+            str(tmp_path / "layout-observed.json"),
+            "--measurements",
+            str(measurements),
+        ]
+    )
+    assert with_observation != pytest.approx(without), (
+        "観測が幾何を動かしていない（この観測では識別子の不感性を示せない）"
+    )
+
+    assert (
+        cli_module.main(
+            ["check", "--digest-only", "--measurements", str(measurements)]
+        )
+        == cli_module.EXIT_OK
+    ), "観測を書き込んだだけで出荷された記録が古いと判定された"
