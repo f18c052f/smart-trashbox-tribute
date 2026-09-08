@@ -124,5 +124,19 @@ static_assert(kPcntUnitCount > 0, "計数器の本数が 0 である");
 static_assert(kLedcChannelCount > 0, "出力生成器の本数が 0 である");
 static_assert(kAdc1ChannelCount > 0, "変換器の本数が 0 である");
 
+// --- checkPinPlan がコンパイル時に評価できること（タスク 1.4、要件 2.7）------
+// ホスト・実機の双方でこの翻訳単位がコンパイルされる（本ファイル冒頭の注記
+// 1）ため、この `static_assert` が通ること自体が「実機へ書き込むことなく
+// 評価できる」を、ホストのユニットテストより強い形（実行時ですらなく
+// コンパイル時）で両ビルドに対して固定する。個々の違反種別の検出は
+// `test/native/test_pin_plan/` が実行時テストとして持つ（コンパイルエラー
+// にすると違反ケースを列挙できないため）。
+constexpr PinAssignment kCompileTimeCheckSamplePlan[2] = {
+    {PinRole::kBatterySense, kNoWheel, 32},
+    {PinRole::kMotorPwm, 0, 4},
+};
+static_assert(checkPinPlan(kCompileTimeCheckSamplePlan).ok(),
+              "checkPinPlan が成立する割当を ok() として評価できない");
+
 }  // namespace
 }  // namespace board_pins

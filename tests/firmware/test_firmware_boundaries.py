@@ -2388,3 +2388,93 @@ def test_gate_detection_ignores_comments_in_crafted_input() -> None:
     """コメント中のコンポーネント名を参照と誤認しない。"""
     fake_cmake = "# board_pins は teleop 限定である\nset(X 1)\n"
     assert find_ungated_teleop_component_references(fake_cmake, "board_pins") == []
+
+
+# ---------------------------------------------------------------------------
+# 10. board_pins のペリフェラル非参照を検査する（要件 17.3、teleop-bringup タスク 1.4）
+#
+# セクション8の「純ロジックファイル」走査（`_all_pure_logic_files`）は
+# `lib/drivetrain_control` だけを対象にしており、`lib/board_pins` を含まない。
+# タスク 1.3 の Implementation Notes（tasks.md）が「board_pins にも同種の
+# 検査が要る」ことを 1.4 宛に残しており、本節がそれを満たす。
+#
+# ⚠️ 検査ロジックそのもの（`find_forbidden_peripheral_includes` /
+# `classify_forbidden_include`、セクション9直前の禁止 include 検査）は
+# セクション8がすでに固定・検証済みのものをそのまま再利用する（重複実装を
+# 避ける、`tech.md` 開発標準3）。ここで新設するのは「どのファイル集合へ
+# 適用するか」（board_pins のヘッダ＋実装）だけである。
+# ---------------------------------------------------------------------------
+
+
+def _board_pins_pure_logic_files() -> list[Path]:
+    """`lib/board_pins` 配下の純ロジック実ファイル（ヘッダ＋実装）を列挙する。"""
+    return sorted(BOARD_PINS_INCLUDE_DIR.rglob("*.hpp")) + sorted(BOARD_PINS_SRC_DIR.rglob("*.cpp"))
+
+
+def test_board_pins_pure_logic_files_is_non_empty() -> None:
+    """走査対象そのものが空振りでないことを確認する（前提の健全性）。"""
+    assert _board_pins_pure_logic_files() != []
+
+
+def test_board_pins_file_list_contains_the_known_files() -> None:
+    """空虚な緑の防止: 走査対象が実際に `pin_map.hpp` / `pin_rules.hpp` /
+    `board_pins.cpp` を含んでいることを確かめる。含んでいなければ、直後の
+    検査が「何も見ていないだけ」で緑になりうる。
+    """
+    names = {p.name for p in _board_pins_pure_logic_files()}
+    assert {"pin_map.hpp", "pin_rules.hpp", "board_pins.cpp"} <= names
+
+
+def _violations_across_board_pins_files(
+    check: Callable[[str], list[str]],
+) -> dict[str, list[str]]:
+    """`check` を `lib/board_pins` の全純ロジックファイルへ適用し、違反があった
+    ファイルのみを集める（`_violations_across_pure_logic_files` の board_pins 版）。
+    """
+    result: dict[str, list[str]] = {}
+    for path in _board_pins_pure_logic_files():
+        violations = check(path.read_text(encoding="utf-8"))
+        if violations:
+            result[str(path.relative_to(REPO_ROOT))] = violations
+    return result
+
+
+def test_no_board_pins_file_includes_forbidden_peripheral_headers() -> None:
+    """要件 17.3: `board_pins` がペリフェラル API を一切参照しない。
+
+    `pin_map.hpp` / `pin_rules.hpp` それぞれの冒頭コメントが宣言する制約
+    （`driver/*.h` / `esp_adc/*.h` を include しない）を、コメントではなく
+    実体として固定する。ホスト・実機の双方でコンパイルできることの前提
+    （要件 2.7）がこの制約に依拠している。
+    """
+    violations = _violations_across_board_pins_files(find_forbidden_peripheral_includes)
+    assert violations == {}, f"board_pins へペリフェラル API 参照が混入している: {violations}"
+
+
+def test_detects_forbidden_peripheral_include_in_board_pins_style_crafted_input() -> None:
+    """違反ケース: `board_pins` 風のヘッダへ `driver/*.h` を紛れ込ませた入力が検出される。
+
+    ⚠️ 実ファイルへの適用が緑であることは、検査ロジックが機能しているから
+    なのか、単に何も検出していないだけなのかを区別できない。crafted 入力で
+    実際に赤くなることを示す。
+    """
+    fake_header = (
+        "#pragma once\n"
+        "#include <cstdint>\n"
+        "#include <driver/gpio.h>\n"  # 混入させた禁止 include
+        "namespace board_pins {\n"
+        "}  // namespace board_pins\n"
+    )
+    assert find_forbidden_peripheral_includes(fake_header) != []
+
+
+def test_does_not_flag_board_pins_legitimate_includes_in_crafted_input() -> None:
+    """誤検知回避: `<cstdint>` と自身のペア相手ヘッダは違反にしない。"""
+    fake_header = (
+        "#pragma once\n"
+        "#include <cstdint>\n"
+        '#include "board_pins/pin_map.hpp"\n'
+        "namespace board_pins {\n"
+        "}  // namespace board_pins\n"
+    )
+    assert find_forbidden_peripheral_includes(fake_header) == []
