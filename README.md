@@ -4,8 +4,10 @@
 
 元動画: [勝手に入るゴミ箱作った Smart Trashbox](https://www.youtube.com/watch?v=NqDTE6dHpJw)（倉田捻氏 / 文化庁メディア芸術祭受賞）
 
-> **現在のフェーズ: 設計・ドキュメント整理**
-> ソフトウェアはまだ実装していない。本リポジトリには現在 `docs/` の設計ドキュメントのみが含まれる。
+> **現在のフェーズ: 固定側ソフトウェアの実装**
+> 設計ドキュメント（`docs/`）に加え、固定側の Python 実装（`src/`）、移動体側ファームウェア（`firmware/`）、
+> 掃引結果ビューア（`viz/`）が入っている。実機セットアップを待たずに動かせるものとして、
+> **軌道シミュレータとその結果ビューア**がある（→ [docs/simulator-usage.md](./docs/simulator-usage.md)）。
 
 ---
 
@@ -55,6 +57,7 @@ Pi で記録した実データは WSL へ持ち帰り、繰り返し解析する
 | [docs/bom.md](./docs/bom.md) | 部品表（**型番・数量の正**） |
 | [docs/development-environment.md](./docs/development-environment.md) | 開発環境・実行環境の方針、責務分担、実機セットアップ手順 |
 | [docs/original-features.md](./docs/original-features.md) | **本プロジェクト独自機能の方針**（シミュレータ / ロギング / 手動テレオペ） |
+| [docs/simulator-usage.md](./docs/simulator-usage.md) | **軌道シミュレータとビューアの実行手順の正**（ハードウェア不要で動かせる） |
 
 ### 横断ファイル
 
