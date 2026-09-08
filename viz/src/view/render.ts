@@ -97,18 +97,27 @@ function svgElement(doc: Document, tag: string): Element {
   return doc.createElementNS(SVG_NS, tag);
 }
 
+// 呼び出し側は空白区切りの複合クラス名（例: "region-axis-label region-axis-label--column"）を
+// 1 引数として渡してくる。実 DOM の `DOMTokenList.add` は各引数を単一トークンとして扱い、
+// 空白を含む引数を渡すと `InvalidCharacterError` を投げるため、空白で分解してから渡す
+// （空文字列トークンは渡さない）。
+function addClassNames(el: Element, className: string): void {
+  const tokens = className.split(/\s+/).filter((token) => token.length > 0);
+  el.classList.add(...tokens);
+}
+
 function svgText(doc: Document, className: string, x: number, y: number, text: string): Element {
   const el = svgElement(doc, "text");
   el.setAttribute("x", String(x));
   el.setAttribute("y", String(y));
-  el.classList.add(className);
+  addClassNames(el, className);
   el.textContent = text;
   return el;
 }
 
 function htmlText(doc: Document, tag: string, className: string, text: string): Element {
   const el = doc.createElement(tag);
-  el.classList.add(className);
+  addClassNames(el, className);
   el.textContent = text;
   return el;
 }
@@ -274,7 +283,7 @@ function parameterRowElement(doc: Document, row: ParameterRow): Element {
 
 function parameterTable(doc: Document, className: string, rows: readonly ParameterRow[]): Element {
   const table = doc.createElement("table");
-  table.classList.add(className);
+  addClassNames(table, className);
   for (const row of rows) {
     table.appendChild(parameterRowElement(doc, row));
   }

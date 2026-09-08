@@ -246,6 +246,54 @@ test("render.ts のコンパイル出力に色の指定（16進数・rgb・hsl�
   assert.doesNotMatch(source, /hsla?\(/, "hsl() の色指定が現れている");
 });
 
+// --- 4.5. 複合クラス名（空白区切り）を渡す要素が実 DOM の classList 検証を通る ----------
+//
+// `svgText` / `htmlText` は "region-axis-label region-axis-label--column" のような
+// 空白区切りの複合文字列を 1 引数として受け取る。実 DOM の `classList.add` は各引数を
+// 単一トークンとして扱い、空白を含む引数を渡すと `InvalidCharacterError` を投げるため、
+// `dom-stub.ts` 側の `FakeClassList` も同じ検証を行うようにした。このテストが無いまま
+// だと、実ブラウザでのみ再現する `renderRegion` のクラッシュを見逃す。
+
+test("軸ラベル・軸名の要素が複合クラス名の各トークンを個別に持つ（実 DOM の classList 検証を通る）", () => {
+  const { host } = makeHost();
+  const document = makeMixedStatusDocument();
+  const view = viewOf(document);
+  const plan = buildRegionPlan(view, defaultSelection(document.sweep));
+
+  // 複合クラス名を classList.add へそのまま渡していれば、この呼び出し自体が
+  // （検証を強化した dom-stub の下で）例外を投げて失敗する。
+  renderRegion(asElement(host), plan);
+
+  const columnLabel = required(
+    host.queryAllByClass("region-axis-label--column")[0],
+    "列ラベルの要素が見つからない",
+  );
+  assert.ok(columnLabel.classList.contains("region-axis-label"), "列ラベルに共通クラスが無い");
+  assert.ok(
+    columnLabel.classList.contains("region-axis-label--column"),
+    "列ラベルに個別クラスが無い",
+  );
+
+  const rowLabel = required(
+    host.queryAllByClass("region-axis-label--row")[0],
+    "行ラベルの要素が見つからない",
+  );
+  assert.ok(rowLabel.classList.contains("region-axis-label"), "行ラベルに共通クラスが無い");
+  assert.ok(rowLabel.classList.contains("region-axis-label--row"), "行ラベルに個別クラスが無い");
+
+  const xAxisName = required(
+    host.queryAllByClass("region-axis-name--x")[0],
+    "x 軸名の要素が見つからない",
+  );
+  assert.ok(xAxisName.classList.contains("region-axis-name"), "x 軸名に共通クラスが無い");
+
+  const yAxisName = required(
+    host.queryAllByClass("region-axis-name--y")[0],
+    "y 軸名の要素が見つからない",
+  );
+  assert.ok(yAxisName.classList.contains("region-axis-name"), "y 軸名に共通クラスが無い");
+});
+
 // --- 5. renderLoadFailure は直前の内容を残さない（要件 1.3） ----------------------------
 
 test("renderLoadFailure が直前に描いた図をすべて置き換える（要件 1.3）", () => {

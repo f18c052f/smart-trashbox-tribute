@@ -16,11 +16,29 @@
 export const SVG_NS = "http://www.w3.org/2000/svg";
 export const HTML_NS = "http://www.w3.org/1999/xhtml";
 
+/** 実 `DOMTokenList` は空文字列トークンと、空白文字を含むトークンを拒否する
+ * （前者は `SyntaxError`、後者は `InvalidCharacterError`）。本スタブが緩いままだと、
+ * `render.ts` 側で複合クラス名文字列をそのまま `classList.add` へ渡す不具合が
+ * テストで検出できない（実際に起きた不具合）。ここで同じ検証を行う。 */
+function assertValidToken(name: string): void {
+  if (name.length === 0) {
+    throw new Error("SyntaxError: classList のトークンは空文字列にできない（テスト用スタブ）");
+  }
+  if (/s/.test(name)) {
+    throw new Error(
+      `InvalidCharacterError: classList のトークンに空白は含められない（テスト用スタブ）: "${name}"`,
+    );
+  }
+}
+
 /** `element.classList` の最小実装。 */
 class FakeClassList {
   private readonly tokens = new Set<string>();
 
   add(...names: readonly string[]): void {
+    for (const name of names) {
+      assertValidToken(name);
+    }
     for (const name of names) {
       this.tokens.add(name);
     }
@@ -28,10 +46,16 @@ class FakeClassList {
 
   remove(...names: readonly string[]): void {
     for (const name of names) {
+      assertValidToken(name);
+    }
+    for (const name of names) {
       this.tokens.delete(name);
     }
   }
 
+  // 実 `DOMTokenList.contains` はトークンの妥当性検証を行わない（`add` / `remove` /
+  // `toggle` と異なり、空文字列・空白入りの引数でも例外を投げず単に false を返す）。
+  // そのためここでは検証しない。
   contains(name: string): boolean {
     return this.tokens.has(name);
   }
