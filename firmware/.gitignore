@@ -7,6 +7,12 @@
 # inputs are tracked; the generated sdkconfig.<env> files are build output.
 sdkconfig.teleop
 sdkconfig.production
+# teleop-bringup task 7.1: [env:bench] layers the same sdkconfig.defaults.teleop
+# (research.md "Decision: E-3 の開ループ確認を teleop 系の第3プロファイルとして
+# 分離する" -- kept in the teleop family rather than a 4th sdkconfig layer), so
+# it gets its own generated sdkconfig.bench, same build-output category as the
+# two above.
+sdkconfig.bench
 
 # ESP-IDF Component Manager's resolved-dependency lock file. Regenerated at
 # configure time (first appeared once [env:teleop] started resolving

@@ -103,7 +103,21 @@ BLUEPAD32_REPO = "https://github.com/ricardoquesada/bluepad32.git"
 # such reference) -- 4.2.0 is the newest tagged release carrying that fix.
 BLUEPAD32_REF = "4.2.0"
 
-_EXPECTED_PIOENV = "teleop"
+# teleop-bringup task 7.1 (requirements.md 10.6; design.md "BenchApp";
+# research.md "Decision: E-3 の開ループ確認を teleop 系の第3プロファイルと
+# して分離する"): [env:bench] keeps DRIVETRAIN_BUILD_TELEOP defined (same
+# "teleop family" framing as set_build_profile_cmake_env.py's
+# _PROFILE_ENV_VARS_BY_PIOENV), so firmware/src/CMakeLists.txt's
+# DRIVETRAIN_BUILD_TELEOP-gated REQUIRES still adds bluepad32 to the "src"
+# component for [env:bench] too -- and the teleop/*.cpp glob it compiles
+# still includes controller_link.cpp/teleop_app.cpp (both #include <uni.h>),
+# even though app_main only ever references BenchApp there. Those
+# translation units must still be *compilable* (Bluepad32's headers must be
+# discoverable), so this script must still run for [env:bench]. bench_app.cpp
+# itself never includes Bluepad32 headers -- the actual isolation claim
+# (requirement 10.6: no PCNT/core/Bluepad32 in the bench *link*) is verified
+# against .pio/build/bench/firmware.map instead, not by skipping this fetch.
+_EXPECTED_PIOENVS = frozenset({"teleop", "bench"})
 
 
 def _run(args: list[str], cwd: Path, extra_env: dict[str, str] | None = None) -> None:
@@ -298,12 +312,13 @@ def fetch_and_integrate() -> None:
 
 
 _pioenv = env["PIOENV"]  # noqa: F821
-if _pioenv != _EXPECTED_PIOENV:
+if _pioenv not in _EXPECTED_PIOENVS:
     raise RuntimeError(
         "fetch_bluepad32.py was invoked for unexpected PlatformIO environment "
         f"'{_pioenv}'. This script must only be referenced from [env:teleop] "
-        "extra_scripts in platformio.ini -- fetching BTstack for any other "
-        "environment would defeat its containment to the teleop build."
+        "and [env:bench] extra_scripts in platformio.ini -- fetching BTstack "
+        "for any other environment would defeat its containment to the "
+        "teleop build family."
     )
 
 fetch_and_integrate()

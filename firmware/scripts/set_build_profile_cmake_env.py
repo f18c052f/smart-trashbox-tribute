@@ -39,6 +39,21 @@ Import("env")  # noqa: F821 -- PlatformIO injects this at exec time
 _PROFILE_ENV_VARS_BY_PIOENV = {
     "teleop": "DRIVETRAIN_BUILD_TELEOP",
     "production": "DRIVETRAIN_BUILD_PRODUCTION",
+    # teleop-bringup task 7.1 (requirements.md 10.6; design.md "BenchApp";
+    # research.md "Decision: E-3 の開ループ確認を teleop 系の第3プロファイル
+    # として分離する"): [env:bench] is deliberately kept in the "teleop
+    # family" rather than becoming a third exclusive build-profile macro
+    # category (that would also require touching build_profile.hpp's
+    # exclusivity guard and firmware/src/CMakeLists.txt's
+    # DRIVETRAIN_BUILD_TELEOP-gated REQUIRES list). So PIOENV=="bench" also
+    # resolves to DRIVETRAIN_BUILD_TELEOP here -- the same environment
+    # variable [env:teleop] sets -- and platformio.ini's [env:bench]
+    # build_flags separately defines the compiler macro DRIVETRAIN_BENCH
+    # (distinct from this CMake-configure-time signal, same distinction
+    # this module's docstring already draws between the two
+    # DRIVETRAIN_BUILD_TELEOP mechanisms) that firmware/src/main.cpp reads
+    # via #ifdef to choose BenchApp over TeleopApp.
+    "bench": "DRIVETRAIN_BUILD_TELEOP",
 }
 
 pioenv = env["PIOENV"]
@@ -47,8 +62,8 @@ if var_name is None:
     raise RuntimeError(
         "set_build_profile_cmake_env.py was invoked for unexpected "
         f"PlatformIO environment '{pioenv}'. This script must only be "
-        "referenced from [env:teleop] and [env:production] extra_scripts "
-        "in platformio.ini."
+        "referenced from [env:teleop], [env:bench], and [env:production] "
+        "extra_scripts in platformio.ini."
     )
 
 os.environ[var_name] = "1"

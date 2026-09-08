@@ -288,7 +288,7 @@
 
 - [ ] 7. 机上確認用の最小経路
 
-- [ ] 7.1 開ループ確認専用のビルドと最小経路を用意する
+- [x] 7.1 開ループ確認専用のビルドと最小経路を用意する
   - ⚠️ **ビルドプロファイルを環境変数へ写すスクリプトが、既知の2環境以外を拒否する。**
     新しい環境を足すだけでは configure 時に必ず失敗する。**対応表へ追加する作業を含める**
   - 既存の排他検査を書き換えずに済む形でビルドを分ける（テレオペ系に留める）
@@ -703,3 +703,28 @@
   で到達可能性を確認してから理由付き skip へ落とす形に修正した（`_load_link_map_or_skip`
   等、本ファイル既存の環境依存 skip の作法に倣った）。**この種の git ベースの検査を
   新設するときは、対象コミットの到達可能性を必ず先にガードすること。**
+- **タスク 7.1**: `[env:bench]` を新設した。`firmware/scripts/set_build_profile_cmake_env.py`
+  と `firmware/scripts/fetch_bluepad32.py` の PIOENV 許可リストへ `bench` を追加し、
+  `DRIVETRAIN_BUILD_TELEOP`（teleop と同じマクロ）を立てたうえで `-DDRIVETRAIN_BENCH`
+  を追加で定義する形にした。research.md の決定どおり、新しい排他カテゴリは作らず
+  「teleop ファミリー」に留めている。
+  ⚠️ **`firmware/scripts/*.py` に新しいビルド環境を追加するときは、この2つの
+  スクリプトの PIOENV 許可リストを両方拡張すること。**（`set_build_profile_cmake_env.py`
+  は タスク1.1 で既知だったが、`fetch_bluepad32.py` にも同種のガードがあることは
+  本タスクで新たに判明した。）
+- **タスク 7.1**: ⚠️ **`firmware.map` への素朴な部分文字列走査は `bench` 環境では
+  偽陽性になる。** `-Wl,--gc-sections` により実際には配置されないコードでも
+  「Archive member included」「Discarded input sections」「Cross Reference Table」
+  節には禁止シンボル名が現れる（実測で104件の偽陽性を確認）。
+  **リンク結果の非混入を検査するときは、実際に配置されたシンボルだけを見る
+  必要がある場合、`firmware.map` のテキスト走査ではなく `nm -C <elf>` で
+  DEFINED（`T`/`t`/`D`/`d`/`B`/`b`/`V` 等）と UNDEFINED（`U`/`w`/`v`）を
+  区別して判定すること。** 本タスクが新設した `find_defined_symbol_matches()` /
+  `_find_xtensa_nm_binary()` を先例として使えること。
+- **タスク 7.1**: `MotorLedcAdapter`（タスク3.2）をそのまま再利用し、机上確認用
+  可変抵抗は `board_pins::PinRole::kBenchPot`（GPIO33）の独立した ADC1
+  チャネルで読む（バッテリ電圧監視の GPIO32 とは共有しない）。
+  `BenchApp::run()` は3輪すべてに同じデューティを与える
+  （E-3 は機体に組み上がっていない机上手順であり、どの1輪が繋がっているかを
+  ファーム側で知る手段が無いための判断。procedures.md（タスク8.1）で
+  実施手順として扱うこと）。

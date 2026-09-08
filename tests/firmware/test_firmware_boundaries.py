@@ -17,7 +17,9 @@
    コンポーネントディレクトリを個別に直接指しており、テスト専用
    ライブラリ（`lib/test_support/` 等）が組込みビルドの探索対象へ
    自動的に混入しない構造になっていること（要件16.3）。
-3. **3つのビルド環境の存在とホストテスト環境の実機非依存**（要件1.1, 1.5）。
+3. **4つのビルド環境の存在とホストテスト環境の実機非依存**（要件1.1, 1.5）。
+   teleop / production / native の3つに加え、teleop-bringup タスク7.1が
+   E-3（開ループでのドライバ動作確認）専用の最小経路として bench を追加した。
 4. **テレオペ用と本番用のビルド構成マクロの排他性**（要件1.3）。
 5. **本番用ビルドの無線非依存と無線無効化設定**（要件1.4）。
 6. **ファーム2環境の対象基板が classic ESP32 に固定され、他系統の環境が
@@ -319,10 +321,15 @@ def test_does_not_flag_specific_subdirectory_in_crafted_input() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 3. 3つのビルド環境の存在とホストテスト環境の実機非依存（要件1.1, 1.5）
+# 3. 4つのビルド環境の存在とホストテスト環境の実機非依存（要件1.1, 1.5）
 # ---------------------------------------------------------------------------
 
-EXPECTED_ENV_NAMES: frozenset[str] = frozenset({"teleop", "production", "native"})
+# teleop-bringup task 7.1 (requirements.md 10.6): [env:bench] は E-3 専用の
+# 最小経路（BenchApp）を持つ第4の PlatformIO 環境として追加された
+# （teleop 系に留まる第3の"排他プロファイル"ではない -- research.md
+# "Decision: E-3 の開ループ確認を teleop 系の第3プロファイルとして分離
+# する"）。
+EXPECTED_ENV_NAMES: frozenset[str] = frozenset({"teleop", "production", "native", "bench"})
 
 
 def find_build_environment_set_violations(ini_text: str) -> list[str]:
@@ -1914,6 +1921,8 @@ def test_does_not_flag_production_style_disabled_assignment_in_crafted_input() -
 
 PRODUCTION_BUILD_DIR = FIRMWARE_DIR / ".pio" / "build" / "production"
 TELEOP_BUILD_DIR = FIRMWARE_DIR / ".pio" / "build" / "teleop"
+# teleop-bringup タスク 7.1（要件 10.6）: bench の成果物検査（下記 C 節）が使う。
+BENCH_BUILD_DIR = FIRMWARE_DIR / ".pio" / "build" / "bench"
 LINK_MAP_FILENAME = "firmware.map"
 
 # リンク結果に現れてはならない無線ライブラリのアーカイブ名。
@@ -2116,6 +2125,210 @@ def test_does_not_flag_non_radio_archive_in_crafted_build_tree(tmp_path: Path) -
     (tmp_path / "esp-idf" / "log").mkdir(parents=True)
     (tmp_path / "esp-idf" / "log" / "liblog.a").write_bytes(b"")
     assert find_radio_archive_files(tmp_path) == []
+
+
+# --- C. bench の成果物に計数器と上流の制御が現れないこと（タスク7.1、要件10.6）
+#
+# tasks.md のタスク7.1が定める観測可能な完了状態:
+# 「この経路のビルドが成功してリンク結果に計数器と上流の制御が現れず、
+#  テレオペ用ビルドは従来どおり制御ループを起動する」。
+#
+# ⚠️ **A節の `find_radio_references_in_link_map` を bench の `firmware.map`
+# へそのまま流用すると偽陽性になる**（本タスクのレビュー往復で実測・確認
+# 済み）。bench は `[env:teleop]` と同じ `EXTRA_COMPONENT_DIRS`／
+# `DRIVETRAIN_BUILD_TELEOP` の下でコンフィグされるため、`firmware.map` の
+# "Archive member included to satisfy reference"／"Discarded input
+# sections"／"Cross Reference Table" の各節には PCNT／
+# `DrivetrainController`／`ControllerLink`／Bluepad32／BTstack の名前が
+# **言及としてだけ**残る。これらは `-Wl,--gc-sections` によって実際には
+# 1バイトもリンク結果へ配置されていない（`app_main` が `BenchApp` だけを
+# 参照し、他の翻訳単位は未参照オブジェクトとして落とされるため）。
+# `find_radio_references_in_link_map` はテキストの単純部分一致であり、
+# この「名前は現れるが実体は配置されていない」節を区別できない。
+#
+# したがって本節はリンクマップのテキスト走査ではなく、**実際にリンクへ
+# 配置されたシンボル**（`xtensa-esp-elf-nm -C firmware.elf` が示す DEFINED
+# 行）だけを対象にする。UNDEFINED マーカー（`U`／未解決の弱シンボル
+# `w`・`v`）を持つ行は「参照はあるが実体が無い」ことの nm 版であり、
+# 対象から除外する。これが実装者・レビュア双方が本ラウンドで手作業で
+# 検証した方法そのものである。
+
+# tasks.md 7.1「計数器も上流の制御も初期化しない」が指す実体
+# （design.md "BenchApp" / bench_app.cpp が意図的に参照しないもの）。
+FORBIDDEN_BENCH_SYMBOL_PATTERNS: tuple[str, ...] = (
+    "uni_init",
+    "EncoderPcntAdapter",
+    "ControllerLink",
+    "TeleopApp::",
+    "DrivetrainController::step",
+    "btstack_run_loop_execute",
+    "pcnt_new_unit",
+)
+
+# nm の1行: `<8桁hexアドレス> <型1文字> <名前>` （DEFINED）、または
+# `<空白のみ> <型1文字> <名前>` （UNDEFINED）。`-C` で demangle された
+# 名前は空白を含みうるため、型1文字までを非貪欲にではなく「型1文字は
+# 単独のアルファベット、前後を空白で挟まれる」制約で確定させ、残り全部を
+# 名前として1回で取る。
+_NM_LINE_PATTERN = re.compile(r"^(\S*)\s+([A-Za-z?])\s(.*)$")
+# nm の型コードのうち UNDEFINED を表すもの: `U`（常に未定義）、
+# `w`／`v`（未解決の弱シンボル。大文字 `W`／`V` は定義済みの弱シンボルで
+# あり対象に含める）。
+_UNDEFINED_NM_TYPE_CHARS: frozenset[str] = frozenset({"U", "w", "v"})
+
+
+def find_defined_symbol_matches(nm_output: str, forbidden_patterns: tuple[str, ...]) -> list[str]:
+    """`nm -C` の出力テキストから **DEFINED** シンボルだけを対象に、禁止パターン
+    への部分一致を検出する。
+
+    UNDEFINED 行（型が `U`／`w`／`v`）は「名前は現れるが実体が配置されて
+    いない」ことの nm 版であり、意図的に走査対象から除く（A節の
+    docstring が説明する、リンクマップのテキスト走査が抱える偽陽性を
+    ここでは起こさないための核心）。
+    """
+    violations: list[str] = []
+    for line in nm_output.splitlines():
+        if not line.strip():
+            continue
+        match = _NM_LINE_PATTERN.match(line)
+        if match is None:
+            continue
+        type_char = match.group(2)
+        if type_char in _UNDEFINED_NM_TYPE_CHARS:
+            continue
+        name = match.group(3)
+        for pattern in forbidden_patterns:
+            if pattern in name:
+                violations.append(f"{type_char} {name} (禁止パターン: {pattern})")
+    return violations
+
+
+def _find_xtensa_nm_binary() -> Path | None:
+    """pin 済みツールチェーンの `xtensa-esp-elf-nm` を探す。
+
+    まず `PATH` 上を見る。見つからなければ PlatformIO がツールチェーンを
+    展開する既定のパッケージディレクトリ
+    （`~/.platformio/packages/toolchain-xtensa-esp-elf*/bin/`）を直接探す。
+    どちらにも見つからなければ `None`（呼び出し側が skip する）。
+    """
+    from_path = shutil.which("xtensa-esp-elf-nm")
+    if from_path is not None:
+        return Path(from_path)
+    packages_dir = Path.home() / ".platformio" / "packages"
+    candidates = sorted(packages_dir.glob("toolchain-xtensa-esp-elf*/bin/xtensa-esp-elf-nm"))
+    return candidates[0] if candidates else None
+
+
+def test_bench_link_map_has_zero_pcnt_and_upstream_control_references() -> None:
+    """⚠️ bench のリンク結果に計数器と上流の制御が現れない（タスク7.1の
+    観測可能な完了状態そのもの）。
+
+    A節の `_load_link_map_or_skip` はリンクマップの**分類**（本物のアプリ
+    リンクマップか）にのみ使う（同じ「環境依存の不在は skip、理由を明示」
+    方針を踏襲するため、まず bench の `firmware.map` を分類だけ通す）。
+    実際の判定は `firmware.elf` を `nm -C` へ通した DEFINED シンボルへ行う
+    （本節冒頭のコメントが説明する、テキスト走査では避けられない偽陽性を
+    避けるため）。
+    """
+    _load_link_map_or_skip(BENCH_BUILD_DIR, "bench")  # 分類のみ。中身は使わない。
+    elf_path = BENCH_BUILD_DIR / "firmware.elf"
+    if not elf_path.is_file():
+        pytest.skip(f"{elf_path} が未生成。`cd firmware && pio run -e bench` で生成される")
+    nm_binary = _find_xtensa_nm_binary()
+    if nm_binary is None:
+        pytest.skip(
+            "pin 済み xtensa-esp-elf-nm が見つからない "
+            "(PATH にも ~/.platformio/packages/toolchain-xtensa-esp-elf*/bin/ にも無い)"
+        )
+    result = subprocess.run(
+        [str(nm_binary), "-C", str(elf_path)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    violations = find_defined_symbol_matches(result.stdout, FORBIDDEN_BENCH_SYMBOL_PATTERNS)
+    assert violations == [], (
+        f"bench.elf に計数器/上流の制御の DEFINED シンボルが混入している"
+        f"（要件10.6 違反）: {violations}"
+    )
+
+
+def test_detects_forbidden_defined_symbol_in_crafted_nm_output() -> None:
+    """違反ケース: 禁止シンボルが DEFINED（型 `T`）として現れる架空の nm 出力が
+    検出される。
+
+    入力の1行目は実測した production の `firmware.elf` から逐語コピーした
+    行である（production は `DrivetrainController::step` を実際にリンクへ
+    配置しており、この検査ロジックが実データの DEFINED シンボルを正しく
+    拾えることの根拠になる。テンプレート引数の型が異なる
+    `long long` であることも含めて逐語）。
+    """
+    real_production_nm_excerpt = (
+        "400d0e14 T drivetrain_control::DrivetrainController::step(long long)\n"
+        "400d1368 t teleop::(anonymous namespace)::CheckAssigned(signed char)\n"
+        "         U some_unrelated_symbol\n"
+    )
+    violations = find_defined_symbol_matches(
+        real_production_nm_excerpt, FORBIDDEN_BENCH_SYMBOL_PATTERNS
+    )
+    assert violations != []
+    assert any("DrivetrainController::step" in v for v in violations)
+
+
+def test_does_not_flag_undefined_reference_to_forbidden_symbol_in_crafted_nm_output() -> None:
+    """誤検知回避: 禁止シンボルが UNDEFINED（型 `U`）参照としてのみ現れる架空の
+    nm 出力は違反にしない。
+
+    これが本節冒頭のコメントで説明した偽陽性シナリオ（リンクマップの
+    Archive-member-included/Discarded-input-sections/Cross-Reference-Table
+    節に名前だけが残る）を、nm 出力側で再現したものである。
+    """
+    fake_nm_output = (
+        "         U teleop::DrivetrainController::step(long long)\n"
+        "         w teleop::ControllerLink::poll()\n"
+        "400d1368 t teleop::(anonymous namespace)::CheckAssigned(signed char)\n"
+    )
+    assert find_defined_symbol_matches(fake_nm_output, FORBIDDEN_BENCH_SYMBOL_PATTERNS) == []
+
+
+def test_does_not_flag_unrelated_defined_symbol_in_crafted_nm_output() -> None:
+    """誤検知回避: 禁止パターンに一致しない DEFINED シンボルは違反にしない。
+
+    入力は実測した bench の `firmware.elf` から逐語コピーした行である
+    （production と同一の `MotorLedcAdapter` が bench でも DEFINED として
+    現れる -- タスク7.1が要求する「モータ出力アダプタは本番と同一のものを
+    使う」の傍証でもある）。
+    """
+    real_bench_nm_excerpt = (
+        "400d1384 T teleop::MotorLedcAdapter::write"
+        "(drivetrain_control::WheelOutputs const&)\n"
+        "400d1530 T teleop::MotorLedcAdapter::MotorLedcAdapter"
+        "(board_pins::PinAssignment const (&) [14], "
+        "teleop::MotorLedcConfig const (&) [3])\n"
+    )
+    assert find_defined_symbol_matches(real_bench_nm_excerpt, FORBIDDEN_BENCH_SYMBOL_PATTERNS) == []
+
+
+def test_nm_line_pattern_distinguishes_defined_from_undefined_in_crafted_input() -> None:
+    """空虚化の防止: パーサ自体が DEFINED/UNDEFINED を型コードで正しく
+    区別することを、禁止パターンに依らない最小入力で確かめる。
+    """
+    assert (
+        find_defined_symbol_matches("deadbeef T forbidden_marker\n", ("forbidden_marker",))
+        != []
+    )
+    assert (
+        find_defined_symbol_matches("         U forbidden_marker\n", ("forbidden_marker",))
+        == []
+    )
+    assert (
+        find_defined_symbol_matches("         w forbidden_marker\n", ("forbidden_marker",))
+        == []
+    )
+    assert (
+        find_defined_symbol_matches("deadbeef W forbidden_marker\n", ("forbidden_marker",))
+        != []
+    ), "大文字 W（定義済みの弱シンボル）は UNDEFINED として除外してはならない"
 
 
 # --- B. 両プロファイル同時指定でビルドが失敗すること（1.4） -----------------

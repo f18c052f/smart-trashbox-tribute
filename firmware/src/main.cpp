@@ -8,11 +8,15 @@
 // [env:teleop] build profile this constructs and runs the real TeleopApp
 // control loop.
 //
-// ⚠️ This does NOT yet implement task 7.1's BenchApp / entry-point dispatch
-// (design.md "アプリ層の入口が、プロファイルに応じて制御ループとこの最小
-// 経路のどちらを起動するかを決める" — that branching is task 7.1's own
-// scope). For now the [env:teleop] profile always runs TeleopApp directly;
-// task 7.1 will add the BenchApp branch later.
+// teleop-bringup task 7.1 (requirements.md 10.6; design.md "アプリ層の入口
+// が、プロファイルに応じて制御ループとこの最小経路のどちらを起動するかを
+// 決める。入口の分岐はこのタスクが所有する"): the [env:bench] profile
+// keeps DRIVETRAIN_BUILD_TELEOP defined (research.md "Decision: E-3 の
+// 開ループ確認を teleop 系の第3プロファイルとして分離する" — 第3の排他
+// プロファイルにはしない) but additionally defines DRIVETRAIN_BENCH
+// (platformio.ini [env:bench] build_flags). This #ifdef is what owns the
+// choice between the two paths at compile time; nothing upstream of this
+// file branches on DRIVETRAIN_BENCH.
 //
 // [env:production] keeps its pre-task-6.2 placeholder behaviour unchanged
 // (drivetrain-core task 6.5: prove the app layer links against the real
@@ -22,6 +26,30 @@
 // firmware/src/CMakeLists.txt), so the two branches are also mutually
 // exclusive at the component-graph level, not just behaviourally.
 #ifdef DRIVETRAIN_BUILD_TELEOP
+
+#ifdef DRIVETRAIN_BENCH
+
+#include "teleop/bench_app.hpp"
+
+extern "C" void app_main(void) {
+  // `static`, not a plain local: mirrors the TeleopApp branch below (and
+  // the pre-task-6.2 DrivetrainController placeholder before it) -- construct
+  // lazily on first reaching this line, once app_main() is already running
+  // and the ESP-IDF runtime (heap, GPIO/LEDC/ADC peripheral drivers,
+  // FreeRTOS scheduler) is fully up, rather than during the pre-app_main
+  // C++ static-init pass a namespace-scope global would use.
+  static teleop::BenchApp app;
+
+  // Polls the bench potentiometer and drives the (real, production-shared)
+  // MotorLedcAdapter in a fixed-interval loop (see bench_app.cpp). Under
+  // normal operation this call does not return -- BenchApp has no
+  // Bluepad32/BTstack main loop to hand control to (task 7.1's whole point
+  // is that this path never touches the radio stack), so it owns its own
+  // infinite polling loop instead.
+  app.run();
+}
+
+#else  // DRIVETRAIN_BUILD_TELEOP && !DRIVETRAIN_BENCH ([env:teleop])
 
 #include "teleop/teleop_app.hpp"
 
@@ -46,6 +74,8 @@ extern "C" void app_main(void) {
   // main loop for the remainder of the app's life).
   app.run();
 }
+
+#endif  // DRIVETRAIN_BENCH
 
 #else  // !DRIVETRAIN_BUILD_TELEOP ([env:production])
 
