@@ -126,7 +126,7 @@
 
 ## 4. 描画と画面の結線
 
-- [ ] 4. 描画と画面の結線
+- [x] 4. 描画と画面の結線
 
 - [x] 4.1 プランをベクタ図と表へ写す描画層を実装する
   - キャッチ可能領域・前提と限界・同一性・読み込み失敗の各プランを、ベクタ要素と表として描く
@@ -141,7 +141,7 @@
   - _Depends: 3.1, 3.2, 3.3_
   - _Boundary: Renderer_
 
-- [ ] 4.2 画面を組み立て、ファイル選択と表示操作を結線する
+- [x] 4.2 画面を組み立て、ファイル選択と表示操作を結線する
   - 単一のページに、較正のバナー・キャッチ可能領域の図・前提と限界・同一性とパラメータ・軌跡の 2 投影を並べる。タブや画面遷移を作らない
   - ローカルファイルの選択で読み込み、差し替えを可能にする。**通信でファイルを取得しない**
   - 読み込みに失敗したら、直前の図を消してから失敗内容を表示する
@@ -238,3 +238,5 @@
 - **4.1**: design.md の Dependency Direction が Scale --> Render の辺を欠いていた。タスク 3.1 の是正（Requirements Traceability の 2.1 行を Renderer, Scale / linearMap へ変更）が依存表側に反映されていなかったための食い違いで、4.1 で是正した。lerp は引き続き scale.ts 以外で書かないという B-7 の規律とは別物であることを design.md に明記した
 - **4.1**: viz/style.css の格子色カスタムプロパティは元々 catchable のみ・1 始まりの band-1..4 だった。plan/region.ts の fillKeyOf は成立割合を持つ格子点なら状態を問わず 0 始まりの band-0..3 を付けるため、not-catchable / not-evaluated にも帯のバリエーションが必要。4.1 で修正・拡張した
 - **4.1**: Node には DOM が無く jsdom も追加できない（開発時依存はTypeScript 1 個のみ）ため、viz/tests/dom-stub.ts に自前の最小 DOM 代替を用意した。グローバル document を定義せず、host 引数の外に触れる実装があれば ReferenceError で検出できる形にしている
+- **4.2**: requestAnimationFrame / cancelAnimationFrame は root.defaultView（Window）から取得する。startApp が受け取るのは Document のみでグローバル window を仮定できないため。FileReader は lib.dom.d.ts 上 Window のメンバーではなくグローバルの declare var であり、バレのグローバル参照で問題ない
+- **4.2**: 読み込み失敗時はキャッチ可能領域の図（region host）のみを消して失敗内容を表示する。前提と限界・軌跡アニメーションのパネルは直前の成功した読み込みの内容を残す。要件 1.3 の「直前に表示していた図」は図（単数）を指し、design.md のフローも FailParse/FailReq から Ctx/Reg/Anim へ辺を持たない。LoadIssue にファイル名が無いため、失敗した対象ファイル名を失敗表示自体に含められない点は将来の検討事項として残る

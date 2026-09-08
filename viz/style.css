@@ -286,3 +286,35 @@ table.context-parameters td {
   color: var(--axis-color);
   font-style: italic;
 }
+
+/* --- 画面の組み立て（app.ts が動的に生成する操作パネル）。既存のパネル同様、
+   flex の縦積みと軽い余白だけで、新しい配色は増やさない。 --- */
+
+.app-axis-controls,
+.app-record-controls,
+.app-playback-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 0.85rem;
+}
+
+.app-axis-fixed-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.app-axis-label,
+.app-axis-fixed-label,
+.app-record-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.app-track-host {
+  display: flex;
+  justify-content: center;
+}
