@@ -6,7 +6,7 @@
 `tests/prediction_core/test_boundaries.py` /
 `tests/trajectory_sim/test_trajectory_sim_boundaries.py` と同じ方針
 （検査ロジックを純粋関数として切り出し、実ファイルへの適用と「違反を含む
-架空の入力文字列」への適用の両方をテストする）で、以下の8点を固定する。
+架空の入力文字列」への適用の両方をテストする）で、以下の点を固定する。
 
 1. **ソース集合の一致**: `lib/drivetrain_control/CMakeLists.txt` の
    `idf_component_register(SRCS ...)` が列挙するファイル集合と、
@@ -32,6 +32,13 @@
    そして `firmware/src/CMakeLists.txt` がこれをテレオペ用ビルドのときだけ
    `REQUIRES` へ足し、本番の `COMPONENTS` allowlist へ触れずに済む形で
    あること。
+10. **パッド入力コンポーネント `teleop_input` の登録**（teleop-bringup
+    タスク 4.1、要件 8.6, 8.7, 8.8, 8.9）: `firmware/lib/teleop_input/` が
+    board_pins と同じ二重マニフェストの形でホストビルドと実機ビルドの
+    双方から見えること。ルート `CMakeLists.txt` へ個別に登録されていること。
+    そして `firmware/src/CMakeLists.txt` がこれをテレオペ用ビルドのときだけ
+    `REQUIRES` へ足し、本番の `COMPONENTS` allowlist へ触れずに済む形で
+    あること。
 
 **本ファイルは PlatformIO/CMake/ESP-IDF のいずれも実行しない**（`pio run` /
 `cmake` を呼び出さない）。`configparser` による INI 解析と正規表現による
@@ -73,6 +80,13 @@ BOARD_PINS_CMAKE_PATH = BOARD_PINS_DIR / "CMakeLists.txt"
 BOARD_PINS_LIBRARY_JSON_PATH = BOARD_PINS_DIR / "library.json"
 BOARD_PINS_SRC_DIR = BOARD_PINS_DIR / "src"
 BOARD_PINS_INCLUDE_DIR = BOARD_PINS_DIR / "include" / "board_pins"
+# teleop-bringup タスク 4.1（要件 8.6, 8.7, 8.8, 8.9）: 正規化済みパッド状態と
+# 変換パラメータの型のコンポーネント。
+TELEOP_INPUT_DIR = FIRMWARE_DIR / "lib" / "teleop_input"
+TELEOP_INPUT_CMAKE_PATH = TELEOP_INPUT_DIR / "CMakeLists.txt"
+TELEOP_INPUT_LIBRARY_JSON_PATH = TELEOP_INPUT_DIR / "library.json"
+TELEOP_INPUT_SRC_DIR = TELEOP_INPUT_DIR / "src"
+TELEOP_INPUT_INCLUDE_DIR = TELEOP_INPUT_DIR / "include" / "teleop_input"
 TEST_SUPPORT_DIR = FIRMWARE_DIR / "lib" / "test_support"
 BUILD_PROFILE_HPP_PATH = FIRMWARE_DIR / "src" / "build_profile.hpp"
 SDKCONFIG_PRODUCTION_PATH = FIRMWARE_DIR / "sdkconfig.defaults.production"
@@ -229,8 +243,10 @@ def find_unexpected_embedded_component_dirs(
 # 決定そのものである。`lib/test_support/`（ホスト専用）は決して含めない。
 #   - drivetrain_control: 純ロジックの核（drivetrain-core タスク 1.1）
 #   - board_pins: 端子割当の正（teleop-bringup タスク 1.3、要件 2.1）
+#   - teleop_input: 正規化済みパッド状態と変換パラメータの型
+#     （teleop-bringup タスク 4.1、要件 8.6-8.9）
 EMBEDDED_COMPONENT_DIR_ALLOWLIST: frozenset[str] = frozenset(
-    {"drivetrain_control", "board_pins"}
+    {"drivetrain_control", "board_pins", "teleop_input"}
 )
 
 
@@ -2390,6 +2406,88 @@ def test_gate_detection_ignores_comments_in_crafted_input() -> None:
     """コメント中のコンポーネント名を参照と誤認しない。"""
     fake_cmake = "# board_pins は teleop 限定である\nset(X 1)\n"
     assert find_ungated_teleop_component_references(fake_cmake, "board_pins") == []
+
+
+# ---------------------------------------------------------------------------
+# 9b. パッド入力コンポーネント teleop_input の登録（teleop-bringup タスク 4.1、
+#     要件 8.6, 8.7, 8.8, 8.9）
+#
+# セクション9（board_pins）と同じ観点を、正規化済みパッド状態と変換
+# パラメータの型を持つ teleop_input へ適用する。検査ロジック自体
+# （find_source_set_mismatch / find_ungated_teleop_component_references /
+# parse_components_allowlist 等）は使い回し、新規に定義し直さない
+# （それらが component 名やパスを引数に取る汎用関数であることの裏付けは
+# セクション9の crafted-input テストが既に示している）。
+# ---------------------------------------------------------------------------
+
+
+def _actual_teleop_input_source_paths() -> set[str]:
+    return {
+        f"src/{p.relative_to(TELEOP_INPUT_SRC_DIR).as_posix()}"
+        for p in TELEOP_INPUT_SRC_DIR.rglob("*.cpp")
+    }
+
+
+def test_teleop_input_has_both_manifests() -> None:
+    """teleop_input が IDF コンポーネント manifest と PlatformIO manifest を同居させる。
+
+    片方だけだと、実機ビルドかホストビルドのどちらかから見えなくなる。
+    """
+    assert (
+        TELEOP_INPUT_CMAKE_PATH.is_file()
+    ), "teleop_input に CMakeLists.txt が無い（実機から見えない）"
+    assert (
+        TELEOP_INPUT_LIBRARY_JSON_PATH.is_file()
+    ), "teleop_input に library.json が無い（ホストから見えない）"
+
+
+def test_teleop_input_cmakelists_srcs_matches_actual_source_files() -> None:
+    """`lib/teleop_input/CMakeLists.txt` の SRCS 集合が実体と一致する。
+
+    drivetrain_control / board_pins と同じ Risk R2（`SRCS` 更新漏れで
+    `native` だけ通る）の回帰。
+    """
+    cmake_text = TELEOP_INPUT_CMAKE_PATH.read_text(encoding="utf-8")
+    violations = find_source_set_mismatch(cmake_text, _actual_teleop_input_source_paths())
+    assert violations == [], f"teleop_input の SRCS 集合が実体とずれている: {violations}"
+
+
+def test_teleop_input_has_at_least_one_translation_unit() -> None:
+    """teleop_input が翻訳単位を持つ（ヘッダのみだと実機ビルドで一度もコンパイルされない）。
+
+    ヘッダのみのコンポーネントは IDF では INTERFACE ライブラリになり、利用側が
+    現れるまでコンパイルされない。タスク 4.1 の観測可能な完了状態
+    「ホスト向けビルドと実機向けビルドの双方でこの部品がコンパイルされ」を
+    利用側の有無に依存させないために、実体を持つソースを1本以上要求する。
+    """
+    assert _actual_teleop_input_source_paths() != set()
+
+
+def test_teleop_input_headers_exist_at_the_planned_paths() -> None:
+    """design.md "File Structure Plan" が定めた 2 ヘッダが実在する。"""
+    assert (TELEOP_INPUT_INCLUDE_DIR / "pad_state.hpp").is_file()
+    assert (TELEOP_INPUT_INCLUDE_DIR / "mapping.hpp").is_file()
+
+
+def test_teleop_input_is_registered_individually_in_extra_component_dirs() -> None:
+    """ルート `CMakeLists.txt` が `lib/teleop_input` を個別に登録している。"""
+    args = [
+        a.replace("\\", "/").rstrip("/") for a in parse_extra_component_dirs_append_args(ROOT_CMAKE_TEXT)
+    ]
+    assert any(
+        a.endswith("lib/teleop_input") for a in args
+    ), f"lib/teleop_input の個別登録が無い: {args}"
+
+
+def test_teleop_input_requirement_is_gated_on_the_teleop_profile() -> None:
+    """`firmware/src/CMakeLists.txt` が teleop_input をテレオペ時のみ REQUIRES へ足す。"""
+    violations = find_ungated_teleop_component_references(APP_CMAKE_TEXT, "teleop_input")
+    assert violations == [], f"teleop_input がテレオペ限定の外側で参照されている: {violations}"
+
+
+def test_production_components_allowlist_does_not_carry_teleop_input() -> None:
+    """本番の `COMPONENTS` allowlist は teleop_input を含まない（allowlist へ触れずに済む）。"""
+    assert "teleop_input" not in parse_components_allowlist(ROOT_CMAKE_TEXT)
 
 
 # ---------------------------------------------------------------------------

@@ -35,6 +35,20 @@ list(APPEND EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/lib/drivetrain_contr
 # DRIVETRAIN_BUILD_TELEOP is set.
 list(APPEND EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/lib/board_pins")
 
+# teleop-bringup task 4.1 (requirements.md 8.6, 8.7, 8.8, 8.9; design.md
+# "File Structure Plan" Modified Files): normalized pad state (PadState) and
+# mapping parameters (MappingParams). Listed INDIVIDUALLY for the same
+# reason as board_pins above -- naming lib/ wholesale here would pull
+# lib/test_support/ into the IDF component search.
+#
+# Same production-safety argument as board_pins: nothing in the
+# [env:production] component graph (src/drivetrain_control/__pio_env) ever
+# names teleop_input, so this line does NOT add it to the production image
+# and the COMPONENTS allowlist below does not need to change.
+# firmware/src/CMakeLists.txt adds teleop_input to the app component's
+# REQUIRES only when DRIVETRAIN_BUILD_TELEOP is set.
+list(APPEND EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/lib/teleop_input")
+
 # drivetrain-core task 1.2 (requirements.md 1.4): keep esp_wifi's object code
 # out of the linked production ELF/BIN.
 #

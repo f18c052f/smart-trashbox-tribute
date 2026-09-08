@@ -187,7 +187,7 @@
 
 - [ ] 4. 入力の変換
 
-- [ ] 4.1 (P) 正規化済みパッド状態と変換パラメータの型を用意する
+- [x] 4.1 (P) 正規化済みパッド状態と変換パラメータの型を用意する
   - ⚠️ **ホストテストの対象になる独立した部品として置く。** アプリ層はホストビルドに含まれない
   - ⚠️ **コントローラ固有の型を一切含まない。** 正規化済みの軸とボタン、および輪の選択だけを持つ
   - 無効範囲・変換特性・速度上限を、実走しながら調整できる形の設定として持つ
@@ -593,3 +593,15 @@
   中間変数へ判断ロジックを計算してから委譲呼び出しへ渡す形は検出できない。
   いずれも直接的な違反は正しく検出できており、レビューでも非ブロッキングと判定済み。
   拡張する場合は `fminf`/`fmaxf` 系トークンの検出と、引数式そのものの検査を足すとよい。
+- **タスク 4.1**: `firmware/lib/teleop_input/` を board_pins（タスク 1.3）と同じ形
+  （CMakeLists.txt + library.json 同居、EXTRA_COMPONENT_DIRS への個別登録、
+  DRIVETRAIN_BUILD_TELEOP ゲート内でのみ REQUIRES へ追加）で新設した。
+  `PadState` / `MappingParams` は design.md の Service Interface とフィールド単位で
+  一致させてある（`mapPad` / `MappedCommand` はタスク 4.2 の担当であり未実装）。
+- **タスク 4.1 → 今後 BoundaryCheck に触る人宛**: design.md の Requirements
+  Traceability は要件 17.3（周辺機器ヘッダ不使用の静的検査）を `teleop_input` にも
+  課しているが、`find_forbidden_peripheral_includes`（タスク 3.4）はまだ
+  `teleop_input` を対象に含めていない。board_pins と同じく「生成タスクでは検査を
+  持たず、後続タスクで拡張する」という前例（1.3→1.4）に倣ったものであり、
+  **tasks.md 側にこの拡張を明示的に担うタスクが今のところ無い**。
+  BoundaryCheck に次に触るタスクで拾うこと。

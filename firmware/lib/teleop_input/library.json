@@ -1,0 +1,9 @@
+{
+  "name": "teleop_input",
+  "version": "0.1.0",
+  "description": "teleop-bringup task 4.1: 正規化済みパッド状態（PadState）と変換パラメータ（MappingParams）の型。Bluepad32 の型もペリフェラル API も参照しないため、ホスト（native）と実機（teleop）の双方でコンパイルされる。CMakeLists.txt を併せ持つ点が lib/test_support/ との違いであり、要件 17.1/17.2（入力変換をホストで検証できること）が成り立つ根拠である。パッド状態から指令への実際の変換（mapPad）はタスク 4.2 が追加する。",
+  "build": {
+    "srcDir": "src"
+  },
+  "includeDir": "include"
+}
