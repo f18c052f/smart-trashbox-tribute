@@ -128,7 +128,7 @@
 
 - [ ] 4. 描画と画面の結線
 
-- [ ] 4.1 プランをベクタ図と表へ写す描画層を実装する
+- [x] 4.1 プランをベクタ図と表へ写す描画層を実装する
   - キャッチ可能領域・前提と限界・同一性・読み込み失敗の各プランを、ベクタ要素と表として描く
   - **プランに無い判断をしない。** 位置・文字列・分類はすべてプランが決めている
   - 格子点の詳細はベクタ図の標準的な補助要素として与え、**独自のツールチップ機構を作らない**
@@ -235,3 +235,6 @@
 - **3.2**: design.md の ContextPlanner 契約も RegionPlanner と同じ層の矛盾を持っていた（SweepView と LoadIssue を層 1 から層 2 へ直接渡す形）。ContextSource / ContextWarning という読む項目だけの構造型を宣言し、design.md の契約も合わせて是正した
 - **3.2**: パラメータの葉の文字列化に format.ts の固定 3 桁丸め（formatWithUnit）を流用すると、0.0001 のような小さい非ゼロ値が「0.000」となり真のゼロと区別が付かなくなる。意味を知らないパラメータ値には固定精度の変換を使わず、String(value) でそのまま文字列化する（真偽値・文字列・null と同じ扱いに揃える）
 - **3.3**: 予測の落下地点（hit）は投影に依存させない。上流の Prediction は落下地点を x_mm/y_mm のみで持ち z 成分が無いため（src/prediction_core/types.py）、xz 投影用に高さを作り出すことは要件 5.7（記録に無い量を作らない）に反する。両投影で同じ hit を使う
+- **4.1**: design.md の Dependency Direction が Scale --> Render の辺を欠いていた。タスク 3.1 の是正（Requirements Traceability の 2.1 行を Renderer, Scale / linearMap へ変更）が依存表側に反映されていなかったための食い違いで、4.1 で是正した。lerp は引き続き scale.ts 以外で書かないという B-7 の規律とは別物であることを design.md に明記した
+- **4.1**: viz/style.css の格子色カスタムプロパティは元々 catchable のみ・1 始まりの band-1..4 だった。plan/region.ts の fillKeyOf は成立割合を持つ格子点なら状態を問わず 0 始まりの band-0..3 を付けるため、not-catchable / not-evaluated にも帯のバリエーションが必要。4.1 で修正・拡張した
+- **4.1**: Node には DOM が無く jsdom も追加できない（開発時依存はTypeScript 1 個のみ）ため、viz/tests/dom-stub.ts に自前の最小 DOM 代替を用意した。グローバル document を定義せず、host 引数の外に触れる実装があれば ReferenceError で検出できる形にしている

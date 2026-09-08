@@ -160,6 +160,7 @@ graph LR
     Schema --> PlanContext
     Scale --> PlanRegion
     Scale --> PlanAnimation
+    Scale --> Render
     Format --> PlanRegion
     Format --> PlanContext
     PlanRegion --> Render
@@ -185,7 +186,7 @@ graph LR
 | 2 | `plan/region.ts` | `schema`, `scale`, `format` | 不可 |
 | 2 | `plan/animation.ts` | `schema`, `scale` | 不可 |
 | 2 | `plan/context.ts` | `schema`, `format` | 不可 |
-| 3 | `view/render.ts` | `schema`, `format`, `plan/*` | **可** |
+| 3 | `view/render.ts` | `schema`, `format`, `scale`, `plan/*` | **可** |
 | 4 | `app.ts` | 0〜3 のすべて | **可** |
 | 5 | `main.ts` | `app` のみ | **可** |
 
@@ -195,6 +196,14 @@ graph LR
 >
 > `plan/animation.ts` が `format` を import しないのは意図的である。アニメーション面の文言は
 > `view/render.ts` 側で組み立てる。フレームごとに文字列を作らないための措置である。
+>
+> `view/render.ts` が `scale` を import してよいのは、格子点をピクセル座標へ変換する処理
+> （Requirements Traceability の要件 2.1 行が既に「Renderer, Scale | `linearMap`」と定めている）
+> と、軌跡アニメーションの物理座標をピクセル座標へ変換する処理を本モジュールが担うためである。
+> `plan/region.ts` / `plan/animation.ts` はピクセル座標を作らない（前者は軸の並び順のみを、
+> 後者は物理座標のみを扱う）ため、線形写像の実装は `scale.ts` の `linearMap` / `padRange` を
+> ここで直接呼ぶ以外に置き場が無い。二重実装を避けるための辺であり、`lerp` は引き続き
+> `scale.ts` 以外で書かない（境界検査 B-7）。
 
 ### Technology Stack
 
@@ -929,7 +938,13 @@ export function buildContextPlan(view: ContextSource, warnings: readonly Context
 ```typescript
 export function renderContext(host: Element, plan: ContextPlan): void;
 export function renderRegion(host: Element, plan: RegionPlan): void;
-export function renderLoadFailure(host: Element, issues: readonly LoadIssue[]): void;
+
+/** `LoadIssue` のうち本モジュールが表示する項目（`path` / `detail`）だけを構造的に宣言する。
+ * 層 3（`view/render.ts`）は層 1（`load.ts`）を import できないため（Dependency Direction）、
+ * `LoadIssue` そのものではなくこの最小構造を受け取る。実際の呼び出しでは `LoadIssue` を
+ * 渡してよい（構造的部分型により代入可能。`plan/region.ts` の `RegionSource` と同じ理由）。 */
+export interface RenderableIssue { readonly path: string; readonly detail: string; }
+export function renderLoadFailure(host: Element, issues: readonly RenderableIssue[]): void;
 
 export interface AnimationView { readonly showFrame: (frame: FramePlan) => void; }
 export function createAnimationView(host: Element, plan: AnimationPlan): AnimationView;
