@@ -410,7 +410,8 @@ stateDiagram-v2
 | 1.5 | 入力に無い量を作らない | Loader, 全 Planner | 境界検査 B-5 / B-6 / B-8 | — |
 | 1.6 | ファイル名を併せて提示 | ContextPlanner | `ContextPlan.identity` | 読み込み |
 | 1.7 | 記録が無くても図は描く | Loader, App | `SweepView.recordsIssue` | 読み込み |
-| 2.1 | 格子点を軸の値の位置へ配置 | RegionPlanner, Scale | `buildRegionPlan`, `linearMap` | — |
+| 2.1 | 格子点を軸の値の位置へ配置（並び順） | RegionPlanner | `buildRegionPlan` | — |
+| 2.1 | 格子点をピクセル座標へ変換（描画時） | Renderer, Scale | `linearMap` | — |
 | 2.2 | 状態を視覚的に区別 | RegionPlanner, Renderer | `RegionCell.fillKey` | — |
 | 2.3 | 軸の名前・単位・値をラベルに | RegionPlanner, Format | `RegionPlan.xAxis` / `yAxis` | — |
 | 2.4 | 成立割合と閾値の併記 | RegionPlanner | `RegionPlan.legend` | — |
@@ -763,8 +764,16 @@ export interface RegionPlan {
   readonly displayNote: string;     // 色分けは表示上の取り決めである旨（要件 2.9）
 }
 
+/** RegionPlanner が読む項目だけを構造的に宣言する。層 2 は層 1（`load.ts`）を
+ * import できないため（Dependency Direction）、`SweepView` そのものではなく
+ * この最小構造を受け取る。実際の呼び出しでは `SweepView` を渡してよい
+ * （構造的部分型により代入可能）。 */
+export interface RegionSource {
+  readonly document: SweepDocument;
+}
+
 export function defaultSelection(sweep: SweepSpec): AxisSelection;
-export function buildRegionPlan(view: SweepView, selection: AxisSelection): RegionPlan;
+export function buildRegionPlan(view: RegionSource, selection: AxisSelection): RegionPlan;
 ```
 
 - Preconditions: `selection` の軸番号が `sweep.axes` の範囲内であること

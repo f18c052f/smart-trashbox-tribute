@@ -85,7 +85,7 @@
 
 - [ ] 3. 表示プランの生成
 
-- [ ] 3.1 (P) キャッチ可能領域のプランを実装する
+- [x] 3.1 (P) キャッチ可能領域のプランを実装する
   - 掃引の軸から最大 2 軸を描画に使い、格子点を軸の値の並び順で等間隔に配置するプランを組み立てる
   - **判定を行わない。** 状態は上流の値をそのまま用いる
   - 状態と成立割合の帯に対応する分類キーを返し、**実際の色を決めない**
@@ -230,3 +230,5 @@
 - **2.2**: ⚠ Loader は項目間の整合（`cells[].axis_values` の長さと `sweep.axes` の本数の一致、格子点数と軸の値の個数の積の一致）を検証しない。design の Loader 責務に無いため意図的である。したがって `cells: []` / `axes: []` / 不揃いな格子も `ok: true` で通る。**タスク 3.1 は軸 0 本・不揃いの格子を防御的に扱うこと**（`noUncheckedIndexedAccess` により undefined の明示処理は強制される）
 - **2.2**: `calibration.notice` を任意プロパティへ改めた（schema.ts と design.md:314,533）。上流が較正済みでキー自体を省略するため。Loader は不在の notice を `null` に補完しない（値を作らない）。`fixtures.ts` のコメントと `schema.test.ts` のリテラルは記述が古いが型としては有効
 - **2.2**: `model_exclusions` の段名は列挙として閉じない。design の規範 TypeScript が開いた索引シグネチャで宣言しており、要件 3.3 が全要因の提示を求めるため、上流が段を増やしてもファイル全体を拒否しない。design.md:322 の列挙値表だけが閉じた集合に読める
+- **3.1**: design.md の RegionPlanner / ContextPlanner 契約が層 1 の `SweepView` を直接引数に取ると書いているのは Dependency Direction（層 2 は schema/scale/format のみ import 可）と矛盾する。RegionPlanner は読む項目だけを構造的に宣言した `RegionSource { document: SweepDocument }` を受け取る形にし、design.md の契約も合わせて修正した。**タスク 3.2（ContextPlanner）も同じ手当てが必要**（design.md:877 付近が同様に SweepView を書いている）
+- **3.1**: Requirements Traceability 表の 2.1 行が RegionPlanner の構成要素として `linearMap` を挙げていたが、RegionPlanner 自身の責務（軸の値の並び順で等間隔配置、値を座標に線形写像しない）と矛盾していた。`linearMap` は格子の順序位置をピクセル座標へ変換する Renderer（タスク 4.1）の仕事であるため、表を 2 行に分けて是正した
