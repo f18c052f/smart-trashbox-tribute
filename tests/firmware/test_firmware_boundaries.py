@@ -3257,3 +3257,200 @@ def test_fetch_bluepad32_script_pins_an_immutable_tag() -> None:
         f"BLUEPAD32_REF がバージョンタグの記法に見えない: {ref!r}"
     )
     assert "--branch" in script_text and "--depth" in script_text and "1" in script_text
+
+
+# =============================================================================
+# 13. drivetrain-core の既存ホスト検証が壊れていないことの回帰固定
+#     （teleop-bringup タスク 6.3、要件 17.4）
+#
+# 要件17.4:「`drivetrain-core` の既存のホスト向け検証が引き続き成立する状態を
+# 維持する」。ここまでの各タスクは「上流のソースを変更していない」ことを
+# レビュー時の口頭確認・Implementation Notes の注記に頼ってきた
+# （タスク3.4「ロジックは一切変更していない」等）。本節はこれを、
+# 将来のタスクや保守作業が `firmware/lib/drivetrain_control/` を誤って
+# 改変した場合に赤くなる恒久的な機械検査へ格上げする。
+#
+# DRIVETRAIN_CORE_BASELINE_COMMIT は `git merge-base spec/teleop-bringup main`
+# で得た、本 Spec 最初のコミット（タスク1.1）の直前のコミット
+# （`8e4e3ea Merge pull request #5 from f18c052f/spec/m1-prediction-validation`）
+# である。⚠️ ブランチ名 `spec/teleop-bringup` はマージ後に削除されうるため、
+# ブランチ参照ではなく不変なコミット SHA を直接ピン止めする
+# （タスク1.7 が外部プラットフォーム定義を可変参照ではなく固定成果物へ
+# 縛った判断、タスク5.1 が Bluepad32 のタグを固定した判断と同じ理由）。
+DRIVETRAIN_CORE_BASELINE_COMMIT = "8e4e3ead6a5c55dd00c2227aaf9417dbe548cd61"
+
+# 上記コミット時点で存在した、drivetrain-core 自身のホスト向けネイティブ
+# テストディレクトリ（`git ls-tree -r --name-only <baseline> -- firmware/test/native`
+# から実測）。teleop-bringup 自身が新設した test_pin_plan / test_pad_mapping /
+# test_run_recorder（それぞれタスク1.4 / 4.2 / 6.1、いずれも本 Spec 自身の
+# 新規コンポーネントのテストであり drivetrain-core の既存検証ではない）は
+# 意図的にここへ含めない。
+DRIVETRAIN_CORE_NATIVE_TEST_DIRS = (
+    "test_command_input",
+    "test_config_validation",
+    "test_controller_closed_loop",
+    "test_controller_integration",
+    "test_controller_step",
+    "test_fake_ports",
+    "test_kinematics",
+    "test_odometry",
+    "test_ports",
+    "test_protection_lock",
+    "test_protection_low_voltage",
+    "test_protection_pwm_ceiling",
+    "test_protection_supervisor",
+    "test_protection_watchdog",
+    "test_public_api",
+    "test_types",
+    "test_units_errors",
+    "test_velocity_pid",
+    "test_voltage_scaler",
+    "test_wheel_plant",
+    "test_wrap_accumulator",
+)
+
+
+def _require_baseline_reachable_or_skip(repo_root: Path, baseline_ref: str) -> None:
+    """`baseline_ref` が現在のクローンで参照可能かを確認し、不可なら理由を示して skip する。
+
+    shallow clone や partial fetch の CI ランナーでは、固定ピン止めした
+    `DRIVETRAIN_CORE_BASELINE_COMMIT` の履歴自体が取得されていないことがある。
+    その状態のまま `git diff <baseline_ref> -- ...` を呼ぶと `fatal: bad object`
+    （終了コード128）で `subprocess.CalledProcessError` が飛び、原因の分かりにくい
+    クラッシュとして現れる。それを防ぐため `find_git_diff_against_baseline` を
+    呼ぶ前にここで存在確認だけ行い、診断可能な skip へ落とす
+    （`_load_link_map_or_skip` と同じ「環境依存の不在は skip、理由を明示」方針）。
+    """
+    result = subprocess.run(
+        ["git", "cat-file", "-e", f"{baseline_ref}^{{commit}}"],
+        cwd=repo_root,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        pytest.skip(
+            f"baseline commit {baseline_ref} not reachable in this clone "
+            "(shallow clone or partial fetch?) — cannot verify drivetrain-core zero-diff"
+        )
+
+
+def find_git_diff_against_baseline(repo_root: Path, baseline_ref: str, relative_path: str) -> str:
+    """`git diff <baseline_ref> -- <relative_path>` の標準出力をそのまま返す。
+
+    単一の ref のみを渡す `git diff` は、そのコミットと**現在の作業ツリー**
+    （未コミットの変更を含む）との差分を示す。意図的に2つ目の ref（`HEAD` 等）
+    を渡さないのは、コミット済みの改変だけでなくレビュー直前の未コミットな
+    改変も見逃さないため。戻り値が空文字列であれば無差分。
+    """
+    result = subprocess.run(
+        ["git", "diff", baseline_ref, "--", relative_path],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout
+
+
+def test_drivetrain_control_source_tree_has_zero_diff_against_pre_teleop_baseline() -> None:
+    """`firmware/lib/drivetrain_control/` が teleop-bringup 開始前のコミットと
+    1バイトも違わない（要件17.4）。
+    """
+    _require_baseline_reachable_or_skip(REPO_ROOT, DRIVETRAIN_CORE_BASELINE_COMMIT)
+    diff = find_git_diff_against_baseline(
+        REPO_ROOT, DRIVETRAIN_CORE_BASELINE_COMMIT, "firmware/lib/drivetrain_control"
+    )
+    assert diff == "", (
+        "firmware/lib/drivetrain_control に teleop-bringup 開始前との差分がある"
+        f"（要件17.4 違反）:\n{diff}"
+    )
+
+
+@pytest.mark.parametrize("test_dir_name", DRIVETRAIN_CORE_NATIVE_TEST_DIRS)
+def test_drivetrain_core_native_test_dir_has_zero_diff_against_pre_teleop_baseline(
+    test_dir_name: str,
+) -> None:
+    """drivetrain-core 自身のホストテスト（`test/native/test_*`）が
+    teleop-bringup 開始前のコミットと1バイトも違わない。
+
+    テストが「緩められて」（アサーションを削られる等）通っている状態は
+    ソースツリー検査だけでは検出できないため、テストディレクトリ自体も
+    独立に検査する。
+    """
+    _require_baseline_reachable_or_skip(REPO_ROOT, DRIVETRAIN_CORE_BASELINE_COMMIT)
+    diff = find_git_diff_against_baseline(
+        REPO_ROOT,
+        DRIVETRAIN_CORE_BASELINE_COMMIT,
+        f"firmware/test/native/{test_dir_name}",
+    )
+    assert diff == "", (
+        f"firmware/test/native/{test_dir_name} に teleop-bringup 開始前との"
+        f"差分がある（要件17.4 違反）:\n{diff}"
+    )
+
+
+def test_drivetrain_core_native_test_dirs_still_exist() -> None:
+    """`DRIVETRAIN_CORE_NATIVE_TEST_DIRS` が指すディレクトリが実際に現存する。
+
+    ⚠️ 差分ゼロ検査だけでは「そもそも列挙が陳腐化していて、無いパスを
+    指している」場合を積極的には見分けない（存在しないパスへの `git diff`
+    も出力は空になりうる）ため、この存在検査を独立に置く。
+    """
+    missing = [
+        name
+        for name in DRIVETRAIN_CORE_NATIVE_TEST_DIRS
+        if not (TEST_NATIVE_DIR / name).is_dir()
+    ]
+    assert missing == [], f"drivetrain-core の既存ネイティブテストが消えている: {missing}"
+
+
+# --- 空虚化の防止: 検査そのものが実際に改変を検出することの証明 -------------
+#
+# 実リポジトリを書き換えて確認する代わりに、tmp_path 上に使い捨ての最小 git
+# 履歴を作り、同じ `find_git_diff_against_baseline` を適用する
+# （このファイルの他の "crafted input" 系テストと同じ「検査ロジックを実ファイル
+# にも架空の入力にも適用する」方針だが、対象が文字列ではなく git 履歴である
+# ため、架空の入力は使い捨てリポジトリという形を取る）。
+
+
+def _init_tmp_git_repo(repo_dir: Path) -> None:
+    subprocess.run(["git", "init", "--quiet"], cwd=repo_dir, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.invalid"], cwd=repo_dir, check=True
+    )
+    subprocess.run(["git", "config", "user.name", "test"], cwd=repo_dir, check=True)
+
+
+def _commit_baseline_controller_file(repo_dir: Path) -> str:
+    target = repo_dir / "lib" / "drivetrain_control" / "src" / "controller.cpp"
+    target.parent.mkdir(parents=True)
+    target.write_text("// baseline content\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "commit", "--quiet", "-m", "baseline"], cwd=repo_dir, check=True)
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo_dir, capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+
+def test_detects_change_against_baseline_in_crafted_git_repo(tmp_path: Path) -> None:
+    """違反ケース: 検査対象ファイルへの改変が実際に検出される。
+
+    ⚠️ タスク6.2 のレビューがそうだったように、レビュー直前の**未コミット**な
+    改変も見逃さないことを示すため、意図的にコミットしない。
+    """
+    _init_tmp_git_repo(tmp_path)
+    baseline_commit = _commit_baseline_controller_file(tmp_path)
+
+    target = tmp_path / "lib" / "drivetrain_control" / "src" / "controller.cpp"
+    target.write_text("// baseline content\n// accidental regression\n", encoding="utf-8")
+
+    diff = find_git_diff_against_baseline(tmp_path, baseline_commit, "lib/drivetrain_control")
+    assert diff != "", "改変が検出されなかった（検査が空虚）"
+
+
+def test_does_not_flag_unchanged_tree_in_crafted_git_repo(tmp_path: Path) -> None:
+    """誤検知回避: 何も改変していない状態では差分ゼロのまま。"""
+    _init_tmp_git_repo(tmp_path)
+    baseline_commit = _commit_baseline_controller_file(tmp_path)
+
+    diff = find_git_diff_against_baseline(tmp_path, baseline_commit, "lib/drivetrain_control")
+    assert diff == ""
