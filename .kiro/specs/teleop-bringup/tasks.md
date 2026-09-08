@@ -217,7 +217,7 @@
 
 - [ ] 5. コントローラとの接続
 
-- [ ] 5.1 無線ライブラリを取り込み、テレオペ用ビルドに封じ込める
+- [x] 5.1 無線ライブラリを取り込み、テレオペ用ビルドに封じ込める
   - ⚠️ **素の部品として取得できない。** 提供元が定める取り込み手順（既存ライブラリへの
     パッチ適用を伴う）に従う
   - ⚠️ **再現手順を記録する。** 記録しないと「手元では通るが他の環境で再現しない」状態になる
@@ -618,3 +618,23 @@
   `output_enabled=true` のまま body/wheel 両方が全ゼロになる安全側の
   無害な組み合わせに落ちる。`PadState` 自身の契約上起こらないはずだが、
   未文書化のまま残っている。
+- **タスク 5.1**: Bluepad32 は **raw ESP-IDF プラットフォームのタグ `4.2.0`** を
+  `firmware/scripts/fetch_bluepad32.py` で取得する（`main` や `release_v3.10.3` ではない）。
+  `release_v3.10.3` は pin 済みツールチェーン（xtensa-esp-elf 14.2.0）と非互換
+  （`uni_esp32.c` が newlib 内部シンボルを宣言なしで参照）。`4.2.0` はこの経路を
+  除去済みで互換。
+- **タスク 5.1**: ⚠️ **BTstack はライセンス上 vendoring しない。** `.deps/` は
+  `.gitignore` 済みで、初回ビルドに **GitHub へのネットワーク到達性が要る**
+  （2回目以降はフェッチ済みマーカーでスキップされオフラインで通る）。
+  README.md のライセンス節がこの点を反映済み。
+- **タスク 5.1**: `cmd_system.c`（Bluepad32 同梱、ESP-IDF 5系で
+  `<driver/gpio.h>` の include 漏れ）に1行のローカル互換パッチを当てている。
+  アップストリーム `main` のコミット `e9b755f` と同じ修正だがタグ化されていない。
+  `cmd_system` は `bluepad32` の CMakeLists.txt で無条件 `REQUIRES` されており、
+  ビルドから除外する選択肢は無かった。
+- **タスク 5.1**: BT_HOST を Bluedroid（タスク 1.1 の暫定値）から
+  `CONFIG_BT_CONTROLLER_ONLY=y`（BTstack が自前ホスト）へ切り替えた。
+  `CONFIG_BT_ENABLED=y` と `CONFIG_BTDM_CTRL_MODE_BR_EDR_ONLY=y` は変更していない。
+- **タスク 5.1 → タスク 5.2 宛**: `CONFIG_BLUEPAD32_PLATFORM` は既定の
+  `UNIJOYSTICLE` のまま。**`CUSTOM` への切替とコールバック実装（vtable 供給）は
+  タスク 5.2 の担当**であり、本タスクでは一切触れていない。

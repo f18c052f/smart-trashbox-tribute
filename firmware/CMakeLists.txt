@@ -49,6 +49,38 @@ list(APPEND EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/lib/board_pins")
 # REQUIRES only when DRIVETRAIN_BUILD_TELEOP is set.
 list(APPEND EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/lib/teleop_input")
 
+# teleop-bringup task 5.1 (requirements.md 7.1; design.md ControllerLink
+# "External: Bluepad32 / BTstack (P0)"): Bluepad32 (raw ESP-IDF platform)
+# and BTstack, fetched by scripts/fetch_bluepad32.py ([env:teleop]-only
+# extra_scripts pre-step; see platformio.ini) into
+# firmware/.deps/bluepad32/src/components -- NOT a lib/ component of this
+# repo, and deliberately NOT vendored (BTstack's license forbids commercial
+# redistribution; see fetch_bluepad32.py's module docstring and
+# firmware/.gitignore's .deps/ entry).
+#
+# ⚠️ Gated on DRIVETRAIN_BUILD_TELEOP, unlike board_pins/teleop_input above:
+# those are first-party lib/ directories that always exist in a checkout;
+# this one does not exist at all until fetch_bluepad32.py has run, and that
+# script only ever runs for [env:teleop]. Appending an EXTRA_COMPONENT_DIRS
+# entry that never exists for [env:production]/[env:native] would be a
+# needless (if likely harmless) divergence from a directory ESP-IDF can
+# actually search -- gating keeps it absent from those environments'
+# component search entirely, the same containment principle as the
+# COMPONENTS allowlist below.
+#
+# Being discovered is still not the same as being built (see the
+# board_pins/teleop_input comments above): [env:production]'s COMPONENTS
+# allowlist a few lines down never names "bluepad32" or "btstack", so even
+# though this EXTRA_COMPONENT_DIRS entry is teleop-only already, nothing
+# about it could reach the production component graph regardless.
+# firmware/src/CMakeLists.txt adds "bluepad32" to the app component's
+# REQUIRES only when DRIVETRAIN_BUILD_TELEOP is set; "btstack" (and
+# nvs_flash/app_update/esp_timer/cmd_nvs/cmd_system) then resolve
+# transitively via Bluepad32's own idf_component_register(REQUIRES ...).
+if(DEFINED ENV{DRIVETRAIN_BUILD_TELEOP})
+    list(APPEND EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/.deps/bluepad32/src/components")
+endif()
+
 # drivetrain-core task 1.2 (requirements.md 1.4): keep esp_wifi's object code
 # out of the linked production ELF/BIN.
 #

@@ -245,8 +245,17 @@ def find_unexpected_embedded_component_dirs(
 #   - board_pins: 端子割当の正（teleop-bringup タスク 1.3、要件 2.1）
 #   - teleop_input: 正規化済みパッド状態と変換パラメータの型
 #     （teleop-bringup タスク 4.1、要件 8.6-8.9）
+#   - components: `firmware/.deps/bluepad32/src/components`（Bluepad32 +
+#     BTstack。teleop-bringup タスク 5.1、要件 7.1）を指す
+#     `list(APPEND EXTRA_COMPONENT_DIRS ...)` の末尾要素。⚠️ この照合は
+#     パス末尾要素のみを見るため、他の目的の `.../components` ディレクトリ
+#     も同名で通ってしまう（タスク 1.3 実装ノートに記録済みの既知の緩み）。
+#     firmware/CMakeLists.txt 側では `.deps/bluepad32/src/components` への
+#     参照が `DEFINED ENV{DRIVETRAIN_BUILD_TELEOP}` でも重ねてゲートされて
+#     おり、そちらが実質的な絞り込みを担う。lib/ 丸ごとの混入を防ぐという
+#     本節の主目的（`lib/test_support/` を除外すること）は変わらず成立する。
 EMBEDDED_COMPONENT_DIR_ALLOWLIST: frozenset[str] = frozenset(
-    {"drivetrain_control", "board_pins", "teleop_input"}
+    {"drivetrain_control", "board_pins", "teleop_input", "components"}
 )
 
 
@@ -1408,8 +1417,16 @@ TELEOP_REQUIRED_SDKCONFIG_SETTINGS: dict[str, str] = {
     # classic ESP32 のコントローラを BR/EDR 側で動かす（1.5）。
     # 既定は BLE only であり、明示的に選ばないと Bluetooth Classic にならない。
     "CONFIG_BTDM_CTRL_MODE_BR_EDR_ONLY": "y",
-    # ホストスタック側の Classic Bluetooth（1.5）
-    "CONFIG_BT_CLASSIC_ENABLED": "y",
+    # teleop-bringup タスク 5.1（requirements.md 7.1）: ホストスタックを
+    # BTstack へ切り替える。BTstack は自前のホストスタックであり既定の
+    # Bluedroid とは共存しないため、Bluedroid ホストを無効化する
+    # CONFIG_BT_CONTROLLER_ONLY=y が要る（Bluepad32 の raw ESP-IDF 版・
+    # bluekitchen/btstack の port/esp32 参照 sdkconfig.defaults の双方で
+    # 実測確認済み）。⚠️ タスク1.1が置いた CONFIG_BT_CLASSIC_ENABLED は
+    # Bluedroid ホスト配下のシンボルであり、BT_CONTROLLER_ONLY=y の下では
+    # プロンプトを失い代入が黙って無視されるため、この置き換えで正しい
+    # （sdkconfig.defaults.teleop の該当コメント参照）。
+    "CONFIG_BT_CONTROLLER_ONLY": "y",
     # 無線込み成果物が収まる大きい側のパーティション構成（1.3）
     "CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE": "y",
 }
@@ -1660,7 +1677,7 @@ def test_detects_missing_partition_setting_in_crafted_input() -> None:
     fake_sdkconfig = (
         "CONFIG_BT_ENABLED=y\n"
         "CONFIG_BTDM_CTRL_MODE_BR_EDR_ONLY=y\n"
-        "CONFIG_BT_CLASSIC_ENABLED=y\n"
+        "CONFIG_BT_CONTROLLER_ONLY=y\n"
     )
     violations = find_teleop_radio_and_partition_violations(fake_sdkconfig)
     assert any("PARTITION_TABLE_SINGLE_APP_LARGE" in v for v in violations)
@@ -3049,3 +3066,91 @@ def test_does_not_flag_direction_selection_if_in_crafted_motor_input() -> None:
 def test_does_not_flag_unrelated_file_for_motor_check_in_crafted_input() -> None:
     """誤検知回避: `write()` を持たない架空の入力には適用対象が無い（空列）。"""
     assert find_motor_duty_clamping("void SomethingElse() {}\n") == []
+
+
+# =============================================================================
+# 12. Bluepad32 / BTstack の取り込みがテレオペ限定であること
+#     （teleop-bringup タスク 5.1、要件 7.1）
+#
+# セクション9/9bが board_pins / teleop_input（本リポジトリ自身の `lib/`
+# コンポーネント）に適用した「テレオペ限定で REQUIRES へ足し、本番の
+# COMPONENTS allowlist へは触れない」という形を、本節は Bluepad32
+# （firmware/.deps/bluepad32/src/components からフェッチする第三者
+# コンポーネント）へ適用する。検査ロジック自体
+# （find_ungated_teleop_component_references / parse_components_allowlist）
+# は使い回し、新規に定義し直さない。
+#
+# ⚠️ board_pins / teleop_input と異なり、EXTRA_COMPONENT_DIRS の登録自体も
+# テレオペ限定でゲートしてある（firmware/CMakeLists.txt 参照: フェッチが
+# 走っていないチェックアウトではディレクトリそのものが存在しないため）。
+# `find_ungated_teleop_component_references` はコンポーネント名に限らず
+# 任意の部分文字列を対象にできる汎用関数であり、この EXTRA_COMPONENT_DIRS
+# 行のゲートも同じ関数で検査できる。
+# =============================================================================
+
+
+def test_bluepad32_extra_component_dir_is_gated_on_the_teleop_profile() -> None:
+    """`firmware/CMakeLists.txt` の `.deps/bluepad32` への EXTRA_COMPONENT_DIRS
+    追加が `DEFINED ENV{DRIVETRAIN_BUILD_TELEOP}` の内側にある。
+
+    board_pins/teleop_input の EXTRA_COMPONENT_DIRS 登録は無条件（常に存在
+    する自前の lib/ ディレクトリのため）だが、.deps/bluepad32 はフェッチが
+    走るまで存在しない第三者ディレクトリであり、ゲートが要る。
+    """
+    violations = find_ungated_teleop_component_references(ROOT_CMAKE_TEXT, ".deps/bluepad32")
+    assert violations == [], f".deps/bluepad32 への参照がテレオペ限定の外側にある: {violations}"
+
+
+def test_bluepad32_extra_component_dir_is_registered() -> None:
+    """`.deps/bluepad32/src/components` への EXTRA_COMPONENT_DIRS 追加が実在する。"""
+    args = [a.replace("\\", "/").rstrip("/") for a in parse_extra_component_dirs_append_args(ROOT_CMAKE_TEXT)]
+    assert any(
+        a.endswith(".deps/bluepad32/src/components") for a in args
+    ), f".deps/bluepad32/src/components の登録が無い: {args}"
+
+
+def test_bluepad32_requirement_is_gated_on_the_teleop_profile() -> None:
+    """`firmware/src/CMakeLists.txt` が bluepad32 をテレオペ時のみ REQUIRES へ足す。"""
+    violations = find_ungated_teleop_component_references(APP_CMAKE_TEXT, "bluepad32")
+    assert violations == [], f"bluepad32 がテレオペ限定の外側で参照されている: {violations}"
+
+
+def test_production_components_allowlist_does_not_carry_bluepad32_or_btstack() -> None:
+    """本番の `COMPONENTS` allowlist は bluepad32 / btstack を含まない
+    （allowlist へ触れずに済む -- 本番の無線非依存を壊さない）。
+    """
+    allowlist = parse_components_allowlist(ROOT_CMAKE_TEXT)
+    assert "bluepad32" not in allowlist
+    assert "btstack" not in allowlist
+
+
+def test_detects_ungated_bluepad32_component_dir_reference_in_crafted_input() -> None:
+    """違反ケース: `.deps/bluepad32` への EXTRA_COMPONENT_DIRS 追加をゲートの
+    外側へ書いた架空の入力が検出される。
+    """
+    fake_cmake = (
+        'list(APPEND EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/.deps/bluepad32/src/components")\n'
+    )
+    assert find_ungated_teleop_component_references(fake_cmake, ".deps/bluepad32") != []
+
+
+def test_fetch_bluepad32_script_pins_an_immutable_tag() -> None:
+    """`scripts/fetch_bluepad32.py` が可変参照（ブランチ/HEAD）ではなく
+    git タグへ固定している（要件 1.7 と同じ「不変参照への固定」の原則。
+    research.md Risks「BTstack の設置がスクリプト依存」への対処）。
+    """
+    script_text = (FIRMWARE_DIR / "scripts" / "fetch_bluepad32.py").read_text(encoding="utf-8")
+    match = re.search(r'BLUEPAD32_REF\s*=\s*"([^"]+)"', script_text)
+    assert match is not None, "BLUEPAD32_REF の定義が見つからない"
+    ref = match.group(1)
+    # ⚠️ Bluepad32 のタグ命名規則は "release_vX.Y.Z"（3.10.3 まで）から
+    # 素の "X.Y.Z"（4.x 系以降）へ変わっている（実測: 両方の命名規則が
+    # 混在する実在のタグを確認済み）。したがって固定の接頭辞は要求せず、
+    # 「ブランチ／HEAD の類ではない」ことと「バージョンらしき記法である」
+    # ことだけを検査する。
+    MUTABLE_REF_NAMES = {"main", "master", "HEAD", "develop", "latest"}
+    assert ref not in MUTABLE_REF_NAMES, f"BLUEPAD32_REF が可変参照になっている: {ref!r}"
+    assert re.match(r"^[A-Za-z_]*\d+(\.\d+)+$", ref), (
+        f"BLUEPAD32_REF がバージョンタグの記法に見えない: {ref!r}"
+    )
+    assert "--branch" in script_text and "--depth" in script_text and "1" in script_text

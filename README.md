@@ -100,16 +100,25 @@ Pi で記録した実データは WSL へ持ち帰り、繰り返し解析する
 将来 `LICENSE` を追加する場合、**手動テレオペ用ビルドの成果物をその許諾の対象に含めてはならない。**
 理由は以下のとおり。
 
-- 手動テレオペ（DualSense 接続）用のファームウェアは、**Bluepad32**（Apache-2.0）と、
-  その依存である **BTstack** を用いる方針である（対象は `firmware/platformio.ini` の
-  `[env:teleop]` ビルドのみ。→ `firmware/sdkconfig.defaults.teleop`）。
+- 手動テレオペ（DualSense 接続）用のファームウェアは、**Bluepad32**（Apache-2.0、
+  raw ESP-IDF プラットフォーム）と、その依存である **BTstack** を用いる（対象は
+  `firmware/platformio.ini` の `[env:teleop]` ビルドのみ。→
+  `firmware/sdkconfig.defaults.teleop`）。
 - ⚠️ **BTstack はオープンソースではない。** 使用は「個人的利益のためのみ」に限られ、
   **商用目的・金銭的利得のための使用には BlueKitchen 社の有償ライセンスが要る。**
 - したがって **BTstack を含むテレオペ用ビルドの成果物は、自由に再利用・再配布できない。**
   トップレベルの記載がこの点を覆い隠さないようにする。
-- **2026-09-08 時点で BTstack はまだ本リポジトリへ取り込まれていない。**
-  現在のテレオペ用ビルドが有効化しているのは ESP-IDF 同梱の Bluetooth スタックのみである。
-  上記の制約は、BTstack を取り込んだ以降のテレオペ用ビルドと、そこから生成した成果物に及ぶ。
+- **BTstack は本リポジトリへ取り込み済みである**（teleop-bringup タスク 5.1）。
+  ただし **git 管理下には置いていない**: `firmware/scripts/fetch_bluepad32.py`
+  （`[env:teleop]` ビルドのときだけ実行される）が、Bluepad32 の不変な git タグを
+  取得元として `firmware/.deps/bluepad32/`（`.gitignore` 済み）へフェッチし、
+  Bluepad32 のドキュメントが定める手順（BTstack へのパッチ適用 →
+  `integrate_btstack.py` によるコンポーネント設置）を再現する。ソースをコミットせず
+  スクリプトで再現することで、BTstack の非商用ライセンスをリポジトリの git 履歴へ
+  含めずに済ませている。上記の制約は、この取り込みが走るテレオペ用ビルドと、
+  そこから生成した成果物に及ぶ。**`[env:production]` は BTstack を一切取得・参照
+  しない**（`firmware/scripts/fetch_bluepad32.py` は `[env:teleop]` 限定の
+  `extra_scripts` からしか呼ばれない）。
 
 **本番用ビルド（`[env:production]`）はこの制約を受けない。**
 無線スタックはビルド構成の段階で除外してあり、**本番のリンク結果には無線ライブラリへの参照が1件も無い**

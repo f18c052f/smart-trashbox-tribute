@@ -7,3 +7,20 @@
 # inputs are tracked; the generated sdkconfig.<env> files are build output.
 sdkconfig.teleop
 sdkconfig.production
+
+# ESP-IDF Component Manager's resolved-dependency lock file. Regenerated at
+# configure time (first appeared once [env:teleop] started resolving
+# idf_component.yml manifests -- Bluepad32 ships one, per teleop-bringup
+# task 5.1). Same category as sdkconfig.<env> above: a build output, not a
+# source of truth.
+dependencies.lock
+
+# teleop-bringup task 5.1 (requirements.md 7.1): Bluepad32 + BTstack,
+# fetched on demand by scripts/fetch_bluepad32.py ([env:teleop] extra_scripts
+# only). ⚠️ Deliberately never vendored: BTstack's license permits personal
+# use only, not commercial use or monetary gain (README.md "ライセンスと
+# 再配布上の制約"). Committing its source would redistribute it with this
+# repository regardless of which profile a given clone ever builds.
+# fetch_bluepad32.py pins an immutable upstream tag and records the resolved
+# commit hashes in .deps/bluepad32/.fetch_bluepad32.json for reproducibility.
+.deps/

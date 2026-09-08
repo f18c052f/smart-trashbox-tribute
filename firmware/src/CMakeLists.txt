@@ -78,9 +78,16 @@ endif()
 # mechanism that keeps the radio out of the production image
 # (requirement 1.4). Keeping the REQUIRES teleop-only is what lets that
 # allowlist stay untouched.
+# teleop-bringup task 5.1 (requirements.md 7.1): Bluepad32, fetched by
+# scripts/fetch_bluepad32.py into firmware/.deps/bluepad32/src/components
+# (see firmware/CMakeLists.txt's gated EXTRA_COMPONENT_DIRS entry above it).
+# Listing it here as a REQUIRES is what actually pulls its (and, via its own
+# idf_component_register(REQUIRES "btstack" ...), BTstack's) object code
+# into the [env:teleop] link -- being merely discoverable via
+# EXTRA_COMPONENT_DIRS is not the same as being built into the app.
 set(DRIVETRAIN_APP_REQUIRES drivetrain_control)
 if(DEFINED ENV{DRIVETRAIN_BUILD_TELEOP})
-    list(APPEND DRIVETRAIN_APP_REQUIRES board_pins teleop_input)
+    list(APPEND DRIVETRAIN_APP_REQUIRES board_pins teleop_input bluepad32)
 endif()
 
 idf_component_register(
