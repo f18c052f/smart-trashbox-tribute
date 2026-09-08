@@ -1255,3 +1255,467 @@ def test_does_not_flag_semantic_parity_comment_mentioning_simulator_in_crafted_i
         "// trajectory_sim.DrivetrainParams.max_speed_mm_s と同一定義\n"
     )
     assert find_simulator_source_reference(fake_hpp) == []
+
+
+# =============================================================================
+# teleop-bringup タスク 1.1: テレオペ用ビルドの無線有効化とパーティション指定
+# （teleop-bringup requirements.md 1.1, 1.3, 1.5 / design.md TeleopBuildProfile）
+# =============================================================================
+#
+# ⚠️ **本節の要件番号は `.kiro/specs/teleop-bringup/requirements.md` の採番である。**
+# 本ファイル冒頭（1〜8節）の要件番号は `drivetrain-core` 側の採番であり、別物である。
+#
+# 固定する事項:
+#
+# A. `firmware/sdkconfig.defaults.teleop` が実在し、無線スタックを有効化する
+#    （teleop-bringup 1.1）。かつ classic ESP32 の Bluetooth Classic（BR/EDR）を
+#    前提とした構成を持つ（同 1.5）。
+# B. 無線込み成果物が収まる**大きい側のパーティション構成**を指定する（同 1.3）。
+#    ⚠️ **指定は PlatformIO の `board_build.partitions` と Kconfig の
+#    `CONFIG_PARTITION_TABLE_*` の両方に書き、両者が同じテーブルを指すことを
+#    不変条件として固定する**（→ research.md「パーティションは INI と Kconfig の
+#    両方で指定し、一致を不変条件として固定する」/ design.md Technology Stack）。
+#    役割が異なる:
+#      - `board_build.partitions` … 実際に生成・焼き込みされるテーブルを決める
+#      - `CONFIG_PARTITION_TABLE_*` … ESP-IDF 自身のアプリサイズ検査が読む値を決める
+#    実測（タスク 1.1 実装中）:
+#      `platforms/espressif32/builder/frameworks/espidf.py:2846` が
+#      `partitions_csv = board.get("build.partitions", "partitions_singleapp.csv")`
+#      として `board_build.partitions` だけから CSV を決め、
+#      `CONFIG_PARTITION_TABLE_FILENAME` を参照しない。直後の 2847 行は
+#      `sdk_config.get("PARTITION_TABLE_OFFSET", 0x8000)` を読んでいるため、
+#      これは意図的な部分参照である。Kconfig だけを設定してビルドしたとき、
+#      焼かれるテーブルは `factory,app,factory,0x10000,1M` のままだった。
+#    ⚠️ **`src_filter` が espidf で効かないのは事実だが、
+#    「espidf では INI オプションが効かない」という一般化は誤りである。**
+#    `board_build.partitions` は効く側のオプションであり、本節の当初版が
+#    採っていた「Kconfig だけで指定する」という前提はこの実測で否定された。
+#    ⚠️ 両者がずれると「サイズ検査は通るのに焼き込みか起動で失敗する」という
+#    最も切り分けの難しい形で発現するため、一致検査がこの決定と不可分である。
+# C. `[env:teleop]` が `[env:production]` と**同じ実証済みの層重ね機構**
+#    （`board_build.cmake_extra_args = -DSDKCONFIG_DEFAULTS="...;..."`）で
+#    `sdkconfig.defaults.teleop` を共有設定の上へ重ねる。
+# D. ⚠️ **共有設定 `sdkconfig.defaults` と本番専用 `sdkconfig.defaults.production`
+#    へ無線有効化が漏れない。** 本番の無線非依存（同 1.2）はタスク 1.2 が別途
+#    `firmware.map` で検証するが、「テレオペ専用設定が本番側の層へ現れない」ことは
+#    ここで静的に固定できる。
+#
+# 生成物（`firmware/sdkconfig.teleop`）は `.gitignore` 済みのビルド出力であり、
+# クリーンチェックアウトには存在しない。したがって生成物に対する検査は
+# **存在する場合のみ**実施する（存在しなければ skip）。⚠️ プロンプトを持たない
+# Kconfig シンボルへの代入が黙って無視される実測記録があるため
+# （`sdkconfig.defaults.production` のコメント）、**「defaults に書いた」ことを
+# 「反映された」ことの証拠にしない。** 反映の証拠は生成物の側にある。
+
+SDKCONFIG_SHARED_PATH = FIRMWARE_DIR / "sdkconfig.defaults"
+SDKCONFIG_TELEOP_PATH = FIRMWARE_DIR / "sdkconfig.defaults.teleop"
+GENERATED_SDKCONFIG_TELEOP_PATH = FIRMWARE_DIR / "sdkconfig.teleop"
+
+TELEOP_REQUIRED_SDKCONFIG_SETTINGS: dict[str, str] = {
+    # 無線スタックの有効化（1.1）
+    "CONFIG_BT_ENABLED": "y",
+    # classic ESP32 のコントローラを BR/EDR 側で動かす（1.5）。
+    # 既定は BLE only であり、明示的に選ばないと Bluetooth Classic にならない。
+    "CONFIG_BTDM_CTRL_MODE_BR_EDR_ONLY": "y",
+    # ホストスタック側の Classic Bluetooth（1.5）
+    "CONFIG_BT_CLASSIC_ENABLED": "y",
+    # 無線込み成果物が収まる大きい側のパーティション構成（1.3）
+    "CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE": "y",
+}
+
+TELEOP_ONLY_SDKCONFIG_KEYS: frozenset[str] = frozenset(TELEOP_REQUIRED_SDKCONFIG_SETTINGS)
+
+
+def parse_sdkconfig_assignments(sdkconfig_text: str) -> dict[str, str]:
+    """`sdkconfig` 形式のテキストから `CONFIG_X=value` の代入を抽出する。
+
+    `# CONFIG_X is not set` 形式の行はコメントであり代入ではないが、生成物側
+    では「無効」を表す正規の表現であるため、値 `"n"` として同じ辞書へ収める
+    （defaults 側と生成物側を同じ検査関数で比較できるようにするため）。
+    """
+    assignments: dict[str, str] = {}
+    for raw_line in sdkconfig_text.splitlines():
+        line = raw_line.strip()
+        not_set = re.match(r"^#\s*(CONFIG_[A-Za-z0-9_]+)\s+is not set$", line)
+        if not_set is not None:
+            assignments[not_set.group(1)] = "n"
+            continue
+        if line.startswith("#"):
+            continue
+        match = re.match(r"^(CONFIG_[A-Za-z0-9_]+)=(.*)$", line)
+        if match is not None:
+            assignments[match.group(1)] = match.group(2).strip()
+    return assignments
+
+
+def find_teleop_radio_and_partition_violations(sdkconfig_text: str) -> list[str]:
+    """テレオペ用設定に無線有効化とパーティション指定が揃っているかを検査する。"""
+    assignments = parse_sdkconfig_assignments(sdkconfig_text)
+    violations = []
+    for key, expected in TELEOP_REQUIRED_SDKCONFIG_SETTINGS.items():
+        actual = assignments.get(key)
+        if actual is None:
+            violations.append(f"{key} が指定されていない")
+        elif actual != expected:
+            violations.append(f"{key} が {expected!r} ではない: {actual!r}")
+    return violations
+
+
+# --- パーティション指定の一致（INI 側 と Kconfig 側） -----------------------
+#
+# ESP-IDF の `components/partition_table/Kconfig.projbuild` が
+# `CONFIG_PARTITION_TABLE_FILENAME` の default 節で定めている
+# 「選択肢シンボル → CSV ファイル名」の対応を、検査側にも持つ。
+# ⚠️ 二重実装ではない: ここが持つのは「どのシンボルがどの CSV を意味するか」
+# という対応表だけであり、パーティションテーブルの生成そのものは行わない。
+# INI 側と Kconfig 側という2つの指定を突き合わせるには、両者を同じ土俵
+# （CSV ファイル名）へ正規化する必要があり、その正規化に必要な最小の知識である。
+KCONFIG_PARTITION_CHOICE_TO_CSV: dict[str, str] = {
+    "CONFIG_PARTITION_TABLE_SINGLE_APP": "partitions_singleapp.csv",
+    "CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE": "partitions_singleapp_large.csv",
+    "CONFIG_PARTITION_TABLE_TWO_OTA": "partitions_two_ota.csv",
+}
+
+IDF_DEFAULT_PARTITION_CSV = "partitions_singleapp.csv"
+"""Kconfig の choice PARTITION_TABLE_TYPE の既定（`default PARTITION_TABLE_SINGLE_APP`）。"""
+
+PLATFORMIO_FALLBACK_PARTITION_CSV = "partitions_singleapp.csv"
+"""⚠️ `board_build.partitions` 未指定時に PlatformIO が使うハードコードの既定。
+
+`platforms/espressif32/builder/frameworks/espidf.py:2846` の
+`board.get("build.partitions", "partitions_singleapp.csv")` に由来する。
+**Kconfig 側で大きいテーブルを選んでも、INI 側が未指定ならこの既定が焼かれる。**
+一致検査がこの既定を「INI 側の実効値」として扱わないと、まさにその取りこぼし
+（タスク 1.1 で実測された不具合）を検出できない。
+"""
+
+
+def resolve_partition_csv_from_ini(ini_text: str, section: str) -> str:
+    """`board_build.partitions` の実効値（未指定なら PlatformIO の既定）を返す。"""
+    cp = _load_ini(ini_text)
+    if not cp.has_section(section):
+        return PLATFORMIO_FALLBACK_PARTITION_CSV
+    return cp.get(
+        section, "board_build.partitions", fallback=PLATFORMIO_FALLBACK_PARTITION_CSV
+    ).strip()
+
+
+def resolve_partition_csv_from_kconfig(sdkconfig_text: str) -> str:
+    """Kconfig 側の選択が意味する CSV ファイル名（未選択なら IDF の既定）を返す。"""
+    assignments = parse_sdkconfig_assignments(sdkconfig_text)
+    for symbol, csv_name in KCONFIG_PARTITION_CHOICE_TO_CSV.items():
+        if assignments.get(symbol) == "y":
+            return csv_name
+    custom = assignments.get("CONFIG_PARTITION_TABLE_CUSTOM_FILENAME")
+    if assignments.get("CONFIG_PARTITION_TABLE_CUSTOM") == "y" and custom is not None:
+        return custom.strip('"')
+    return IDF_DEFAULT_PARTITION_CSV
+
+
+def find_partition_table_disagreement(
+    ini_text: str, sdkconfig_text: str, section: str = "env:teleop"
+) -> list[str]:
+    """INI 側と Kconfig 側が同じパーティションテーブルを指しているかを検査する。
+
+    ⚠️ **この一致こそが検査対象である。** どちらか片方だけを変更すると、
+    「ESP-IDF のサイズ検査は 1.5MB を前提に通るのに、焼かれるテーブルは 1MB」
+    という、最も切り分けの難しい失敗の形が生まれる（→ research.md の実測）。
+    """
+    from_ini = resolve_partition_csv_from_ini(ini_text, section)
+    from_kconfig = resolve_partition_csv_from_kconfig(sdkconfig_text)
+    if from_ini == from_kconfig:
+        return []
+    return [
+        f"{section} のパーティション指定が一致しない: "
+        f"board_build.partitions={from_ini!r} / Kconfig={from_kconfig!r}"
+    ]
+
+
+def parse_sdkconfig_defaults_layers(ini_text: str, section: str) -> list[str]:
+    """`board_build.cmake_extra_args` の `-DSDKCONFIG_DEFAULTS="a;b"` を層の列として抽出する。"""
+    cp = _load_ini(ini_text)
+    if not cp.has_section(section):
+        return []
+    extra_args = cp.get(section, "board_build.cmake_extra_args", fallback="")
+    match = re.search(r'-DSDKCONFIG_DEFAULTS=(?:"([^"]*)"|(\S+))', extra_args)
+    if match is None:
+        return []
+    value = match.group(1) if match.group(1) is not None else match.group(2)
+    return [layer.strip() for layer in value.split(";") if layer.strip()]
+
+
+EXPECTED_SDKCONFIG_LAYERS: dict[str, list[str]] = {
+    "env:teleop": ["sdkconfig.defaults", "sdkconfig.defaults.teleop"],
+    "env:production": ["sdkconfig.defaults", "sdkconfig.defaults.production"],
+}
+
+
+def find_sdkconfig_layering_violations(ini_text: str) -> list[str]:
+    """ファーム2環境の `SDKCONFIG_DEFAULTS` の層構成を検査する。
+
+    - 共有設定を最初に置き、環境専用の設定をその上へ重ねること
+    - 相手側の環境専用設定を取り込まないこと（層の交差を禁じる）
+    """
+    violations = []
+    for section, expected in EXPECTED_SDKCONFIG_LAYERS.items():
+        layers = parse_sdkconfig_defaults_layers(ini_text, section)
+        if layers != expected:
+            violations.append(f"{section} の SDKCONFIG_DEFAULTS が想定と異なる: {layers!r}")
+    return violations
+
+
+def find_teleop_only_settings_leaked(sdkconfig_text: str) -> list[str]:
+    """テレオペ専用のキーが共有／本番専用の設定ファイルへ漏れていないかを検出する。"""
+    assignments = parse_sdkconfig_assignments(sdkconfig_text)
+    return [
+        f"{key}={assignments[key]}"
+        for key in sorted(TELEOP_ONLY_SDKCONFIG_KEYS)
+        if key in assignments and assignments[key] != "n"
+    ]
+
+
+def test_teleop_sdkconfig_defaults_file_exists() -> None:
+    """テレオペ専用の設定ファイルが実在する（1.1, 1.3）。"""
+    assert SDKCONFIG_TELEOP_PATH.is_file(), f"{SDKCONFIG_TELEOP_PATH} が存在しない"
+
+
+def test_teleop_sdkconfig_enables_radio_and_specifies_large_partition() -> None:
+    """テレオペ専用設定が無線を有効化し、大きい側のパーティションを指定する（1.1, 1.3, 1.5）。"""
+    text = SDKCONFIG_TELEOP_PATH.read_text(encoding="utf-8")
+    assert find_teleop_radio_and_partition_violations(text) == []
+
+
+def test_teleop_partition_table_agrees_between_ini_and_kconfig() -> None:
+    """⚠️ INI 側と Kconfig 側が同じパーティションテーブルを指す（1.3 / research.md の決定）。"""
+    teleop_sdkconfig_text = SDKCONFIG_TELEOP_PATH.read_text(encoding="utf-8")
+    assert (
+        find_partition_table_disagreement(PLATFORMIO_INI_TEXT, teleop_sdkconfig_text, "env:teleop")
+        == []
+    )
+
+
+def test_teleop_ini_names_the_large_partition_table() -> None:
+    """焼かれるテーブルを決める側（INI）が大きい側を指す（1.3）。
+
+    ⚠️ Kconfig 側だけを大きくしても焼かれるテーブルは変わらない
+    （`espidf.py:2846` の実測）。「実際に焼かれる側」を独立して固定する。
+    """
+    assert (
+        resolve_partition_csv_from_ini(PLATFORMIO_INI_TEXT, "env:teleop")
+        == "partitions_singleapp_large.csv"
+    )
+
+
+def test_production_partition_table_agrees_between_ini_and_kconfig() -> None:
+    """本番側も両指定が一致している（どちらも既定のまま。テレオペの変更が波及していない）。"""
+    assert (
+        find_partition_table_disagreement(
+            PLATFORMIO_INI_TEXT, SDKCONFIG_PRODUCTION_TEXT, "env:production"
+        )
+        == []
+    )
+
+
+def test_teleop_layers_its_own_sdkconfig_on_top_of_the_shared_one() -> None:
+    """`[env:teleop]` が production と同じ機構で専用設定を層に重ねる（1.1）。"""
+    assert find_sdkconfig_layering_violations(PLATFORMIO_INI_TEXT) == []
+
+
+def test_shared_sdkconfig_defaults_has_no_teleop_only_setting() -> None:
+    """共有設定へテレオペ専用の設定が漏れていない（既存ファイルへ触れない制約）。"""
+    shared_text = SDKCONFIG_SHARED_PATH.read_text(encoding="utf-8")
+    assert find_teleop_only_settings_leaked(shared_text) == []
+
+
+def test_production_sdkconfig_defaults_has_no_teleop_only_setting() -> None:
+    """本番専用設定へテレオペ専用の設定が漏れていない（1.2 を壊さないこと）。"""
+    assert find_teleop_only_settings_leaked(SDKCONFIG_PRODUCTION_TEXT) == []
+
+
+def test_generated_teleop_sdkconfig_reflects_radio_and_partition_when_present() -> None:
+    """⚠️ 生成された設定に実際に反映されていることを確認する（1.1, 1.3, 1.5 の観測可能な完了状態）。
+
+    プロンプトを持たない Kconfig シンボルへの代入は黙って無視されるため
+    （`sdkconfig.defaults.production` の実測記録）、`sdkconfig.defaults.teleop`
+    へ書いたことは反映の証拠にならない。生成物 `firmware/sdkconfig.teleop`
+    はビルド出力（`.gitignore` 済み）なので、存在する場合のみ検査する。
+    """
+    if not GENERATED_SDKCONFIG_TELEOP_PATH.is_file():
+        pytest.skip(
+            f"{GENERATED_SDKCONFIG_TELEOP_PATH} が未生成。"
+            "`pio run -e teleop` を実行すると生成される"
+        )
+    generated_text = GENERATED_SDKCONFIG_TELEOP_PATH.read_text(encoding="utf-8")
+    assert find_teleop_radio_and_partition_violations(generated_text) == []
+    assignments = parse_sdkconfig_assignments(generated_text)
+    assert assignments.get("CONFIG_PARTITION_TABLE_FILENAME") == '"partitions_singleapp_large.csv"'
+    # ⚠️ マージ後の設定が意味するテーブルと、実際に焼かれる側（INI）が一致すること。
+    # 一致検査を defaults ではなく生成物に対しても適用する（生成物側でずれていれば、
+    # そのビルドの成果物が「サイズ検査は通るのに起動しない」状態にある）。
+    assert (
+        find_partition_table_disagreement(PLATFORMIO_INI_TEXT, generated_text, "env:teleop") == []
+    )
+
+
+def test_detects_missing_radio_enable_in_crafted_input() -> None:
+    """違反ケース: 無線有効化を欠いた架空のテレオペ設定が検出される。"""
+    fake_sdkconfig = "CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y\n"
+    violations = find_teleop_radio_and_partition_violations(fake_sdkconfig)
+    assert any("CONFIG_BT_ENABLED" in v for v in violations)
+
+
+def test_detects_missing_partition_setting_in_crafted_input() -> None:
+    """違反ケース: パーティション指定を欠いた架空のテレオペ設定が検出される。"""
+    fake_sdkconfig = (
+        "CONFIG_BT_ENABLED=y\n"
+        "CONFIG_BTDM_CTRL_MODE_BR_EDR_ONLY=y\n"
+        "CONFIG_BT_CLASSIC_ENABLED=y\n"
+    )
+    violations = find_teleop_radio_and_partition_violations(fake_sdkconfig)
+    assert any("PARTITION_TABLE_SINGLE_APP_LARGE" in v for v in violations)
+
+
+def test_detects_ble_only_controller_mode_in_crafted_input() -> None:
+    """違反ケース: BR/EDR を選ばず既定の BLE only のままの架空の設定が検出される（1.5）。"""
+    fake_sdkconfig = (
+        "CONFIG_BT_ENABLED=y\n"
+        "CONFIG_BTDM_CTRL_MODE_BLE_ONLY=y\n"
+        "CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y\n"
+    )
+    violations = find_teleop_radio_and_partition_violations(fake_sdkconfig)
+    assert any("BR_EDR_ONLY" in v for v in violations)
+
+
+def test_detects_radio_disabled_assignment_in_crafted_input() -> None:
+    """違反ケース: 無線を明示的に無効化した架空のテレオペ設定が検出される。"""
+    fake_sdkconfig = "CONFIG_BT_ENABLED=n\nCONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y\n"
+    violations = find_teleop_radio_and_partition_violations(fake_sdkconfig)
+    assert any("CONFIG_BT_ENABLED" in v for v in violations)
+
+
+def test_detects_not_set_comment_form_as_disabled_in_crafted_input() -> None:
+    """違反ケース: 生成物側の `# CONFIG_X is not set` 形式が無効として扱われる。"""
+    fake_generated = "# CONFIG_BT_ENABLED is not set\nCONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y\n"
+    violations = find_teleop_radio_and_partition_violations(fake_generated)
+    assert any("CONFIG_BT_ENABLED" in v for v in violations)
+
+
+_LARGE_CSV = "partitions_singleapp_large.csv"
+_INI_WITH_LARGE = f"[env:teleop]\nboard_build.partitions = {_LARGE_CSV}\n"
+_INI_WITHOUT_PARTITIONS = "[env:teleop]\nlib_ldf_mode = off\n"
+_SDKCONFIG_WITH_LARGE = "CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y\n"
+_SDKCONFIG_WITHOUT_PARTITION_CHOICE = "CONFIG_BT_ENABLED=y\n"
+
+
+def test_partition_agreement_holds_when_both_sides_name_the_large_table() -> None:
+    """誤検知回避: 両側が同じテーブルを指していれば違反なし。"""
+    assert find_partition_table_disagreement(_INI_WITH_LARGE, _SDKCONFIG_WITH_LARGE) == []
+
+
+def test_detects_kconfig_only_partition_change_in_crafted_input() -> None:
+    """違反ケース: ⚠️ **Kconfig 側だけを大きくした**架空の入力が検出される。
+
+    タスク 1.1 で実際に踏んだ不具合そのものである。INI 側が未指定だと
+    PlatformIO のハードコード既定（1MB）が焼かれるため、Kconfig だけの
+    変更は成果物に届かない。
+    """
+    violations = find_partition_table_disagreement(
+        _INI_WITHOUT_PARTITIONS, _SDKCONFIG_WITH_LARGE
+    )
+    assert violations != []
+    assert "partitions_singleapp.csv" in violations[0]
+    assert _LARGE_CSV in violations[0]
+
+
+def test_detects_ini_only_partition_change_in_crafted_input() -> None:
+    """違反ケース: ⚠️ **INI 側だけを大きくした**架空の入力が検出される。
+
+    焼かれるテーブルは 1.5MB になるが、ESP-IDF のアプリサイズ検査は 1MB を
+    前提に通り続ける。逆向きのずれも同じく検出できることを示す。
+    """
+    violations = find_partition_table_disagreement(
+        _INI_WITH_LARGE, _SDKCONFIG_WITHOUT_PARTITION_CHOICE
+    )
+    assert violations != []
+    assert _LARGE_CSV in violations[0]
+
+
+def test_detects_two_sides_naming_different_non_default_tables_in_crafted_input() -> None:
+    """違反ケース: 両側が指定済みでも別々のテーブルを指していれば検出される。"""
+    fake_ini = "[env:teleop]\nboard_build.partitions = partitions_two_ota.csv\n"
+    violations = find_partition_table_disagreement(fake_ini, _SDKCONFIG_WITH_LARGE)
+    assert violations != []
+
+
+def test_partition_agreement_is_not_hardcoded_to_the_large_table_in_crafted_input() -> None:
+    """誤検知回避: 一致検査は「大きいテーブルであること」ではなく「一致」を見る。
+
+    将来 OTA 構成へ移る等でテーブルを変えたとき、両側を揃えれば通ること。
+    """
+    fake_ini = "[env:teleop]\nboard_build.partitions = partitions_two_ota.csv\n"
+    fake_sdkconfig = "CONFIG_PARTITION_TABLE_TWO_OTA=y\n"
+    assert find_partition_table_disagreement(fake_ini, fake_sdkconfig) == []
+
+
+def test_partition_agreement_holds_when_neither_side_specifies_in_crafted_input() -> None:
+    """誤検知回避: 両側とも未指定なら、それぞれの既定が一致するので違反なし。"""
+    assert (
+        find_partition_table_disagreement(
+            _INI_WITHOUT_PARTITIONS, _SDKCONFIG_WITHOUT_PARTITION_CHOICE
+        )
+        == []
+    )
+
+
+def test_detects_missing_large_table_on_the_flashed_side_in_crafted_input() -> None:
+    """違反ケース: 焼かれる側が既定の 1MB のままの架空の入力が検出される（1.3）。"""
+    assert resolve_partition_csv_from_ini(_INI_WITHOUT_PARTITIONS, "env:teleop") != _LARGE_CSV
+
+
+def test_detects_missing_sdkconfig_layer_in_crafted_input() -> None:
+    """違反ケース: `[env:teleop]` が専用設定を層に重ねていない架空の入力が検出される。"""
+    fake_ini = (
+        "[env:teleop]\nlib_ldf_mode = off\n\n"
+        "[env:production]\n"
+        'board_build.cmake_extra_args = -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;'
+        'sdkconfig.defaults.production"\n'
+    )
+    violations = find_sdkconfig_layering_violations(fake_ini)
+    assert any("teleop" in v for v in violations)
+
+
+def test_detects_teleop_layer_dropping_the_shared_defaults_in_crafted_input() -> None:
+    """違反ケース: 共有設定を外して専用設定だけを指す架空の入力が検出される。"""
+    fake_ini = (
+        "[env:teleop]\n"
+        'board_build.cmake_extra_args = -DSDKCONFIG_DEFAULTS="sdkconfig.defaults.teleop"\n\n'
+        "[env:production]\n"
+        'board_build.cmake_extra_args = -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;'
+        'sdkconfig.defaults.production"\n'
+    )
+    violations = find_sdkconfig_layering_violations(fake_ini)
+    assert any("teleop" in v for v in violations)
+
+
+def test_detects_crossed_sdkconfig_layers_in_crafted_input() -> None:
+    """違反ケース: 本番の層へテレオペ専用設定が混入した架空の入力が検出される（1.2 の保全）。"""
+    fake_ini = (
+        "[env:teleop]\n"
+        'board_build.cmake_extra_args = -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;'
+        'sdkconfig.defaults.teleop"\n\n'
+        "[env:production]\n"
+        'board_build.cmake_extra_args = -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;'
+        'sdkconfig.defaults.production;sdkconfig.defaults.teleop"\n'
+    )
+    violations = find_sdkconfig_layering_violations(fake_ini)
+    assert any("production" in v for v in violations)
+
+
+def test_detects_teleop_only_setting_leaked_into_shared_file_in_crafted_input() -> None:
+    """違反ケース: 共有設定へ無線有効化が書かれた架空の入力が検出される。"""
+    assert find_teleop_only_settings_leaked("CONFIG_BT_ENABLED=y\n") != []
+
+
+def test_does_not_flag_production_style_disabled_assignment_in_crafted_input() -> None:
+    """誤検知回避: 本番側の `CONFIG_BT_ENABLED=n` は「漏れ」ではない。"""
+    assert find_teleop_only_settings_leaked("CONFIG_BT_ENABLED=n\n") == []

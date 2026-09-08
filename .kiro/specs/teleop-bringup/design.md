@@ -126,7 +126,7 @@ graph TB
 | Backend / Services | ESP-IDF `driver/pulse_cnt.h` | エンコーダ計数 | B-9。legacy API と `ESP32Encoder` を使わない |
 | Backend / Services | ESP-IDF `driver/ledc.h` | PWM 出力 | — |
 | Backend / Services | ESP-IDF `esp_adc/adc_oneshot.h` + キャリブレーション | バッテリ電圧 / E-3 の可変抵抗 | B-12。ADC1 のみ |
-| Infrastructure / Runtime | `CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE` | 無線込み成果物の収容 | ⚠️ `board_build.partitions` ではなく Kconfig で指定（espidf で INI オプションが効かない前例あり） |
+| Infrastructure / Runtime | `board_build.partitions` **と** `CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE` | 無線込み成果物の収容 | ⚠️ **両方に書く。** 焼かれるテーブルを決めるのは前者、IDF のサイズ検査が読むのは後者。ずれると「検査は通るのに起動しない」形で出る。一致をテストで固定する（実測 → research.md） |
 
 ## File Structure Plan
 

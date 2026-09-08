@@ -1,0 +1,86 @@
+# teleop-bringup タスク 1.1: テレオペ用ビルド専用の ESP-IDF sdkconfig defaults。
+# 無線スタック（Bluetooth Classic）を有効化し、無線込み成果物が収まる
+# 大きい側のパーティション構成を指定する。
+# （requirements.md 1.1, 1.3, 1.5 / design.md TeleopBuildProfile・
+#  Technology Stack / research.md「パーティションは INI と Kconfig の両方で
+#  指定し、一致を不変条件として固定する」）
+#
+# 適用経路: 共有の sdkconfig.defaults の上へ、platformio.ini [env:teleop] の
+#   board_build.cmake_extra_args =
+#     -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.teleop"
+# として層に重ねる。⚠️ [env:production] が既に実証している機構と同一である
+# （SDKCONFIG_DEFAULTS は ESP-IDF の本物の CMake 変数であり、トップレベルの
+#  project() 呼び出しで直接読まれるため -D 形式が届く。コンポーネント要求
+#  収集の `cmake -P` サブプロセスを通らない）。
+#
+# ⚠️ sdkconfig.defaults と sdkconfig.defaults.production には一切触れない。
+# 本番の無線除外（requirements.md 1.2）は firmware/CMakeLists.txt の
+# production 限定 COMPONENTS 許可リストが担っており、本ファイルはその経路に
+# 関与しない。テレオペ専用の設定を共有ファイルへ書くと本番へも降りてしまう。
+#
+# ⚠️ パーティションは本ファイルと platformio.ini の board_build.partitions の
+# 両方に書き、両者が同じテーブルを指すことをテストで固定する
+# （research.md「パーティションは INI と Kconfig の両方で指定し、一致を
+#  不変条件として固定する」/ design.md Technology Stack）。役割が違う:
+#   - board_build.partitions   → 実際に生成・焼き込みされるテーブルを決める
+#   - 本ファイルの CONFIG_...  → ESP-IDF 自身のアプリサイズ検査が読む値を決める
+# ⚠️ 当初は「Kconfig だけで指定する」としていたが、これは誤りだった。実測:
+# platforms/espressif32/builder/frameworks/espidf.py:2846 が
+#   partitions_csv = board.get("build.partitions", "partitions_singleapp.csv")
+# として board_build.partitions だけから CSV を決め、
+# CONFIG_PARTITION_TABLE_FILENAME を参照しない（直後の 2847 行は
+# sdk_config.get("PARTITION_TABLE_OFFSET") を読んでいるので、意図的な部分参照
+# である）。Kconfig だけを設定してビルドしたとき、焼かれるテーブルは
+# factory,app,factory,0x10000,1M のままだった（gen_esp32part.py で復号確認）。
+# ⚠️ src_filter が espidf で効かないのは事実だが（firmware/src/CMakeLists.txt
+# のコメント）、「espidf では INI オプションが効かない」という一般化は誤りで
+# あり、board_build.partitions は効く側のオプションである。
+# ⚠️ 両者がずれると「サイズ検査は通るのに焼き込みか起動で失敗する」という
+# 最も切り分けの難しい形で発現する。
+#
+# ⚠️ 「defaults に書いた」ことを「反映された」ことの証拠にしない。プロンプトを
+# 持たない Kconfig シンボルへの代入は黙って無視される（CONFIG_ESP_WIFI_ENABLED=n
+# の実測記録: sdkconfig.defaults.production のコメント）。本ファイルの4項目は
+# いずれも実プロンプトを持つ（framework-espidf 5.5.5 の
+#   components/bt/Kconfig: `config BT_ENABLED` / bool "Bluetooth"
+#   components/bt/controller/esp32/Kconfig.in: choice BTDM_CTRL_MODE
+#   components/bt/host/bluedroid/Kconfig.in: `config BT_CLASSIC_ENABLED` /
+#     bool "Classic Bluetooth"
+#   components/partition_table/Kconfig.projbuild:
+#     `config PARTITION_TABLE_SINGLE_APP_LARGE` /
+#     bool "Single factory app (large), no OTA"
+# ）ことを確認したうえで、生成物 firmware/sdkconfig.teleop 側で反映を実測
+# 検証している（tests/firmware/test_firmware_boundaries.py の
+# test_generated_teleop_sdkconfig_reflects_radio_and_partition_when_present）。
+
+# --- 無線スタックの有効化（requirements.md 1.1） -----------------------------
+CONFIG_BT_ENABLED=y
+
+# --- Bluetooth Classic（BR/EDR）を前提とした構成（requirements.md 1.5） ------
+# BTDM_CTRL_MODE の既定は BLE only であり、明示的に BR/EDR を選ばないと
+# classic ESP32 のコントローラが BR/EDR で動かない。DualSense は BR/EDR HID
+# であるため BLE only では接続できない（design.md Technology Stack:
+# 「Bluepad32（raw ESP-IDF プラットフォーム）＋ BTstack — DualSense の
+#  BR/EDR HID host」）。
+CONFIG_BTDM_CTRL_MODE_BR_EDR_ONLY=y
+# ホストスタック側の Classic Bluetooth。BT_HOST の既定である Bluedroid の下で
+# 有効化する（既定 n）。
+# ⚠️ タスク 5.1（Bluepad32 / BTstack の取り込み）は BTstack が自前のホスト
+# スタックであるため BT_HOST を「Disabled」（CONFIG_BT_CONTROLLER_ONLY=y）へ
+# 切り替える可能性が高い。その判断は 5.1 の所有であり、本タスクは
+# 「BR/EDR のコントローラが有効で、Bluetooth Classic を前提とした構成である」
+# ことだけを確定させる。
+CONFIG_BT_CLASSIC_ENABLED=y
+
+# --- 無線込み成果物が収まるパーティション構成（requirements.md 1.3） --------
+# 既定の Single factory app（app パーティション 1MB）では無線スタックを含む
+# 成果物が収まらない。Single factory app (large)（1.5MB / OTA 無し）を選ぶ。
+# OTA は本 Spec の対象外（テレオペは USB 書き込みで運用する）。
+# ⚠️ 実サイズは実測で確定する。Arduino コアを積まない構成のため既定でも
+# 収まる可能性はあるが、「入らないと分かった時点でやり直す」手戻りを避けるため
+# 大きい側を先に選ぶ（research.md の決定）。実測値は本タスクの検証記録に残る。
+#
+# ⚠️ この行を変更するときは platformio.ini [env:teleop] の
+# board_build.partitions も同じテーブルへ揃えること。片方だけを変更すると
+# tests/firmware/test_firmware_boundaries.py の一致検査が赤くなる。
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y

@@ -80,15 +80,32 @@
 - **Trade-offs**: Arduino API（`analogRead` 等）が使えない。ただし B-9 / B-12 が IDF ドライバの直接使用を既に求めているため実質の損失は無い。Bluepad32 の Arduino 向けサンプルはそのまま使えず、ESP-IDF 版サンプルを参照する必要がある
 - **Follow-up**: ⚠️ **roadmap の当該決定行を是正する**（要件 16.10）。`integrate_btstack.py` を通す手順を再現可能な形で記録する
 
-### Decision: パーティションは Kconfig で指定し、サイズは実測で確定する
+### Decision: パーティションは INI と Kconfig の両方で指定し、一致を不変条件として固定する
+
+> ⚠️ **2026-09-08 訂正。** 当初この決定は「Kconfig だけで指定する」としていた。
+> 根拠は「同リポジトリで `src_filter` が espidf では効かないと実測されている」ことだったが、
+> **これは誤った一般化だった**（下記 Findings）。タスク 1.1 の実装中に実測で否定されたため書き直した。
 
 - **Context**: 要件 1.3 が「無線スタックを含んだ成果物が収まる容量」を要求する。roadmap は `huge_app`（3MB / OTA 無し）を挙げていたが、根拠は「Arduino core + BTstack で 1.0〜1.4MB」という見積りだった
-- **Alternatives Considered**:
-  1. `board_build.partitions = huge_app.csv`（PlatformIO の INI オプション）
-  2. `CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y`（Kconfig）
-- **Selected Approach**: 2。`sdkconfig.defaults.teleop` に置く
-- **Rationale**: 同じリポジトリで **`src_filter` が espidf では効かないことが実測されている**。PlatformIO の INI オプションが espidf 経路で無視される前例がある以上、IDF が直接読む Kconfig で指定するほうが確実である
-- **Trade-offs**: Arduino を積まないぶん既定スキームでも収まる可能性があるが、**収まるかどうかは実測でしか分からない**。大きい側を先に選ぶことで「入らないと分かった時点でやり直す」手戻りを避ける
+- **Findings（実測）**:
+  - `~/.platformio/platforms/espressif32/builder/frameworks/espidf.py:2846` が
+    `partitions_csv = board.get("build.partitions", "partitions_singleapp.csv")` として
+    **`board_build.partitions` だけ**から CSV を決め、`CONFIG_PARTITION_TABLE_FILENAME` を参照しない
+  - 直後の 2847 行は `sdk_config.get("PARTITION_TABLE_OFFSET", 0x8000)` を読んでいる。
+    つまり**オフセットだけ sdkconfig から読む意図的な部分参照**であり、見落としではない
+  - Kconfig だけを設定してビルドした結果、焼かれるテーブルは `factory,app,factory,0x10000,1M` であり
+    **1.5MB になっていない**（`gen_esp32part.py` で復号して確認）
+  - ⚠️ **`src_filter` が効かないのは事実だが、`board_build.partitions` は効く側のオプションである。**
+    「espidf では INI オプションが効かない」という一般化が誤りだった
+- **Selected Approach**: **両方に書き、両者が同じ CSV を指すことを境界テストで固定する**
+  - `[env:teleop]` の `board_build.partitions` — **実際に焼かれるテーブルを決めるのはこちら**
+  - `sdkconfig.defaults.teleop` の `CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y` — ESP-IDF 内部の
+    アプリサイズ検査が参照するのはこちら
+- **Rationale**: 片方だけでは破綻する。INI だけだと IDF のサイズ検査が 1MB 前提のまま通る。
+  Kconfig だけだと焼かれるテーブルが 1MB のまま。⚠️ **両者がずれると「サイズ検査は通るのに
+  焼き込みか起動で失敗する」という最も切り分けの難しい形で発現する**
+- **Trade-offs**: 「正が2つ」になる。だからこそ**一致を不変条件としてテストで固定する**ことが
+  この決定と不可分である。片方だけ変更したときにテストが赤くなること
 - **Follow-up**: ⚠️ 実際のバイナリサイズを測って記録する。**未実測の見積りを合否条件にしない**（`tech.md` 開発標準1）
 
 ### Decision: E-3 の開ループ確認を teleop 系の第3プロファイルとして分離する
