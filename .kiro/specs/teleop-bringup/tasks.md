@@ -437,3 +437,35 @@
     既存文書に決着内容と矛盾する記述が無い
   - _Requirements: 16.8, 16.9, 16.10_
   - _Depends: 10.1_
+
+## Implementation Notes
+
+> 実装中に判明した、後続タスクが踏みやすい点を記録する。着手前に自分の境界に関わる項目を読むこと。
+
+- **タスク 1.1**: ⚠️ **PlatformIO の INI オプションが espidf 経路で効かない、という一般化は誤り。**
+  `platforms/espressif32/builder/frameworks/espidf.py:2846` は
+  `board.get("build.partitions", "partitions_singleapp.csv")` として
+  **`board_build.partitions` だけ**からパーティション CSV を決め、
+  `CONFIG_PARTITION_TABLE_FILENAME` を読まない（直後の 2847 行は
+  `PARTITION_TABLE_OFFSET` を sdkconfig から読む＝意図的な部分参照）。
+  `src_filter` が効かないのは事実だが、オプションごとに扱いが違う。
+  **「INI だから効かない」と決めつけず、ビルダのソースで確かめること。**
+- **タスク 1.1**: パーティションは INI と Kconfig の**両方**に指定してある。
+  ⚠️ **片方だけ変更すると `find_partition_table_disagreement` が赤くなる。**
+  これは意図した不変条件であり、テストの誤りではない。
+- **タスク 1.1**: ⚠️ **BT ホストは既定の Bluedroid を採用している**
+  （`CONFIG_BT_CLASSIC_ENABLED` は Bluedroid 配下のシンボル）。
+  タスク 5.1 が BTstack を入れる際は `CONFIG_BT_CONTROLLER_ONLY=y` へ
+  切り替える公算が大きく、その場合 `sdkconfig.defaults.teleop` と
+  `TELEOP_REQUIRED_SDKCONFIG_SETTINGS` の更新が要る。
+- **タスク 1.1**: 「defaults に書いた」ことを反映の証拠にしない。
+  ⚠️ 同リポジトリに **プロンプトを持たない Kconfig シンボルへの代入が
+  黙って無視された実測記録**がある（`sdkconfig.defaults.production`）。
+  生成物 `firmware/sdkconfig.teleop` 側で確認すること。
+- **環境**: ⚠️ **ツールチェーンは Windows ではなく WSL にある。**
+  `wsl -d Ubuntu -- bash -lc "cd /mnt/c/Users/user/repos/smart-trashbox-tribute && ..."`
+  で実行する（`bash -lc` が PATH を読む）。`pio` / `uv` / `python` は
+  Windows 側に無いか壊れたスタブである。
+- **環境**: ⚠️ **リポジトリのファイルは CRLF。** `sed` の `$` アンカーが
+  黙って一致しないことがある。変異テストを書くときは `grep -c` 等で
+  変異が実際に効いたことを確認してから走らせること。
