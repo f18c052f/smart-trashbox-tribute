@@ -24,7 +24,7 @@ function assertValidToken(name: string): void {
   if (name.length === 0) {
     throw new Error("SyntaxError: classList のトークンは空文字列にできない（テスト用スタブ）");
   }
-  if (/s/.test(name)) {
+  if (/\s/.test(name)) {
     throw new Error(
       `InvalidCharacterError: classList のトークンに空白は含められない（テスト用スタブ）: "${name}"`,
     );
