@@ -45,14 +45,19 @@
 //   - 上書きが起きたことは `overflowed()` で、および `extractCsv()` が
 //     出力するメタ行で、常に観測可能にする（黙って欠落させない）
 //
-// ⚠️ **容量 `kMaxCapacity` は未実測の仮値。** 制御ループ周期は
-// `docs/open-questions.md` OQ-22 で「目安 100〜200 Hz 程度」としか
-// 決まっておらず、ESP32 classic の実際に使える静的 RAM 予算（Bluepad32 /
-// BTstack 常駐分を差し引いた残り）も本タスク時点では実測していない。
-// 3000 件 × 概算 44〜48 バイト/件 ≈ 130〜145 KiB を静的に確保する値を
-// 仮に選んだ（100 Hz で約30秒、200 Hz で約15秒ぶんに相当）。E-0〜E-4 /
-// M2a のブリングアップで実際の RAM 使用量と走行時間が判明した時点で
-// 見直すこと（タスク 3.2 の PWM 周波数・分解能と同種の「実測前の仮値」）。
+// ⚠️ **容量 `kMaxCapacity` はタスク 6.1 時点では未実測の仮値（3000件、
+// sizeof(RunSample)=48B で ≈140.6KiB）だったが、タスク 6.2 が
+// `TeleopApp`／`[env:teleop]` を実際にリンクした時点で DRAM 予算超過として
+// 実測された。** `rm -rf .pio/build/teleop && pio run -e teleop` が
+// `region 'dram0_0_seg' overflowed by 70560 bytes` で失敗することを確認
+// したうえで、3000 → 1000（48000B ≈ 46.9KiB、約 25KB の余裕を残して
+// リンクが通ることを確認済み）へ引き下げた。制御周期 100Hz（タスク 6.2 が
+// 採用した `kControlPeriodMs`）で約10秒ぶんに相当する。BTstack/Bluepad32
+// 常駐分・FreeRTOS タスクスタック等、他の静的 RAM 消費が今後増えると
+// この余裕は縮む。E-0〜E-4 / M2a のブリングアップで実際の走行時間・RAM
+// 使用量が判明した時点で、必要なら DRAM 予算と相談しながら再度見直すこと
+// （タスク 3.2 の PWM 周波数・分解能と同種の「実測前の仮値」だったものが、
+// 本タスクで一段実測に近づいたという位置づけ）。
 
 #include <cstddef>
 #include <cstdint>
@@ -72,7 +77,7 @@ inline constexpr std::uint8_t kWheelCount = 3;
 // 1つのレコードが保持できるサンプル数の静的上限（ファイル冒頭コメント
 // 参照）。動的確保を避けるための容量上限であり、性能値でも閾値でもない
 // （`drivetrain_control/types.hpp` の `kMaxVoltagePoints` 等と同じ考え方）。
-inline constexpr std::size_t kMaxCapacity = 3000;
+inline constexpr std::size_t kMaxCapacity = 1000;
 
 // 1周期ぶんのサンプル（要件 15.3: 指令値・各輪の実測速度・バッテリ電圧・
 // 保護の発火状態・出力許可の状態を時刻とともに含める）。

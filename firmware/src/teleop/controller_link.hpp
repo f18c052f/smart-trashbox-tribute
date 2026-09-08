@@ -105,6 +105,23 @@ enum class LinkState {
 struct ControllerSnapshot {
   LinkState state = LinkState::kNotConnected;
   teleop_input::PadState pad;
+
+  // 要件 9.6/14.2/B-7 (CommandWatchdog 実効化。タスク 6.2 レビュー指摘の
+  // 是正): `UpdatePad()` が実際に呼ばれる（= BTstack から genuine な
+  // `on_controller_data` が届く）たびに単調増加する、値そのものは意味を
+  // 持たないシーケンス番号。呼び出し側 (TeleopApp) はこれが前回の
+  // `read()` から変化したかどうかだけを見て「本当に新しい入力が届いた
+  // か」を判定する ―― pad の中身（スティック値等）を比較しない。操作者が
+  // スティックを完全に一定に保っている場合でも、genuine な BT パケットが
+  // 届き続けている限りこの値は毎回増える。BT信号がクリーンな切断なしに
+  // 途絶えた場合はこの値も凍結する。
+  //
+  // ⚠️ ここに時刻を持たせない（design.md ControllerLink Dependencies が
+  // `drivetrain_control` を挙げていない。TimeMs を持ち込むとその境界を
+  // 破る）。「最後に genuine な入力が届いた時刻」への変換は、この
+  // シーケンス番号の変化を制御ループ自身の壁時計と突き合わせる形で
+  // TeleopApp 側（自分の境界内）が行う。
+  std::uint32_t pad_seq = 0;
 };
 
 // Bluepad32 のカスタムプラットフォームを実装するシングルトン

@@ -190,29 +190,70 @@ namespace {
 
 // notifyMotorLockHaptic() が BTstack のメインスレッドへ処理を委譲するための
 // 小さな固定プール。uni_bt.c 自身の `_safe` API 実装
-// (cmd_callback_registration[CMD_CALLBACK_MAX] 、round-robin) と同じ流儀:
-// btstack_context_callback_registration_t はまだ処理されていないノードを
-// 再利用してはいけない（リンクリストへ二重に繋がる）ため、複数枠を
-// round-robin して使い回す。
+// (cmd_callback_registration[CMD_CALLBACK_MAX] 、round-robin) と同じ流儀で
+// 複数枠を round-robin して使い回す。
+//
+// ⚠️ タスク 5.2 のレビューが指摘した実在のデータ競合とその修正
+// （タスク 6.2 で本経路の呼び出しを配線するにあたって対処済み）:
+//   従来のコード内コメントは「まだ処理されていないノードを再利用すると
+//   リンクリストへ二重に繋がる」と説明していたが、これは事実と異なる。
+//   実際の `btstack_run_loop_execute_on_main_thread()` は
+//   `btstack_linked_list_add_tail()` を使い、これはノードの**ポインタ
+//   同一性**で重複登録を防ぐ（同じアドレスのノードを2回 add しても
+//   二重に繋がらない）。
+//   実在するリスクは別にある: 呼び出し側スレッド（制御ループ）が
+//   `g_rumble_addrs[slot]` へ書き込むのと、BTstack のメインスレッドが
+//   `RumbleCallback` 経由でそれを読むのとの間に排他が無かった。
+//   4スロットを使い切る速さで `notifyMotorLockHaptic()` が連続して呼ばれた
+//   場合、BTstack 側がまだ古い登録を処理し切っていないスロットへ
+//   呼び出し側が新しいアドレスを上書きしてしまい得る（意味的には「振動先の
+//   アドレスを取り違える」または「片方の通知を静かに失う」という誤動作。
+//   バッファそのものの競合であり、リンクリストの二重連結ではない）。
+//
+//   タスク 6.2 は notifyMotorLockHaptic() をロック保護発火の**立ち上がり
+//   エッジでのみ**呼ぶ（TeleopApp 側で毎周期ではなく状態遷移時のみ通知する
+//   ようデバウンスする）ため呼び出し頻度自体は低くなるが、頻度に依存しない
+//   形で競合そのものを閉じる: 各スロットに「BTstack 側の処理待ち」を示す
+//   `pending` フラグを持たせ、書き込み側は `pending` なスロットへは
+//   書き込まない（全スロットが pending なら、この1回の通知は安全側に
+//   諦めて捨てる — ヘッダコメントが述べる「最悪でも振動を1回取りこぼす」
+//   縮退そのもの）。`pending` とスロットのアドレス配列は同じ
+//   `g_rumble_lock`（`lock_` とは別。ControllerLink のインスタンス状態を
+//   守る排他とは無関係な、この小さなプール専用のスピンロック）で守る。
 constexpr int kRumbleCallbackSlots = 4;
-btstack_context_callback_registration_t g_rumble_registrations[kRumbleCallbackSlots];
-std::uint8_t g_rumble_addrs[kRumbleCallbackSlots][6];
-int g_rumble_slot = 0;
+
+struct RumbleSlot {
+  btstack_context_callback_registration_t registration{};
+  std::uint8_t addr[6] = {};
+  // true の間、BTstack のメインスレッドがまだ addr を読み終えていない
+  // （= 呼び出し側は上書きしてはいけない）。g_rumble_lock で守る。
+  bool pending = false;
+};
+
+RumbleSlot g_rumble_slots[kRumbleCallbackSlots];
+portMUX_TYPE g_rumble_lock = portMUX_INITIALIZER_UNLOCKED;
+int g_rumble_next_slot = 0;
 
 void RumbleCallback(void* context) {
-  auto* addr = static_cast<std::uint8_t*>(context);
+  auto* slot = static_cast<RumbleSlot*>(context);
+
+  std::uint8_t addr[6];
+  taskENTER_CRITICAL(&g_rumble_lock);
+  std::memcpy(addr, slot->addr, 6);
+  taskEXIT_CRITICAL(&g_rumble_lock);
+
   uni_hid_device_t* d = uni_hid_device_get_instance_for_address(addr);
-  if (d == nullptr) {
-    // 通知を委譲した後に切断された等。無害に無視する
-    // （要件 7.5 と同じ「状態を示すだけ」の精神 — ここでは何も遮断しない）。
-    return;
+  if (d != nullptr && d->report_parser.play_dual_rumble != nullptr) {
+    // 要件 14.8 の "Where" 条件: 触覚に対応しないコントローラ、または
+    // 通知を委譲した後に切断された場合は何もしない（無害に無視する。
+    // 要件 7.5 と同じ「状態を示すだけ」の精神）。
+    d->report_parser.play_dual_rumble(d, /*start_delay_ms=*/0, /*duration_ms=*/250,
+                                       /*weak_magnitude=*/0, /*strong_magnitude=*/220);
   }
-  if (d->report_parser.play_dual_rumble == nullptr) {
-    // 要件 14.8 の "Where" 条件: 触覚に対応しないコントローラでは何もしない。
-    return;
-  }
-  d->report_parser.play_dual_rumble(d, /*start_delay_ms=*/0, /*duration_ms=*/250,
-                                     /*weak_magnitude=*/0, /*strong_magnitude=*/220);
+
+  taskENTER_CRITICAL(&g_rumble_lock);
+  slot->pending = false;
+  taskEXIT_CRITICAL(&g_rumble_lock);
 }
 
 }  // namespace
@@ -238,12 +279,29 @@ void ControllerLink::notifyMotorLockHaptic() {
   // 安全なのは btstack_run_loop_execute_on_main_thread() 経由での委譲だけ
   // である (uni_bt_del_keys_safe() と同じ流儀。controller_link.hpp の
   // notifyMotorLockHaptic() コメント参照)。
-  const int slot = g_rumble_slot;
-  g_rumble_slot = (g_rumble_slot + 1) % kRumbleCallbackSlots;
-  std::memcpy(g_rumble_addrs[slot], addr, 6);
-  g_rumble_registrations[slot].callback = &RumbleCallback;
-  g_rumble_registrations[slot].context = g_rumble_addrs[slot];
-  btstack_run_loop_execute_on_main_thread(&g_rumble_registrations[slot]);
+  int slot = -1;
+  taskENTER_CRITICAL(&g_rumble_lock);
+  for (int i = 0; i < kRumbleCallbackSlots; ++i) {
+    const int candidate = (g_rumble_next_slot + i) % kRumbleCallbackSlots;
+    if (!g_rumble_slots[candidate].pending) {
+      slot = candidate;
+      break;
+    }
+  }
+  if (slot < 0) {
+    // 全スロットが BTstack 側の処理待ち。安全側に諦める（上記コメントの
+    // 縮退方針どおり、この1回の通知だけを失う）。
+    taskEXIT_CRITICAL(&g_rumble_lock);
+    return;
+  }
+  g_rumble_next_slot = (slot + 1) % kRumbleCallbackSlots;
+  std::memcpy(g_rumble_slots[slot].addr, addr, 6);
+  g_rumble_slots[slot].pending = true;
+  taskEXIT_CRITICAL(&g_rumble_lock);
+
+  g_rumble_slots[slot].registration.callback = &RumbleCallback;
+  g_rumble_slots[slot].registration.context = &g_rumble_slots[slot];
+  btstack_run_loop_execute_on_main_thread(&g_rumble_slots[slot].registration);
 }
 
 void ControllerLink::MarkDeviceReady(const std::uint8_t (&addr)[6]) {
@@ -270,6 +328,11 @@ void ControllerLink::UpdatePad(const std::uint8_t (&addr)[6], const teleop_input
   if (has_connected_device_ && std::memcmp(connected_addr_, addr, 6) == 0) {
     snapshot_.state = LinkState::kConnectedWithInput;
     snapshot_.pad = pad;
+    // 要件 9.6/14.2/B-7: genuine な on_controller_data 到着そのものを示す
+    // シーケンス番号を進める（controller_link.hpp ControllerSnapshot::
+    // pad_seq のコメント参照）。値の中身が前回と同じでも必ず進める ――
+    // 「入力が届いたか」を示すためであり「入力が変化したか」ではない。
+    ++snapshot_.pad_seq;
   }
   taskEXIT_CRITICAL(&lock_);
 }
