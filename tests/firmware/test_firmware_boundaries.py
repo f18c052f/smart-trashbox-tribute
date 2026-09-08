@@ -1429,6 +1429,15 @@ TELEOP_REQUIRED_SDKCONFIG_SETTINGS: dict[str, str] = {
     "CONFIG_BT_CONTROLLER_ONLY": "y",
     # 無線込み成果物が収まる大きい側のパーティション構成（1.3）
     "CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE": "y",
+    # teleop-bringup タスク 5.2（requirements.md 7.2-7.6, 14.8）: Bluepad32
+    # のターゲットプラットフォームをカスタムへ切り替える。タスク 5.1 は既定の
+    # UNIJOYSTICLE のまま残し、「CUSTOM への切替とコールバック実装
+    # （vtable 供給）はタスク 5.2 の担当」と明記していた（5.1 Implementation
+    # Notes）。CUSTOM でなければ firmware/src/teleop/controller_link.cpp が
+    # 実装する `struct uni_platform` vtable（DualSense の生値を
+    # teleop_input::PadState へ正規化する、唯一 Bluepad32 の型に触れる場所）
+    # が使われず、既定の Unijoysticle デモプラットフォームのままになる。
+    "CONFIG_BLUEPAD32_PLATFORM_CUSTOM": "y",
 }
 
 TELEOP_ONLY_SDKCONFIG_KEYS: frozenset[str] = frozenset(TELEOP_REQUIRED_SDKCONFIG_SETTINGS)

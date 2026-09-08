@@ -102,3 +102,20 @@ CONFIG_BT_CONTROLLER_ONLY=y
 # board_build.partitions も同じテーブルへ揃えること。片方だけを変更すると
 # tests/firmware/test_firmware_boundaries.py の一致検査が赤くなる。
 CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+
+# --- Bluepad32 のターゲットプラットフォームをカスタムへ切り替える -----------
+# （タスク 5.2 / requirements.md 7.2-7.6, 14.8）
+# ⚠️ タスク 5.1 は既定の CONFIG_BLUEPAD32_PLATFORM_UNIJOYSTICLE のまま残し、
+# 「CUSTOM への切替とコールバック実装（vtable 供給）はタスク 5.2 の担当」と
+# 明記していた（5.1 Implementation Notes）。Unijoysticle はレトロPC向けの
+# デモプラットフォームであり、本プロジェクトが必要とする「DualSense の生値を
+# teleop_input::PadState へ正規化する」という統合先ではない。CUSTOM を選ぶと
+# `firmware/src/teleop/controller_link.{hpp,cpp}` が実装する
+# `struct uni_platform` vtable（`ControllerLink::platform()`）を
+# `uni_platform_set_custom()` で差し込める（Bluepad32 自身の契約、
+# `uni_platform.c` の `#ifdef CONFIG_BLUEPAD32_PLATFORM_CUSTOM` 分岐）。
+# choice シンボルなので CUSTOM を y にするだけで UNIJOYSTICLE 側は
+# 自動的に外れる（生成物 sdkconfig.teleop での反映は検証で確認する。
+# 「defaults に書いた」ことを「反映された」ことの証拠にしない、という
+# タスク 1.1/1.2 以来の方針を踏襲する）。
+CONFIG_BLUEPAD32_PLATFORM_CUSTOM=y
