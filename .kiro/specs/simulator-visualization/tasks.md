@@ -99,7 +99,7 @@
   - _Depends: 2.2_
   - _Boundary: RegionPlanner_
 
-- [ ] 3.2 (P) 前提・限界・同一性のプランを実装する
+- [x] 3.2 (P) 前提・限界・同一性のプランを実装する
   - 較正段階と、存在する場合の注意書きを常時提示できる形で返す
   - モデル除外要因を**段ごとに全項目**返す。件数だけの要約に置き換えない
   - パラメータ全体をドット区切りのパスへ平坦化し、出所の対応表と突き合わせる。平坦化は構造のみに基づき、パラメータの意味を知らない
@@ -232,3 +232,5 @@
 - **2.2**: `model_exclusions` の段名は列挙として閉じない。design の規範 TypeScript が開いた索引シグネチャで宣言しており、要件 3.3 が全要因の提示を求めるため、上流が段を増やしてもファイル全体を拒否しない。design.md:322 の列挙値表だけが閉じた集合に読める
 - **3.1**: design.md の RegionPlanner / ContextPlanner 契約が層 1 の `SweepView` を直接引数に取ると書いているのは Dependency Direction（層 2 は schema/scale/format のみ import 可）と矛盾する。RegionPlanner は読む項目だけを構造的に宣言した `RegionSource { document: SweepDocument }` を受け取る形にし、design.md の契約も合わせて修正した。**タスク 3.2（ContextPlanner）も同じ手当てが必要**（design.md:877 付近が同様に SweepView を書いている）
 - **3.1**: Requirements Traceability 表の 2.1 行が RegionPlanner の構成要素として `linearMap` を挙げていたが、RegionPlanner 自身の責務（軸の値の並び順で等間隔配置、値を座標に線形写像しない）と矛盾していた。`linearMap` は格子の順序位置をピクセル座標へ変換する Renderer（タスク 4.1）の仕事であるため、表を 2 行に分けて是正した
+- **3.2**: design.md の ContextPlanner 契約も RegionPlanner と同じ層の矛盾を持っていた（SweepView と LoadIssue を層 1 から層 2 へ直接渡す形）。ContextSource / ContextWarning という読む項目だけの構造型を宣言し、design.md の契約も合わせて是正した
+- **3.2**: パラメータの葉の文字列化に format.ts の固定 3 桁丸め（formatWithUnit）を流用すると、0.0001 のような小さい非ゼロ値が「0.000」となり真のゼロと区別が付かなくなる。意味を知らないパラメータ値には固定精度の変換を使わず、String(value) でそのまま文字列化する（真偽値・文字列・null と同じ扱いに揃える）

@@ -883,7 +883,20 @@ export interface ContextPlan {
   readonly warnings: readonly string[];
 }
 
-export function buildContextPlan(view: SweepView, warnings: readonly LoadIssue[]): ContextPlan;
+/** ContextPlanner が読む項目だけを構造的に宣言する。層 2 は層 1（`load.ts`）を
+ * import できないため（Dependency Direction）、`SweepView` そのものではなく
+ * この最小構造を受け取る。実際の呼び出しでは `SweepView` を渡してよい
+ * （構造的部分型により代入可能）。 */
+export interface ContextSource {
+  readonly fileName: string;
+  readonly document: SweepDocument;
+}
+
+/** `LoadIssue` のうち本モジュールが読む項目（`detail`）だけを構造的に宣言する。
+ * `code` / `path` は Loader 内部の機構であり、ここでは必要としない。 */
+export interface ContextWarning { readonly detail: string; }
+
+export function buildContextPlan(view: ContextSource, warnings: readonly ContextWarning[]): ContextPlan;
 ```
 
 - Postconditions: `exclusions` の要素数と各 `items` の長さは、入力の `model_exclusions` と一致する
