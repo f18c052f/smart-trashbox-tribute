@@ -175,7 +175,7 @@
   - _Depends: 4.2_
   - _Boundary: BoundaryCheck_
 
-- [ ] 5.2 検査が違反を実際に検出することを証明する
+- [x] 5.2 検査が違反を実際に検出することを証明する
   - 10 規則のそれぞれについて、**違反を含む架空のソース文字列**を検査関数へ渡し、違反が報告されることを確認する
   - 併せて、違反を含まない架空のソースが誤検出されないことも確認する
   - 検査ロジックを関数として切り出しておく必要があるため、5.1 で切り出した形をそのまま利用する
@@ -243,3 +243,4 @@
 - **5.1**: B-6 の禁止語 predict は上流の必須語 predictions / PredictionEntry / PredictionMarker と衝突する。predict の直後が ion で始まる場合（-ion / -ions 名詞形）のみ例外とする。他の 8 語には例外を設けない。interface / type 宣言は関数・メソッド・クラス・変数のいずれでもないため B-6 の対象から外す
 - **5.1**: B-4 は document / window が PropertyAccessExpression の name 位置（view.document のようなプロパティアクセス）にある場合は違反としない。値として参照される場合のみ、許可された 3 モジュール外で違反とする
 - **5.1**: 10 規則の検査関数はソーステキスト（または解析済み package.json）を直接受け取る形で切り出してあり、タスク 5.2 が架空のソース文字列を渡して再利用できる
+- **5.2**: boundaries.test.ts の import は boundaries-negative.test.ts から直接行わない。node:test の test() はモジュール読み込み時に実行されるため、テストファイルを import すると相手の test() も二重実行される。共有ロジックは非テストの支援モジュール boundaries-check.ts（fixtures.ts / dom-stub.ts と同じ扱い）へ切り出し、両テストファイルがそこから import する
