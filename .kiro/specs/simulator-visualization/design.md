@@ -1030,6 +1030,10 @@ export function startApp(root: Document): void;
 
 > **B-6 と B-10 は「回避可能だが、回避が見える」検査である。** これが本 Spec の要件 7.6 の趣旨であり、
 > 検査の目的は違反を物理的に不可能にすることではなく、**違反が黙って入り込まない**ようにすることである。
+>
+> **B-6 の `predict` は `-ion` / `-ions` の名詞形（`predictions` / `PredictionEntry` / `PredictionMarker` 等）を例外とする。**
+> これらは上流 `trajectory-simulator` の出力フィールド名であり、要件 1.2（上流のフィールド名をそのまま使う）が求める
+> 必須語彙であって、アルゴリズムの実装ではないため（Decision 1）。他の 8 語にこの例外は無い。
 
 ---
 
