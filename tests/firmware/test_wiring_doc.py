@@ -148,3 +148,62 @@ def test_black_white_trap_is_stated_with_concrete_consequence() -> None:
     assert "黒" in WIRING_MD_TEXT
     assert "白" in WIRING_MD_TEXT
     assert "破壊" in WIRING_MD_TEXT, "取り違えたときの具体的な結果（破壊）が明示されていない"
+
+
+def test_power_switch_and_terminal_block_placeholder_is_a_distinct_section() -> None:
+    """タスク 2.4（要件3.9）: メイン電源スイッチ／電源分岐端子の決着を
+    取り込む受け口が、§3の未確定欄と同様に見出し付きの独立した節として
+    存在することを確認する。「未確定」節（実測待ち・自力で解消可能）とは
+    別の節であるべきなので、両者の見出しが異なることも確認する。"""
+    undetermined_headings = re.findall(r"^#+.*未確定.*$", WIRING_MD_TEXT, re.M)
+    assert undetermined_headings != [], "§3 の未確定欄の見出しが見つからない（前提が崩れている）"
+
+    power_headings = re.findall(r"^#+.*(?:電源スイッチ|電源分岐端子|電源系統).*$", WIRING_MD_TEXT, re.M)
+    assert power_headings != [], (
+        "電源スイッチ／電源分岐端子の受け口が、見出し付きの独立した節として存在しない"
+    )
+    assert set(power_headings).isdisjoint(set(undetermined_headings)), (
+        "電源系統の受け口が§3の未確定欄と同一の見出しに同居している"
+        "（機構側の決定待ちと実測待ちは別種の未決着であり、区別できる節にすること）"
+    )
+
+
+def test_power_switch_and_terminal_block_section_states_this_spec_does_not_decide() -> None:
+    """本 Spec がメイン電源スイッチ／電源分岐端子を決定しないこと、および
+    決着責任が chassis-mechanism にあることが明示されていることを確認する
+    （要件3.9: 「隣接する機構側の決定として取り込み、自身では決定しない」）。"""
+    assert "chassis-mechanism" in WIRING_MD_TEXT
+    assert re.search(r"決定しない|決めない|決着しない", WIRING_MD_TEXT) is not None, (
+        "本 Spec が電源系統を決定しない旨の明示的な文言が見つからない"
+    )
+    # OQ-11 (メイン電源スイッチ) と OQ-12 (電源分岐端子) の両方に触れていること
+    assert "OQ-11" in WIRING_MD_TEXT
+    assert "OQ-12" in WIRING_MD_TEXT
+
+
+def test_power_switch_and_terminal_block_section_pins_down_where_to_update() -> None:
+    """観測可能な完了状態: 機構側の決着が下りたときに、結線表のどこを
+    更新すればよいかが一意に定まること。更新先として §4.1 / §4.2 の
+    ような具体的な副節番号を名指ししていることを確認する（曖昧な
+    「後で書く」ではなく、一意な参照先を持つこと）。"""
+    assert re.search(r"§4\.1", WIRING_MD_TEXT) is not None, (
+        "メイン電源スイッチの更新先として §4.1 のような具体的な副節番号が示されていない"
+    )
+    assert re.search(r"§4\.2", WIRING_MD_TEXT) is not None, (
+        "電源分岐端子の更新先として §4.2 のような具体的な副節番号が示されていない"
+    )
+
+
+def test_power_switch_and_terminal_block_section_has_no_decided_placeholder_values() -> None:
+    """本 Spec が決定を先取りしていない（＝要否・位置・方式の具体的な
+    決定値を書いていない）ことを、§4 の未決着マーカーの本数で弱く確認する。
+    2件の決定事項（要否×2、方式×2、位置×1、保持箇所・配線経路×1＝計6行）
+    それぞれに未決着マーカーが付いていることを期待する。"""
+    section4_match = re.search(r"^## 4\..*$(.*?)(?=^## |\Z)", WIRING_MD_TEXT, re.M | re.S)
+    assert section4_match is not None, "§4（電源系統の決着待ち）が見つからない"
+    section4_text = section4_match.group(0)
+    undecided_count = section4_text.count("未決着")
+    assert undecided_count >= 6, (
+        f"§4 内の「未決着」マーカーが想定より少ない（{undecided_count}件）。"
+        "要否・位置・方式のそれぞれについて未決着であることを明示すること"
+    )
