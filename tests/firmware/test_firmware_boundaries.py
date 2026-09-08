@@ -46,6 +46,8 @@ from __future__ import annotations
 
 import configparser
 import re
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Callable
 
@@ -1719,3 +1721,433 @@ def test_detects_teleop_only_setting_leaked_into_shared_file_in_crafted_input() 
 def test_does_not_flag_production_style_disabled_assignment_in_crafted_input() -> None:
     """誤検知回避: 本番側の `CONFIG_BT_ENABLED=n` は「漏れ」ではない。"""
     assert find_teleop_only_settings_leaked("CONFIG_BT_ENABLED=n\n") == []
+
+
+# =============================================================================
+# teleop-bringup タスク 1.2: 本番成果物への無線非混入 / 排他機構の再確認 /
+# 無線ライブラリのライセンス制約の記載
+# （teleop-bringup requirements.md 1.2, 1.4, 1.6 /
+#   design.md TeleopBuildProfile・Security Considerations・
+#   Testing Strategy「実機検証」5）
+# =============================================================================
+#
+# ⚠️ **本節の要件番号も `.kiro/specs/teleop-bringup/requirements.md` の採番である。**
+#
+# 固定する事項:
+#
+# A. **本番成果物のリンク結果に無線ライブラリへの参照が1件も無い**（1.2）。
+#    検証手法は `drivetrain-core` タスク 1.2 が実証済みのもの
+#    （`firmware/CMakeLists.txt` のコメント参照）をそのまま使う。
+#    ⚠️ **本番のビルド構成には一切触れずに確かめる。** テレオペ側へ無線を足した
+#    あと（タスク 1.1）も本番が影響を受けていないことが本タスクの主張である。
+# B. **両プロファイル同時指定でビルドが失敗する**（1.4）。⚠️ `#error` が
+#    「書いてある」ことではなく、**実際にコンパイルが失敗すること**を示す。
+#    `firmware/src/build_profile.hpp` は自己完結したヘッダであり、ホストの
+#    C++ コンパイラで `-fsyntax-only` にかけるだけで排他機構そのものを
+#    再現できる（ESP-IDF もクロスツールチェーンも要らない）。
+# C. **無線ライブラリのライセンス制約が、配布時に誤読されない形で記載されている**
+#    （1.6、OQ-42）。記載先はリポジトリ直下の `README.md`。
+#
+# ---------------------------------------------------------------------------
+# ⚠️⚠️ 実測記録: `firmware.map` は「リンクマップとは限らない」（本タスクで判明）
+# ---------------------------------------------------------------------------
+#
+# `pio run` が置く `.pio/build/<env>/firmware.map` は、**アプリのリンクマップで
+# ある場合と、CMake のコンパイラ ABI 検査（try-compile）が残した別物である場合の
+# 両方がある。** 後者を素朴に grep すると「無線ライブラリへの参照ゼロ」が
+# **常に成立してしまい、検査が空虚になる。**
+#
+# 機構（`~/.platformio/platforms/espressif32/builder/frameworks/espidf.py:2677-2679`
+# を実測）:
+#
+#   extra_cmake_args.append(
+#       f"-DCMAKE_EXE_LINKER_FLAGS=-Wl,-Map={BUILD_DIR}/{PROGNAME}.map")
+#
+# `CMAKE_EXE_LINKER_FLAGS` は **そのビルドディレクトリで行われるすべての実行形式
+# リンクへ適用される。** CMake が configure のたびに走らせるコンパイラ ABI 検査
+# （`CMakeFiles/cmTC_*.dir/CMakeCXXCompilerABI.cpp.obj` をリンクする try-compile）
+# もその対象であり、**リンク後に configure が走ると `firmware.map` は 8,538 バイトの
+# ABI 検査マップで上書きされる。**
+#
+# 実測（2026-09-08、ESP-IDF 5.5.5 / pioarduino 55.03.311）:
+#
+#   - 本番: 再リンクを伴う `pio run -e production` 直後の `firmware.map` は
+#     25,609 行の本物のリンクマップで、`libbt.a` / `libesp_wifi.a` /
+#     `libesp_phy.a` / `libwpa_supplicant.a` への参照は **0 件**。
+#     参照されているアーカイブは libdrivetrain_control.a / libfreertos.a /
+#     libesp_system.a / libesp_driver_gpio.a などの非無線コンポーネントのみ。
+#   - テレオペ: 同条件の本物のリンクマップ（87,634 行）には **無線ライブラリへの
+#     参照が 9,770 件**あり、ビルドツリーにも libbt.a / libesp_wifi.a /
+#     libesp_phy.a / libwpa_supplicant.a / libesp_coex.a の5アーカイブが生成
+#     されている（本番のビルドツリーは 0）。
+#     → 検査関数が実データで確かに発火することの陽性対照であり、
+#       本番側の 0 件が「見ていないから 0」ではないことの根拠である。
+#   - ⚠️ 一方、**再リンクが起きなかった `pio run` の直後**（2回目以降の実行や、
+#     リンク後に configure が走った実行）の `firmware.map` は 326 行の ABI 検査
+#     マップであり、テレオペ環境でさえ無線参照が 0 件になった。
+#
+# したがって本節の検査は、**参照を数える前にそのファイルが本物のアプリリンク
+# マップかを判定する**（`classify_link_map`）。判定できない成果物に対して
+# 「参照ゼロ」と結論しない。
+
+PRODUCTION_BUILD_DIR = FIRMWARE_DIR / ".pio" / "build" / "production"
+TELEOP_BUILD_DIR = FIRMWARE_DIR / ".pio" / "build" / "teleop"
+LINK_MAP_FILENAME = "firmware.map"
+
+# リンク結果に現れてはならない無線ライブラリのアーカイブ名。
+# 前5つは ESP-IDF 標準の無線スタック（`drivetrain-core` タスク1.2 で実証済みの対象）。
+# 後3つはテレオペが今後取り込む予定の外部スタックで、取り込み後も本番へ
+# 漏れないことを同じ検査で押さえるために先に挙げてある。
+RADIO_ARCHIVE_NAMES: tuple[str, ...] = (
+    "libbt.a",
+    "libbtdm_app.a",
+    "libesp_wifi.a",
+    "libesp_phy.a",
+    "libwpa_supplicant.a",
+    "libesp_coex.a",
+    "libbtstack.a",
+    "libbluepad32.a",
+)
+
+# 本物のアプリリンクマップだけが持つ痕跡。ESP-IDF のアプリリンクでは必ず
+# 現れるコンポーネントと、本プロジェクト自身の純ロジックコンポーネント。
+APP_LINK_MAP_SENTINELS: tuple[str, ...] = (
+    "libfreertos.a(",
+    "libesp_system.a(",
+    "libdrivetrain_control.a(",
+)
+
+# CMake の try-compile が生成したオブジェクトの名前。ABI 検査マップの目印。
+CMAKE_TRY_COMPILE_MARKER = "cmTC_"
+
+
+def classify_link_map(map_text: str) -> str:
+    """`firmware.map` の中身が何であるかを判定する。
+
+    戻り値:
+      - ``"application"``       … アプリのリンクマップ（参照ゼロの主張が意味を持つ）
+      - ``"cmake-try-compile"`` … CMake のコンパイラ ABI 検査が残したマップ
+      - ``"unrecognized"``      … どちらとも判定できない
+    """
+    if CMAKE_TRY_COMPILE_MARKER in map_text:
+        return "cmake-try-compile"
+    if all(sentinel in map_text for sentinel in APP_LINK_MAP_SENTINELS):
+        return "application"
+    return "unrecognized"
+
+
+def find_radio_references_in_link_map(map_text: str) -> list[str]:
+    """リンクマップ本文から無線ライブラリのアーカイブへの参照を洗い出す。"""
+    violations = []
+    for lineno, line in enumerate(map_text.splitlines(), start=1):
+        for archive in RADIO_ARCHIVE_NAMES:
+            if archive in line:
+                violations.append(f"{lineno}行目: {archive}")
+    return violations
+
+
+def find_radio_archive_files(build_dir: Path) -> list[str]:
+    """ビルドディレクトリに無線ライブラリのアーカイブそのものが生成されていないか調べる。
+
+    リンクマップ（参照の有無）とは独立した第2の証拠。参照が無いだけでなく、
+    そもそもコンパイルもされていないことを見る。
+    """
+    return sorted(
+        str(path.relative_to(build_dir))
+        for path in build_dir.rglob("lib*.a")
+        if path.name in RADIO_ARCHIVE_NAMES
+    )
+
+
+def _load_link_map_or_skip(build_dir: Path, env_name: str) -> str:
+    """本物のアプリリンクマップを読む。無ければ理由を示して skip する。"""
+    map_path = build_dir / LINK_MAP_FILENAME
+    if not map_path.is_file():
+        pytest.skip(f"{map_path} が未生成。`cd firmware && pio run -e {env_name}` で生成される")
+    map_text = map_path.read_text(encoding="utf-8", errors="replace")
+    kind = classify_link_map(map_text)
+    if kind != "application":
+        pytest.skip(
+            f"{map_path} はアプリのリンクマップではない（判定: {kind}）。"
+            "再リンクを伴わない `pio run` の後は CMake の ABI 検査マップで上書きされている。"
+            f"`cd firmware && rm .pio/build/{env_name}/firmware.elf && "
+            f"pio run -e {env_name}` で本物のリンクマップを再生成すること"
+        )
+    return map_text
+
+
+# --- A. 本番成果物への無線非混入（1.2） -------------------------------------
+
+
+def test_production_link_map_has_zero_radio_library_references() -> None:
+    """⚠️ 本番のリンク結果に無線ライブラリへの参照が1件も無い（1.2 の観測可能な完了状態）。
+
+    テレオペ側へ無線を足したあと（タスク 1.1）も本番が影響を受けていないことを、
+    **本番のビルド構成を一切変更せずに**確かめる。
+    """
+    map_text = _load_link_map_or_skip(PRODUCTION_BUILD_DIR, "production")
+    assert find_radio_references_in_link_map(map_text) == []
+
+
+def test_production_build_tree_contains_no_radio_archive() -> None:
+    """本番のビルドツリーに無線ライブラリのアーカイブ自体が生成されていない（1.2 の補強）。"""
+    if not PRODUCTION_BUILD_DIR.is_dir():
+        pytest.skip(
+            f"{PRODUCTION_BUILD_DIR} が未生成。"
+            "`cd firmware && pio run -e production` で生成される"
+        )
+    assert find_radio_archive_files(PRODUCTION_BUILD_DIR) == []
+
+
+def test_teleop_link_map_does_contain_radio_library_references() -> None:
+    """⚠️ 陽性対照: テレオペのリンク結果には無線ライブラリへの参照が**ある**。
+
+    これが無いと、本番側の「参照ゼロ」が「検査が何も見ていないから 0」なのか
+    「本当に入っていないから 0」なのか区別できない。実測では 9,770 件。
+    """
+    map_text = _load_link_map_or_skip(TELEOP_BUILD_DIR, "teleop")
+    assert find_radio_references_in_link_map(map_text) != []
+
+
+def test_detects_radio_reference_in_crafted_link_map() -> None:
+    """違反ケース: 無線ライブラリを参照するリンクマップが検出される。
+
+    入力は実測したテレオペのリンクマップから逐語コピーした行である。
+    """
+    real_teleop_map_excerpt = (
+        "Archive member included to satisfy reference by file (symbol)\n"
+        "\n"
+        ".pio/build/teleop/esp-idf/bt/libbt.a(hli_vectors.S.o)\n"
+        "                              (ld_include_hli_vectors_bt)\n"
+        ".pio/build/teleop/esp-idf/bt/libbt.a(hli_api.c.o)\n"
+        "                              .pio/build/teleop/esp-idf/bt/libbt.a"
+        "(hli_vectors.S.o) (hli_c_handler)\n"
+        ".pio/build/teleop/esp-idf/esp_phy/libesp_phy.a(phy_override.c.o)\n"
+        ".pio/build/teleop/esp-idf/drivetrain_control/libdrivetrain_control.a"
+        "(controller.cpp.o)\n"
+        ".pio/build/teleop/esp-idf/freertos/libfreertos.a(idf_additions.c.o)\n"
+        ".pio/build/teleop/esp-idf/esp_system/libesp_system.a(panic.c.o)\n"
+    )
+    assert classify_link_map(real_teleop_map_excerpt) == "application"
+    violations = find_radio_references_in_link_map(real_teleop_map_excerpt)
+    assert any("libbt.a" in v for v in violations)
+    assert any("libesp_phy.a" in v for v in violations)
+
+
+def test_does_not_flag_clean_link_map_in_crafted_input() -> None:
+    """誤検知回避: 無線を含まないリンクマップは違反にならない。
+
+    入力は実測した本番のリンクマップから逐語コピーした行である。
+    """
+    real_production_map_excerpt = (
+        "Archive member included to satisfy reference by file (symbol)\n"
+        "\n"
+        ".pio/build/production/esp-idf/drivetrain_control/libdrivetrain_control.a"
+        "(controller.cpp.o)\n"
+        "                              .pio/build/production/src/main.cpp.o "
+        "(_ZN18drivetrain_control20DrivetrainController4stepEx)\n"
+        ".pio/build/production/esp-idf/freertos/libfreertos.a(idf_additions.c.o)\n"
+        ".pio/build/production/esp-idf/esp_system/libesp_system.a(panic.c.o)\n"
+        ".pio/build/production/esp-idf/esp_driver_gpio/libesp_driver_gpio.a(gpio.c.o)\n"
+    )
+    assert classify_link_map(real_production_map_excerpt) == "application"
+    assert find_radio_references_in_link_map(real_production_map_excerpt) == []
+
+
+def test_cmake_try_compile_map_is_not_accepted_as_a_link_result() -> None:
+    """⚠️ 空虚化の防止: ABI 検査マップを「参照ゼロの本番リンク結果」と認めない。
+
+    入力は実測した 8,538 バイト版 `firmware.map` からの逐語コピーである。
+    無線参照は 0 件だが、これは**リンク結果ではない**ため
+    「本番に無線が入っていない」ことの証拠にならない。
+    """
+    real_try_compile_map_excerpt = (
+        "\nThere are no discarded input sections\n"
+        "\nMemory Configuration\n"
+        "\nLinker script and memory map\n"
+        "\nLOAD CMakeFiles/cmTC_28ca2.dir/CMakeCXXCompilerABI.cpp.obj\n"
+        "LOAD /home/user/.platformio/packages/toolchain-xtensa-esp-elf/bin/../lib/"
+        "gcc/xtensa-esp-elf/14.2.0/../../../../xtensa-esp-elf/lib/esp32/no-rtti/"
+        "libstdc++.a\n"
+    )
+    assert find_radio_references_in_link_map(real_try_compile_map_excerpt) == []
+    assert classify_link_map(real_try_compile_map_excerpt) == "cmake-try-compile"
+
+
+def test_unrecognized_map_is_not_accepted_as_a_link_result() -> None:
+    """空虚化の防止: アプリリンクの痕跡を持たない任意のテキストも受け入れない。"""
+    assert classify_link_map("") == "unrecognized"
+    assert classify_link_map("Linker script and memory map\n") == "unrecognized"
+
+
+def test_detects_radio_archive_file_in_crafted_build_tree(tmp_path: Path) -> None:
+    """違反ケース: ビルドツリーに `libbt.a` が生成された状態が検出される。"""
+    (tmp_path / "esp-idf" / "bt").mkdir(parents=True)
+    (tmp_path / "esp-idf" / "bt" / "libbt.a").write_bytes(b"")
+    (tmp_path / "esp-idf" / "log").mkdir(parents=True)
+    (tmp_path / "esp-idf" / "log" / "liblog.a").write_bytes(b"")
+    assert find_radio_archive_files(tmp_path) != []
+
+
+def test_does_not_flag_non_radio_archive_in_crafted_build_tree(tmp_path: Path) -> None:
+    """誤検知回避: 無線と無関係のアーカイブだけのビルドツリーは違反にならない。"""
+    (tmp_path / "esp-idf" / "log").mkdir(parents=True)
+    (tmp_path / "esp-idf" / "log" / "liblog.a").write_bytes(b"")
+    assert find_radio_archive_files(tmp_path) == []
+
+
+# --- B. 両プロファイル同時指定でビルドが失敗すること（1.4） -----------------
+#
+# ⚠️ **`#error` が書いてあることの確認では足りない。** 実際にコンパイルさせて
+# 失敗することを示す。`build_profile.hpp` は他のヘッダを include しない自己完結
+# ヘッダなので、ホストの C++ コンパイラで `-fsyntax-only` にかけるだけで
+# 排他機構そのものを再現できる。
+
+HOST_CXX_COMPILER = shutil.which("g++") or shutil.which("clang++") or shutil.which("c++")
+
+
+def compile_build_profile_header(*defined_macros: str) -> subprocess.CompletedProcess[str]:
+    """指定したビルドプロファイルマクロの下で `build_profile.hpp` を構文検査する。"""
+    assert HOST_CXX_COMPILER is not None
+    return subprocess.run(
+        [
+            HOST_CXX_COMPILER,
+            "-x",
+            "c++",
+            "-std=c++17",
+            "-fsyntax-only",
+            *[f"-D{macro}" for macro in defined_macros],
+            str(BUILD_PROFILE_HPP_PATH),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+requires_host_cxx = pytest.mark.skipif(
+    HOST_CXX_COMPILER is None,
+    reason="ホストの C++ コンパイラが見つからない（g++ / clang++ / c++）",
+)
+
+
+@requires_host_cxx
+def test_compilation_fails_when_both_build_profile_macros_are_defined() -> None:
+    """⚠️ 両プロファイル同時指定で**実際にコンパイルが失敗する**（1.4）。
+
+    テレオペ側へ無線設定を足したあと（タスク 1.1）も排他機構が働くことの再確認。
+    """
+    result = compile_build_profile_header(
+        "DRIVETRAIN_BUILD_TELEOP", "DRIVETRAIN_BUILD_PRODUCTION"
+    )
+    assert result.returncode != 0, "両方定義したのにコンパイルが通ってしまった"
+    assert "mutually exclusive" in result.stderr
+
+
+@requires_host_cxx
+def test_compilation_fails_when_neither_build_profile_macro_is_defined() -> None:
+    """どちらのプロファイルも指定しない場合も実際にコンパイルが失敗する（1.4）。"""
+    result = compile_build_profile_header()
+    assert result.returncode != 0, "どちらも未定義なのにコンパイルが通ってしまった"
+    assert "Exactly one build-profile macro" in result.stderr
+
+
+@requires_host_cxx
+@pytest.mark.parametrize("macro", ["DRIVETRAIN_BUILD_TELEOP", "DRIVETRAIN_BUILD_PRODUCTION"])
+def test_compilation_succeeds_when_exactly_one_build_profile_macro_is_defined(
+    macro: str,
+) -> None:
+    """陰性対照: 片方だけならコンパイルは通る（`#error` が常に出るわけではない）。"""
+    result = compile_build_profile_header(macro)
+    assert result.returncode == 0, result.stderr
+
+
+# --- C. 無線ライブラリのライセンス制約の記載（1.6） -------------------------
+
+README_PATH = REPO_ROOT / "README.md"
+RADIO_LICENSE_SECTION_HEADING = "## ライセンスと再配布上の制約"
+
+# 記載が満たすべき点。⚠️ 「BTstack を使う」だけでは配布時の誤読を防げない。
+# 制約の内容・及ぶ範囲・及ばない範囲の3つが揃って初めて誤読されない。
+RADIO_LICENSE_REQUIRED_TOKENS: dict[str, tuple[str, ...]] = {
+    "無線ライブラリの名指し": ("BTstack",),
+    "オープンソースではない旨": ("オープンソースではない",),
+    "商用利用の制限": ("商用",),
+    "制約が及ぶ範囲（テレオペ用ビルド）": ("テレオペ",),
+    "制約が及ばない範囲（本番用ビルド）": ("本番",),
+    "包括的な利用許諾との関係": ("LICENSE",),
+}
+
+
+def extract_markdown_section(markdown_text: str, heading: str) -> str:
+    """指定した見出しから次の同レベル以上の見出しまでの本文を取り出す（見出し行を含む）。"""
+    lines = markdown_text.splitlines()
+    try:
+        start = next(i for i, line in enumerate(lines) if line.strip() == heading)
+    except StopIteration:
+        return ""
+    level = len(heading.split(" ", 1)[0])
+    end = len(lines)
+    for offset, line in enumerate(lines[start + 1 :], start=start + 1):
+        stripped = line.strip()
+        if stripped.startswith("#") and len(stripped.split(" ", 1)[0]) <= level:
+            end = offset
+            break
+    return "\n".join(lines[start:end])
+
+
+def find_radio_license_note_violations(markdown_text: str) -> list[str]:
+    """無線ライブラリのライセンス制約の記載が、誤読されない要件を満たすか検査する。"""
+    section = extract_markdown_section(markdown_text, RADIO_LICENSE_SECTION_HEADING)
+    if not section.strip():
+        return [f"{RADIO_LICENSE_SECTION_HEADING} の節が無い"]
+    return [
+        f"{label} の記載が無い"
+        for label, tokens in RADIO_LICENSE_REQUIRED_TOKENS.items()
+        if not any(token in section for token in tokens)
+    ]
+
+
+def test_readme_records_radio_library_license_constraint() -> None:
+    """⚠️ 無線ライブラリのライセンス制約が、配布時に誤読されない形で記載されている（1.6）。
+
+    記載先をリポジトリ直下の `README.md` としたのは、**成果物を再配布する側が
+    最初に読む場所がそこだから**である（design.md Security Considerations
+    「トップレベル LICENSE が BT 版ファームまで自由に再利用可能だと
+    誤読させない記載を伴う」）。⚠️ 本リポジトリにはトップレベル `LICENSE` が
+    まだ無く、利用許諾を新たに定めることは本タスクの範囲外であるため、
+    「将来 LICENSE を置くときにテレオペ成果物を対象へ含めてはならない」ことを
+    含めて README 側に記載する。
+    """
+    readme_text = README_PATH.read_text(encoding="utf-8")
+    assert find_radio_license_note_violations(readme_text) == []
+
+
+def test_detects_missing_license_section_in_crafted_input() -> None:
+    """違反ケース: ライセンス制約の節が丸ごと無い架空の入力が検出される。"""
+    assert find_radio_license_note_violations("# Title\n\n## 概要\n本文\n") != []
+
+
+@pytest.mark.parametrize("dropped_label", sorted(RADIO_LICENSE_REQUIRED_TOKENS))
+def test_detects_incomplete_license_note_in_crafted_input(dropped_label: str) -> None:
+    """違反ケース: 記載すべき点を1つ落とした架空の入力が、その点だけ検出される。"""
+    sentences = {label: tokens[0] for label, tokens in RADIO_LICENSE_REQUIRED_TOKENS.items()}
+    del sentences[dropped_label]
+    fake_readme = (
+        f"{RADIO_LICENSE_SECTION_HEADING}\n\n"
+        + "".join(f"- {phrase} についての記載\n" for phrase in sentences.values())
+        + "\n## 次の節\n"
+    )
+    violations = find_radio_license_note_violations(fake_readme)
+    assert violations == [f"{dropped_label} の記載が無い"]
+
+
+def test_license_section_extraction_stops_at_the_next_section() -> None:
+    """節の切り出しが次の見出しで止まる（隣の節の文言を誤って拾わない）。"""
+    fake_readme = (
+        f"{RADIO_LICENSE_SECTION_HEADING}\n\nBTstack についての記載\n\n"
+        "## 次の節\n\nオープンソースではない\n"
+    )
+    section = extract_markdown_section(fake_readme, RADIO_LICENSE_SECTION_HEADING)
+    assert "BTstack" in section
+    assert "オープンソースではない" not in section
