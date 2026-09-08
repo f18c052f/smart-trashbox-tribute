@@ -98,6 +98,7 @@ __all__ = [
     "CHECK_RESULTS",
     "REQUIRED_CHECK_NAMES",
     "OBSERVATION_PATHS",
+    "REPRESENTATIVE_DIAMETER_PATH",
     "WheelObservation",
     "ClearanceObservation",
     "FitDeviation",
@@ -276,6 +277,17 @@ OBSERVATION_PATHS: Final[tuple[str, ...]] = (
 出所は「その**値**が実測か概算か」を表すものであり、手順の記述や合否そのものは
 値ではない。手順が空であること・確認が未実施であることは
 `missing_observations` が別の形で拾う。
+"""
+
+REPRESENTATIVE_DIAMETER_PATH: Final[str] = _REPRESENTATIVE_PATH
+"""代表となる実効転がり径の出所表におけるキー（`OBSERVATION_PATHS` の一員）。
+
+⚠️ **公開するのは、実効転がり半径の配線に出所が要るからである**（タスク 4.1 /
+design.md `#### Layout`）。コマンド入口は `representative_rolling_radius_mm` で
+値を取り、このキーで `AssemblyRecord.provenance` から出所を取って
+`layout.ObservedRollingRadius` を組み立てる。⚠️ **値と出所は必ず対で運ぶ**
+——値だけを渡すと導出の出所が「使わなかった公称値」のものに据え置かれる。
+キー文字列を呼び出し側へ書き写させないために、ここが単一の正である。
 """
 
 

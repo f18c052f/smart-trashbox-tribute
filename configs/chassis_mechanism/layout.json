@@ -3,7 +3,7 @@
   "assumptions": [
     "「機体中心 → 取付面」は寸法パラメータ base.hub_center_to_mount_face_mm をそのまま読む。⚠️ 現在の値は仮値（101.3mm）であり、これを選ぶのはタスク 5.4（造形可能性・接合の成立・座の到達・転倒余裕の記録可能性の4条件）である。docs/bom.md §B が「駆動ベースの半径を決めれば R が定まる」と記すとおり、本 Spec の設計変数はこの1つだけであり、⚠️ 他の寸法から式で作らない（作れば決めるべき値が設定ファイルの外へ移り、値の書き換えだけでは再導出できなくなる）。",
     "⚠️ bracket.mount_face_reference の確認が済むまで、配置半径と鉛直スタックの出所は仮値である（design.md #### Layout Risks）。derive_layout はこれを黙って実測へ格上げしない。配置半径の確定はタスク 5.4 が4条件に照らして行う。",
-    "実効転がり半径は、観測記録がまだ存在しないため公称値の半分を用いる（wheel.nominal_diameter_mm / 2）。荷重下の実効転がり径が測定されれば（要件 10.3）鉛直スタックの全高さがそれに追随する。",
+    "実効転がり半径は、measurements.json に代表となる実効転がり径が記入されていればその半分、記入されていなければ公称値の半分（wheel.nominal_diameter_mm / 2）である（要件 10.3）。⚠️ どちらを用いたかはこの前提文ではなく記録そのものが示す——vertical.nominal_rolling_radius_mm と vertical.effective_rolling_radius_mm を並べて持ち、両者が一致する記録は公称値の半分を、食い違う記録は観測を用いている（差は荷重による沈み込みであり、要件 10.4 が言う「公称値との差」の半分である）。鉛直スタックの全高さは実効転がり半径に追随する。",
     "合成重心の見積もりは ChassisParams.mass_items()（バッテリ・基板・電源端子台）の質量と保持高さだけを入力とし、⚠️ 構造材の質量を算入しない。各入力の値と出所は configs/chassis_mechanism/dimensions.json が正である。",
     "各入力の出所（実測 / 仮値）は dimensions.json の provenance 表が単一の正であり、本記録は導出値が継承した最弱の出所だけを持つ（同じ出所を2箇所に持たない）。⚠️ 上流 catch-opening.json が入力ごとに provenance を併記するのに対し本記録が併記しないのは、書き落としではなく意図した差である——design.md が定める dump_layout(layout, path) の引数は導出結果だけであり、寸法パラメータを受け取らないため、入力ごとの出所を記録から一意に決められない。入力ごとの出所を知るには dimensions.json の provenance 表を引く。",
     "wheel_angles_deg は機体 +x から反時計回りの度であり、first_wheel_angle_deg から等配置で並べたまま折り返していない。⚠️ 輪番号と符号の規約は firmware/lib/drivetrain_control の Kinematics の行定義が唯一の正であり、そちら側は同じ角度を (-180, 180] へ折り返して保持する（例: 240 度と -120 度は同じ輪である）。転記の際は単位と折り返しに注意する。"
@@ -39,7 +39,8 @@
     "effective_rolling_radius_mm": 30.0,
     "fastener_bottom_height_mm": 57.0,
     "motor_body_bottom_height_mm": 11.5,
-    "mount_face_height_mm": 60.0
+    "mount_face_height_mm": 60.0,
+    "nominal_rolling_radius_mm": 30.0
   },
   "wheel_angles_deg": [
     0.0,

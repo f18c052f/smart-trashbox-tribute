@@ -213,7 +213,7 @@ errors → params → config → layout → {clearance, joints} → {assembly, b
 ```
 
 - 各層は**左側の層からのみ** import する。上位方向の import は許さない
-- `catch_mechanism` の公開 API は `params` / `config` / `joints` / `baseline` / `shapes` から import してよい。
+- `catch_mechanism` の公開 API は `params` / `config` / `joints` / `baseline` / `shapes` / `cli` から import してよい。
   ⚠️ **内部モジュール（`catch_mechanism.params` 等）を直接 import しない**
 - `build123d` の import は **`shapes` / `export` の2モジュールに限る**
 - `__init__` は `shapes` / `export` を import しない（公開 API が OCCT を要求しないため）。
@@ -642,6 +642,7 @@ DEFAULT_LAYOUT_PATH: Final[Path]
 @dataclass(frozen=True, slots=True)
 class VerticalStack:
     effective_rolling_radius_mm: float
+    nominal_rolling_radius_mm: float   # wheel.nominal_diameter_mm / 2（記録が示す手掛かり）
     axle_center_height_mm: float
     motor_body_bottom_height_mm: float
     mount_face_height_mm: float
@@ -696,6 +697,11 @@ def load_layout(path: Path | None = None) -> ChassisLayout: ...
 **Implementation Notes**
 - Integration: 実効転がり半径は、観測があれば `measurements.json` の代表値、
   無ければ公称値の半分を用いる。⚠️ **どちらを使ったかは `provenance` に現れる**。
+  ⚠️ **ただし `provenance` だけでは足りない**——公称値と観測の出所が同じ（どちらも仮値など）で
+  ありうるため、出所は両者を区別しない。そこで `VerticalStack` は `nominal_rolling_radius_mm` を
+  `effective_rolling_radius_mm` と並べて持ち、導出記録にも並べて書く（一致＝公称値、乖離＝観測）。
+  ⚠️ **これが無いと `ASSUMPTIONS` の「公称値の半分を用いる」という前提文を記録の側から反証できず、
+  観測を使った記録が「公称値を仮定した」と名乗ったまま下流へ流れる**（要件 11.3）。
   そのため観測は `ObservedRollingRadius`（値＋出所）として渡し、観測を使う場合は
   `weakest_provenance` の畳み込みから `wheel.nominal_diameter_mm` の寄与を外して
   観測側の出所へ差し替える。⚠️ **`ResolvedParams` へ観測を混ぜてはならない**
@@ -1130,6 +1136,11 @@ def export_parts(parts: tuple[BuiltPart, ...], directory: Path | None = None) ->
 
 **Dependencies**
 - Outbound: 全中核 (P0), Shapes/Export（遅延）(P1)
+- External: `catch_mechanism` の例外階層と `GeometryBaseline` / `PartMetrics` /
+  `compare_metrics` / `load_baseline` (P0)。
+  ⚠️ **終了コード表が上流の例外階層を含む以上、公開入口からその型を取ることは避けられない**
+  ——上流の失敗を包み直さない方針の帰結である（型を取らなければ、上流の失敗は表に無い
+  例外として既定値へ黙って落ちる）。⚠️ **内部モジュールへは手を伸ばさない**
 
 **Contracts**: Service [x] / Batch [x]
 

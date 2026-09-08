@@ -63,13 +63,25 @@ Responsibilities「隙間はすべて `VerticalStack` から算出されるた�
 **出所は入力の最弱を継承する**（要件 1.9 / `params.weakest_provenance`）。
 ⚠️ **`bracket.mount_face_reference` の確認が済むまで `base_radius_mm` の出所は
 仮値である**（design.md `#### Layout` Risks）。本モジュールはこれを黙って実測へ
-格上げしない。実効転がり半径も、観測記録（`measurements.json`、タスク 2.4）が
-まだ存在しないため**公称値の半分**を用い、その出所（`wheel.nominal_diameter_mm`）
-を継承する。⚠️ 観測の読み手をここへ先取りで置かない——`assembly` は本モジュールの
-右側の層であり、依存方向が逆になる。⚠️ **観測値を差し込む点は
-`_effective_rolling_radius_mm` の1箇所だけである**（タスク 2.4）——鉛直スタックの
-全高さはその戻り値と公称値との差から組み上がるため、差し替えても積み上げ自体を
-組み替える必要がない。
+格上げしない。実効転がり半径は、観測（`ObservedRollingRadius`）が渡されればその値、
+渡されなければ**公称値の半分**を用いる。⚠️ **どちらを使ったかは `provenance` に
+現れる**——観測を用いた場合、畳み込みからは `wheel.nominal_diameter_mm` の寄与を
+外して観測側の出所へ差し替える。使わなかった公称値の出所を継承し続ければ、
+⚠️ **実測を使ったのに仮値を名乗る（またはその逆の）導出結果**が下流へ流れる。
+
+⚠️ **ただし `provenance` だけでは足りない。** 公称値も観測も同じ出所（どちらも
+仮値、など）でありうるため、出所は「どちらを使ったか」を必ずしも区別しない。
+そこで `VerticalStack` は `nominal_rolling_radius_mm` と
+`effective_rolling_radius_mm` を**並べて持ち、記録にも並べて書く**——一致して
+いれば公称値の半分、食い違っていれば観測である。⚠️ **これが無いと `ASSUMPTIONS`
+の「公称値の半分を用いる」という前提文を記録の側から反証できず、観測を使った
+記録が「公称値を仮定した」と名乗ったまま下流へ流れる**（要件 11.3）。
+⚠️ 観測の読み手をここへ置かない——`assembly` は本モジュールの右側の層であり、
+依存方向が逆になる。観測を読んで `ObservedRollingRadius` を組み立てるのは
+⚠️ **コマンド入口（`cli`）である**（tasks.md「実効転がり半径の配線」）。
+⚠️ **観測値を差し込む点は `_effective_rolling_radius_mm` の1箇所だけである**
+——鉛直スタックの全高さはその戻り値と公称値との差から組み上がるため、
+差し替えても積み上げ自体を組み替える必要がない。
 
 読み書きの規律は `config.py` に揃える（**あらゆる階層で未知キーを拒否する**、
 項目名を示す、欠損を既定値で埋めない、LF・インデント2・キー整列・末尾改行）。
@@ -86,7 +98,7 @@ from pathlib import Path
 from typing import Final
 
 from chassis_mechanism.config import SCHEMA_VERSION, ResolvedParams
-from chassis_mechanism.errors import GeometryError, ParameterError
+from chassis_mechanism.errors import ConsistencyError, GeometryError, ParameterError
 from chassis_mechanism.params import (
     PARAMETER_PATHS,
     ChassisParams,
@@ -105,8 +117,10 @@ __all__ = [
     "TIPPING_NOTE",
     "VerticalStack",
     "TippingEstimate",
+    "ObservedRollingRadius",
     "ChassisLayout",
     "derive_layout",
+    "load_compression_mm",
     "dump_layout",
     "load_layout",
 ]
@@ -201,9 +215,14 @@ ASSUMPTIONS: Final[tuple[str, ...]] = (
     f"⚠️ {_MOUNT_FACE_REFERENCE_PATH} の確認が済むまで、配置半径と鉛直スタックの"
     "出所は仮値である（design.md #### Layout Risks）。derive_layout はこれを黙って"
     "実測へ格上げしない。配置半径の確定はタスク 5.4 が4条件に照らして行う。",
-    "実効転がり半径は、観測記録がまだ存在しないため公称値の半分を用いる"
-    f"（{_WHEEL_NOMINAL_DIAMETER_PATH} / 2）。荷重下の実効転がり径が測定されれば"
-    "（要件 10.3）鉛直スタックの全高さがそれに追随する。",
+    "実効転がり半径は、measurements.json に代表となる実効転がり径が記入されていれば"
+    "その半分、記入されていなければ公称値の半分"
+    f"（{_WHEEL_NOMINAL_DIAMETER_PATH} / 2）である（要件 10.3）。"
+    "⚠️ どちらを用いたかはこの前提文ではなく記録そのものが示す"
+    "——vertical.nominal_rolling_radius_mm と vertical.effective_rolling_radius_mm を"
+    "並べて持ち、両者が一致する記録は公称値の半分を、食い違う記録は観測を用いている"
+    "（差は荷重による沈み込みであり、要件 10.4 が言う「公称値との差」の半分である）。"
+    "鉛直スタックの全高さは実効転がり半径に追随する。",
     "合成重心の見積もりは ChassisParams.mass_items()（バッテリ・基板・電源端子台）の"
     "質量と保持高さだけを入力とし、⚠️ 構造材の質量を算入しない。"
     "各入力の値と出所は configs/chassis_mechanism/dimensions.json が正である。",
@@ -311,6 +330,7 @@ _TOP_LEVEL_KEYS: Final[frozenset[str]] = frozenset(
 _INPUT_KEYS: Final[frozenset[str]] = frozenset({_NAME_KEY, _VALUE_KEY})
 
 _EFFECTIVE_ROLLING_RADIUS_KEY: Final[str] = "effective_rolling_radius_mm"
+_NOMINAL_ROLLING_RADIUS_KEY: Final[str] = "nominal_rolling_radius_mm"
 _AXLE_CENTER_KEY: Final[str] = "axle_center_height_mm"
 _MOTOR_BODY_BOTTOM_KEY: Final[str] = "motor_body_bottom_height_mm"
 _MOUNT_FACE_HEIGHT_KEY: Final[str] = "mount_face_height_mm"
@@ -319,6 +339,7 @@ _FASTENER_BOTTOM_KEY: Final[str] = "fastener_bottom_height_mm"
 _VERTICAL_KEYS: Final[frozenset[str]] = frozenset(
     {
         _EFFECTIVE_ROLLING_RADIUS_KEY,
+        _NOMINAL_ROLLING_RADIUS_KEY,
         _AXLE_CENTER_KEY,
         _MOTOR_BODY_BOTTOM_KEY,
         _MOUNT_FACE_HEIGHT_KEY,
@@ -403,8 +424,16 @@ class VerticalStack:
     締結部品はベース板下面から下方へ突き出るため取付面より低い。
 
     Attributes:
-        effective_rolling_radius_mm: 実効転がり半径（mm）。⚠️ 観測記録が無い間は
-            公称値の半分である（`ASSUMPTIONS`）。
+        effective_rolling_radius_mm: 実効転がり半径（mm）。観測（`ObservedRollingRadius`）
+            が渡されればその値、渡されなければ `nominal_rolling_radius_mm` と等しい
+            （`ASSUMPTIONS`）。
+        nominal_rolling_radius_mm: 公称の転がり半径（mm。`wheel.nominal_diameter_mm / 2`）。
+            ⚠️ **これは「使わなかったかもしれない入力」ではなく、記録がどちらの入力で
+            組み上がったかを示す唯一の手掛かりである。** 実効値だけを記録に残すと、
+            観測を使った記録と公称値を使った記録が**同じ形**になり、⚠️ 前提文の
+            「公称値の半分を用いた」という主張が観測を使った記録の上でも生き残る
+            （要件 11.3: 下流は再測せずこの記録を読む）。両者が一致していれば公称値、
+            食い違っていれば観測であり、差が荷重による沈み込みである（要件 10.4）。
         axle_center_height_mm: 車軸中心の高さ（mm）。⚠️ **実効転がり半径と一致する**
             ——ホイールが床に接している以上、これは定義であって独立な値ではない。
         motor_body_bottom_height_mm: モータ胴体下面の高さ（mm）。全部位で最も低い。
@@ -421,6 +450,7 @@ class VerticalStack:
     """
 
     effective_rolling_radius_mm: float
+    nominal_rolling_radius_mm: float
     axle_center_height_mm: float
     motor_body_bottom_height_mm: float
     mount_face_height_mm: float
@@ -430,6 +460,9 @@ class VerticalStack:
         """高さの順序を検証し、逆転する入力を対と量つきで拒否する。"""
         radius = _require_positive(
             self.effective_rolling_radius_mm, _EFFECTIVE_ROLLING_RADIUS_KEY
+        )
+        _require_positive(
+            self.nominal_rolling_radius_mm, _NOMINAL_ROLLING_RADIUS_KEY
         )
         axle = _require_positive(self.axle_center_height_mm, _AXLE_CENTER_KEY)
         motor_bottom = _require_finite(
@@ -518,6 +551,41 @@ class TippingEstimate:
                 )
             if not math.isfinite(float(value)) or float(value) <= 0.0:
                 raise ParameterError(f"{name}={value!r} は正の有限値でなければならない。")
+
+
+@dataclass(frozen=True, slots=True)
+class ObservedRollingRadius:
+    """観測された実効転がり半径（design.md `#### Layout` Service Interface）。
+
+    ⚠️ **値と出所は必ず対で運ぶ。** 値だけを渡すと `provenance` の畳み込みが
+    「使わなかった公称値」の出所を継承し続け、⚠️ **実測を使ったのに仮値を名乗る
+    （またはその逆）**状態になる。実測で置き換えた量の出所が公称値のものに
+    据え置かれれば、要件 1.9（実測で置き換えられていない公称寸法を仮値として
+    扱う）が主張していることの逆——**置き換えたのに仮値のまま**——が起きる。
+
+    ⚠️ **型を `layout` 側に置く。** 値の出どころは `assembly`（`measurements.json`
+    の代表値）であるが、`layout` は `assembly` を import できない（依存方向は
+    `layout → {clearance, joints} → {assembly, baseline}`）。組み立てて渡すのは
+    ⚠️ **コマンド入口（`cli`）である**（tasks.md「実効転がり半径の配線」）。
+
+    Attributes:
+        radius_mm: 荷重下で観測された実効転がり**半径**（mm）。
+            ⚠️ 観測は径で記録されるため、径から半径への変換は
+            `assembly.representative_rolling_radius_mm` の1箇所が持つ。
+        provenance: その観測の出所。⚠️ **実測とは限らない**——概算のまま渡された
+            観測は導出値の出所を仮値へ引き下げる。
+    """
+
+    radius_mm: float
+    provenance: Provenance
+
+    def __post_init__(self) -> None:
+        _require_positive(self.radius_mm, _EFFECTIVE_ROLLING_RADIUS_KEY)
+        if not isinstance(self.provenance, Provenance):
+            raise ParameterError(
+                f"{_PROVENANCE_KEY}={self.provenance!r} は Provenance でなければ"
+                "ならない（観測の値と出所は対で運ぶ）。"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -701,23 +769,103 @@ def _cog_height_mm(chassis: ChassisParams) -> float:
     return height
 
 
-def _effective_rolling_radius_mm(nominal_rolling_radius_mm: float) -> float:
+def _effective_rolling_radius_mm(
+    nominal_rolling_radius_mm: float,
+    observed: ObservedRollingRadius | None = None,
+) -> float:
     """実効転がり半径を返す（要件 10.3 / design.md `#### Layout` Implementation Notes）。
 
-    ⚠️ **観測値を差し込む点はここ1箇所だけである。** design.md は「観測があれば
-    `measurements.json` の代表値、無ければ公称値の半分」と定めるが、観測記録は
-    タスク 2.4 まで存在しないため、現時点では公称値の半分をそのまま返す。
+    ⚠️ **観測値を差し込む点はここ1箇所だけである。** design.md の定めるとおり
+    「観測があれば `measurements.json` の代表値、無ければ公称値の半分」を返す。
+    ⚠️ **どちらを使ったかは `derive_layout` の `provenance` に現れる**——観測を
+    使った場合、畳み込みからは `wheel.nominal_diameter_mm` の寄与が外れる。
 
     ⚠️ **観測の読み手をここへ置かない**——`assembly` は本モジュールの右側の層で
-    あり、import すれば依存方向が逆になる（モジュール docstring）。タスク 2.4 は
-    代表値を**引数として**受け取る形へこの関数を広げるだけでよく、`derive_layout`
-    の積み上げそのものを組み替える必要はない——鉛直スタックの全高さは、この戻り値
-    と公称値との差（荷重による縮み）から組み上がっているためである。
+    あり、import すれば依存方向が逆になる（モジュール docstring）。観測は
+    `ObservedRollingRadius`（値＋出所）として**引数で**届く。組み立てて渡すのは
+    コマンド入口（`cli`）である（tasks.md「実効転がり半径の配線」）。
+
+    Args:
+        nominal_rolling_radius_mm: 公称径の半分。
+        observed: 荷重下の観測。`None` なら公称値の半分をそのまま返す。
+
+    Returns:
+        鉛直スタックの組み立てに用いる実効転がり半径（mm）。
     """
-    return nominal_rolling_radius_mm
+    if observed is None:
+        return nominal_rolling_radius_mm
+    return observed.radius_mm
 
 
-def derive_layout(params: ResolvedParams) -> ChassisLayout:
+def _load_compression_mm(
+    nominal_rolling_radius_mm: float, effective_rolling_radius_mm: float
+) -> float:
+    """荷重による縮み「公称 − 実効」を返す（要件 10.4 / 4.7）。
+
+    ⚠️ **この差の式はここ1箇所にしかない。** 鉛直スタックの全高さがこの補正で
+    下がり（`derive_layout`）、要件 10.4 が求める「公称値との差」も同じ量から
+    読む（`load_compression_mm`）——2箇所に書けば、片方だけが直った状態を
+    誰も検出できない。
+    """
+    return nominal_rolling_radius_mm - effective_rolling_radius_mm
+
+
+def load_compression_mm(layout: ChassisLayout, params: ResolvedParams) -> float:
+    """公称の転がり半径と実効転がり半径の差を返す（要件 10.4）。
+
+    要件 10.4 は「実効転がり径の測定手順と、**公称値との差**を記録する」と定める。
+    ⚠️ **差そのものを設定ファイルへ書かない。** 差は導出記録
+    `configs/chassis_mechanism/layout.json` の `vertical` が並べて持つ
+    `nominal_rolling_radius_mm` と `effective_rolling_radius_mm` から一意に決まる
+    従属量であり、3つ目の項目として書けば同じ値を2箇所で持つことになる。本関数は
+    その従属関係を**名前のある1箇所**に固定し、コマンド入口（`cli layout`）が
+    公称径・実効径・差を並べて表示する。⚠️ 測定**手順**の記録は
+    `measurements.json` の `wheels[].method` / `limitation_note` が持つ
+    （タスク 6.7 の所有）。
+
+    ⚠️ **`params` を取るのは、対が食い違っていないことを確かめるためである。**
+    公称の転がり半径は寸法パラメータ（`wheel.nominal_diameter_mm`）が正であり、
+    記録側の `vertical.nominal_rolling_radius_mm` はその写しである。両者が
+    食い違う組（古い記録を新しい寸法に対して読んだ場合）に差を計算させると、
+    ⚠️ **どちらの公称値に対する差なのかが分からない数**が要件 10.4 の記録として
+    出てしまう。
+
+    Args:
+        layout: `derive_layout` の戻り値、または `load_layout` の戻り値。
+        params: その導出に用いた `config.load_params()` の戻り値。
+
+    Returns:
+        「公称の転がり半径 − 実効転がり半径」（mm）。⚠️ **半径の差である**——
+        径の差はこの2倍であり、要件 10.4 が言う「径」の差を出すのは表示側の責務。
+        観測が無ければ 0.0 である（公称値をそのまま用いたため）。
+
+    Raises:
+        ConsistencyError: `layout` が記録する公称の転がり半径と `params` の
+            `wheel.nominal_diameter_mm / 2` が食い違う場合（対になっていない
+            寸法と幾何を渡した場合）。
+    """
+    nominal_rolling_radius_mm = params.chassis.wheel.nominal_diameter_mm / 2.0
+    recorded_nominal_mm = layout.vertical.nominal_rolling_radius_mm
+    if not math.isclose(
+        nominal_rolling_radius_mm, recorded_nominal_mm, rel_tol=0.0, abs_tol=_ABS_TOL
+    ):
+        raise ConsistencyError(
+            f"{_NOMINAL_ROLLING_RADIUS_KEY}={recorded_nominal_mm!r} は "
+            f"{_WHEEL_NOMINAL_DIAMETER_PATH}={params.chassis.wheel.nominal_diameter_mm!r} "
+            f"の半分 {nominal_rolling_radius_mm!r} と一致しない"
+            "（対になっていない寸法と幾何が渡されている。公称値との差を"
+            "どちらの公称値に対して出すのかが決まらない。要件 10.4）。"
+        )
+    return _load_compression_mm(
+        recorded_nominal_mm,
+        layout.vertical.effective_rolling_radius_mm,
+    )
+
+
+def derive_layout(
+    params: ResolvedParams,
+    observed_rolling_radius: ObservedRollingRadius | None = None,
+) -> ChassisLayout:
     """寸法パラメータから幾何を導出する（要件 3.1-3.6, 3.9, 4.1, 7.8）。
 
     ⚠️ **ホイール配置半径の式はここにしか無い**（tasks.md タスク 2.1）。
@@ -728,9 +876,17 @@ def derive_layout(params: ResolvedParams) -> ChassisLayout:
             ゴミ箱の採寸値）は本関数の入力に**入らない**——幾何は本 Spec 固有の
             寸法だけから決まり、整備スタンドの設計入力を配置半径と現物採寸値に
             限れる（要件 5.2）ための性質である。
+        observed_rolling_radius: 荷重下で観測された実効転がり半径（値＋出所）。
+            `None` なら公称値の半分を用いる。⚠️ **`ResolvedParams` へ混ぜて
+            渡さない**（`Config` が `Assembly` へ依存して依存方向が逆転し、
+            パラメータ識別子が観測のたびに動く）。組み立てるのは `cli` である。
 
     Returns:
-        導出結果。`provenance` は入力の最弱を継承する。
+        導出結果。`provenance` は入力の最弱を継承する。⚠️ **観測を用いた場合、
+        畳み込みからは `wheel.nominal_diameter_mm` の寄与が外れ、観測側の出所へ
+        差し替わる**（design.md `#### Layout` Implementation Notes）——使わな
+        かった公称値の出所を継承し続けると、実測を使ったのに仮値を名乗る
+        （またはその逆の）導出結果が下流へ流れる。
 
     Raises:
         GeometryError: アームが成立しない場合（長さが正でない、または接合部の
@@ -787,7 +943,9 @@ def derive_layout(params: ResolvedParams) -> ChassisLayout:
     )
 
     nominal_rolling_radius_mm = chassis.wheel.nominal_diameter_mm / 2.0
-    effective_rolling_radius_mm = _effective_rolling_radius_mm(nominal_rolling_radius_mm)
+    effective_rolling_radius_mm = _effective_rolling_radius_mm(
+        nominal_rolling_radius_mm, observed_rolling_radius
+    )
 
     # ⚠️ **取付面の高さは定数ではない。** `bracket.mount_face_to_contact_mm` は
     # ホイールを付けた状態で測った「取付面 → 接地点」であり、⚠️ **公称の転がり
@@ -802,10 +960,16 @@ def derive_layout(params: ResolvedParams) -> ChassisLayout:
     # 取付面高さはちょうど実測距離に等しい——要件 4.1（「モータ取付面から接地点
     # までの実測距離から導出する」）が定める**出所**はそのまま保たれる
     # （4.1 が固定するのは出所であって、荷重下でも高さが動かないことではない）。
-    load_compression_mm = nominal_rolling_radius_mm - effective_rolling_radius_mm
-    mount_face_height_mm = bracket.mount_face_to_contact_mm - load_compression_mm
+    compression_mm = _load_compression_mm(
+        nominal_rolling_radius_mm, effective_rolling_radius_mm
+    )
+    mount_face_height_mm = bracket.mount_face_to_contact_mm - compression_mm
     vertical = VerticalStack(
         effective_rolling_radius_mm=effective_rolling_radius_mm,
+        # ⚠️ **公称値を必ず並べて持つ。** これが無いと、観測で置き換えた記録と
+        # 公称値のままの記録が同じ形になり、`ASSUMPTIONS` の「公称値の半分を用いる」
+        # という主張を記録の側から反証できない（要件 11.3）。
+        nominal_rolling_radius_mm=nominal_rolling_radius_mm,
         axle_center_height_mm=effective_rolling_radius_mm,
         motor_body_bottom_height_mm=(
             effective_rolling_radius_mm - chassis.motor.body_diameter_mm / 2.0
@@ -834,8 +998,20 @@ def derive_layout(params: ResolvedParams) -> ChassisLayout:
         note=TIPPING_NOTE,
     )
 
+    # ⚠️ **観測を使ったなら、使わなかった公称値の出所を継承しない**
+    # （design.md `#### Layout` Implementation Notes）。実効転がり半径を
+    # `measurements.json` の代表値で置き換えた以上、`wheel.nominal_diameter_mm`
+    # はこの導出の入力ではない——それを畳み込みに残せば、⚠️ **実測を使ったのに
+    # 仮値を名乗る**（公称が仮値のとき）か、⚠️ **概算の観測を使ったのに実測を
+    # 名乗る**（公称が実測のとき）かのどちらかが起きる。前者は測った値を捨てさせ、
+    # 後者は測っていない値を実測として下流へ流す。
     paths = _LAYOUT_INPUT_PATHS + _mass_item_paths(chassis)
-    provenance = weakest_provenance(*(_provenance_of(chassis, path) for path in paths))
+    if observed_rolling_radius is not None:
+        paths = tuple(path for path in paths if path != _WHEEL_NOMINAL_DIAMETER_PATH)
+    provenances = [_provenance_of(chassis, path) for path in paths]
+    if observed_rolling_radius is not None:
+        provenances.append(observed_rolling_radius.provenance)
+    provenance = weakest_provenance(*provenances)
 
     return ChassisLayout(
         base_radius_mm=base_radius_mm,
@@ -893,6 +1069,9 @@ def _to_document(layout: ChassisLayout) -> dict[str, object]:
         _VERTICAL_KEY: {
             _EFFECTIVE_ROLLING_RADIUS_KEY: _rounded(
                 layout.vertical.effective_rolling_radius_mm
+            ),
+            _NOMINAL_ROLLING_RADIUS_KEY: _rounded(
+                layout.vertical.nominal_rolling_radius_mm
             ),
             _AXLE_CENTER_KEY: _rounded(layout.vertical.axle_center_height_mm),
             _MOTOR_BODY_BOTTOM_KEY: _rounded(layout.vertical.motor_body_bottom_height_mm),
@@ -1104,6 +1283,9 @@ def load_layout(path: Path | None = None) -> ChassisLayout:
     vertical = VerticalStack(
         effective_rolling_radius_mm=_number(
             vertical_document, _EFFECTIVE_ROLLING_RADIUS_KEY, vertical_label
+        ),
+        nominal_rolling_radius_mm=_number(
+            vertical_document, _NOMINAL_ROLLING_RADIUS_KEY, vertical_label
         ),
         axle_center_height_mm=_number(
             vertical_document, _AXLE_CENTER_KEY, vertical_label

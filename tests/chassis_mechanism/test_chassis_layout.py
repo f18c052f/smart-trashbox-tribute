@@ -52,6 +52,7 @@ from chassis_mechanism.layout import (
     REQUIRED_INPUT_NAMES,
     TIPPING_NOTE,
     ChassisLayout,
+    ObservedRollingRadius,
     TippingEstimate,
     VerticalStack,
     derive_layout,
@@ -447,6 +448,7 @@ def test_motor_body_bottom_level_with_the_axle_center_is_rejected() -> None:
     with pytest.raises(GeometryError) as excinfo:
         VerticalStack(
             effective_rolling_radius_mm=30.0,
+            nominal_rolling_radius_mm=30.0,
             axle_center_height_mm=30.0,
             motor_body_bottom_height_mm=30.0,
             mount_face_height_mm=60.0,
@@ -466,6 +468,7 @@ def test_fastener_bottom_level_with_the_axle_center_is_rejected() -> None:
     with pytest.raises(GeometryError) as excinfo:
         VerticalStack(
             effective_rolling_radius_mm=30.0,
+            nominal_rolling_radius_mm=30.0,
             axle_center_height_mm=30.0,
             motor_body_bottom_height_mm=11.5,
             mount_face_height_mm=60.0,
@@ -486,6 +489,7 @@ def test_fastener_bottom_level_with_the_mount_face_is_accepted() -> None:
     """
     vertical = VerticalStack(
         effective_rolling_radius_mm=30.0,
+        nominal_rolling_radius_mm=30.0,
         axle_center_height_mm=30.0,
         motor_body_bottom_height_mm=11.5,
         mount_face_height_mm=60.0,
@@ -507,11 +511,31 @@ def test_zero_fastener_protrusion_derives_a_flush_mount_face() -> None:
     )
 
 
+def test_vertical_stack_rejects_a_non_positive_nominal_rolling_radius() -> None:
+    """公称の転がり半径も正でなければならない。
+
+    ⚠️ **記録の読み戻しがこの型を通る**（`load_layout`）。0 や負の公称値を
+    受け付けると、「公称と実効の一致／不一致」という**どちらの入力を使ったかの
+    印**が意味を失った記録が読めてしまう。
+    """
+    with pytest.raises(GeometryError) as excinfo:
+        VerticalStack(
+            effective_rolling_radius_mm=30.0,
+            nominal_rolling_radius_mm=0.0,
+            axle_center_height_mm=30.0,
+            motor_body_bottom_height_mm=11.5,
+            mount_face_height_mm=60.0,
+            fastener_bottom_height_mm=57.0,
+        )
+    assert "nominal_rolling_radius_mm" in str(excinfo.value)
+
+
 def test_vertical_stack_rejects_an_axle_center_that_is_not_the_rolling_radius() -> None:
     """車軸中心高さは実効転がり半径と一致する（定義であり、記録でも崩せない）。"""
     with pytest.raises(GeometryError):
         VerticalStack(
             effective_rolling_radius_mm=30.0,
+            nominal_rolling_radius_mm=30.0,
             axle_center_height_mm=31.0,
             motor_body_bottom_height_mm=11.5,
             mount_face_height_mm=60.0,
@@ -652,6 +676,101 @@ def test_effective_rolling_radius_comes_from_the_nominal_value_for_now() -> None
             assert "assembly" not in node.module
 
 
+def test_a_record_derived_from_an_observation_never_claims_the_nominal_half(
+    tmp_path: Path,
+) -> None:
+    """⚠️ **観測で導いた記録が「公称値の半分を仮定した」と名乗らない**（要件 11.3）。
+
+    本 Spec が繰り返し作ってきた事故は「実測を使ったのに仮値を名乗る」であり、
+    ⚠️ **今回それは数ではなく記録の散文で起きうる**。`ASSUMPTIONS` は無条件の
+    定数であり、`load_layout` は記録がこの定数と**一字一句一致する**ことを要求
+    する。したがって「観測記録がまだ存在しないため公称値の半分を用いる」と
+    書いてある限り、代表値を記入して導いた記録も同じ主張を載せて出てくる
+    ——`effective_rolling_radius_mm` が 29.25 でありながら「公称の半分を用いた」と
+    述べる記録が、再測せずこれを読む下流（要件 11.3）へ流れる。
+
+    固定するのは2点である。
+
+    1. **前提文はどちらの場合にも真な規則である**こと（条件節を持ち、両方の
+       入力元を名指しする）。
+    2. ⚠️ **どちらを使ったかは記録そのものが示す**こと——`vertical` が公称と
+       実効を**並べて**持ち、観測を使った記録では両者が食い違う。前提文が
+       規則になっただけでは、記録を読んだ人はどちらが起きたのか分からない。
+    """
+    params = _params()
+    nominal_radius_mm = params.chassis.wheel.nominal_diameter_mm / 2.0
+    observed_radius_mm = nominal_radius_mm - _COMPRESSION_MM
+    path = tmp_path / "layout.json"
+    dump_layout(
+        derive_layout(
+            params,
+            ObservedRollingRadius(
+                radius_mm=observed_radius_mm, provenance=Provenance.MEASURED
+            ),
+        ),
+        path,
+    )
+    document = json.loads(path.read_text(encoding="utf-8"))
+
+    # 2. 記録が入力元を自分で示す。
+    vertical = document["vertical"]
+    assert vertical["effective_rolling_radius_mm"] == pytest.approx(observed_radius_mm)
+    assert vertical["nominal_rolling_radius_mm"] == pytest.approx(nominal_radius_mm)
+    assert (
+        vertical["nominal_rolling_radius_mm"] != vertical["effective_rolling_radius_mm"]
+    ), "観測を使った記録が公称値のままの記録と同じ形になっている"
+
+    # 1. 前提文は規則であり、無条件の主張ではない。
+    (sentence,) = [
+        text
+        for text in document["assumptions"]
+        if layout_module._EFFECTIVE_ROLLING_RADIUS_KEY.removesuffix("_mm") in text
+        or "実効転がり半径は" in text
+    ]
+    assert "まだ存在しない" not in sentence, (
+        f"前提文が「観測はまだ無い」と無条件に述べている: {sentence}"
+    )
+    assert "記入されていれば" in sentence and "記入されていなければ" in sentence, (
+        f"前提文が条件節を持たない（どちらの場合にも真な規則になっていない）: {sentence}"
+    )
+    for key in (
+        layout_module._NOMINAL_ROLLING_RADIUS_KEY,
+        layout_module._EFFECTIVE_ROLLING_RADIUS_KEY,
+    ):
+        assert key in sentence, (
+            f"前提文が記録のどの項目を見れば分かるかを示していない（{key} が無い）"
+        )
+
+    # 3. 読み戻した記録からも同じことが読める（記録は往復して同じ主張を保つ）。
+    reloaded = load_layout(path)
+    assert reloaded.vertical.nominal_rolling_radius_mm == pytest.approx(
+        nominal_radius_mm
+    )
+    assert reloaded.vertical.effective_rolling_radius_mm == pytest.approx(
+        observed_radius_mm
+    )
+
+
+def test_a_record_derived_without_an_observation_records_the_two_radii_as_equal(
+    tmp_path: Path,
+) -> None:
+    """⚠️ **逆向きも固定する。** 観測が無ければ公称と実効は記録の上で一致する。
+
+    一致／不一致が「どちらの入力を使ったか」の印である以上、観測の無い記録が
+    食い違いを見せてはならない——見せれば、組立前の記録が「観測を使った」と
+    読まれる。
+    """
+    path = tmp_path / "layout.json"
+    dump_layout(derive_layout(_params()), path)
+    vertical = json.loads(path.read_text(encoding="utf-8"))["vertical"]
+    assert vertical["nominal_rolling_radius_mm"] == pytest.approx(
+        _params().chassis.wheel.nominal_diameter_mm / 2.0
+    )
+    assert (
+        vertical["nominal_rolling_radius_mm"] == vertical["effective_rolling_radius_mm"]
+    )
+
+
 # ---------------------------------------------------------------------------
 # 7. 観測可能な完了状態（tasks.md タスク 2.1）
 # ---------------------------------------------------------------------------
@@ -754,7 +873,10 @@ def test_a_compressed_rolling_radius_lowers_every_height_in_the_stack(
     monkeypatch.setattr(
         layout_module,
         "_effective_rolling_radius_mm",
-        lambda nominal_mm: nominal_mm - _COMPRESSION_MM,
+        # ⚠️ 第2引数は観測（`ObservedRollingRadius`。タスク 4.1 が配線した）。
+        # 本件は観測**無し**で縮んだ状態を作るため受け取って捨てる——差し替え点が
+        # 1箇所であることは変わっていない。
+        lambda nominal_mm, observed=None: nominal_mm - _COMPRESSION_MM,
     )
     after = derive_layout(params).vertical
     for name in (
@@ -792,6 +914,10 @@ def test_dump_layout_writes_inputs_formula_provenance_and_results(tmp_path: Path
     assert document["axial_stack_mm"] == pytest.approx(list(layout.axial_stack_mm))
     assert set(document["vertical"]) == {
         "effective_rolling_radius_mm",
+        # ⚠️ 公称の転がり半径を実効値と**並べて**記録する（タスク 4.1 の是正）。
+        # これが無いと、観測で置き換えた記録と公称値のままの記録が同じ形になり、
+        # 前提文の「公称値の半分を用いる」という主張を記録の側から反証できない。
+        "nominal_rolling_radius_mm",
         "axle_center_height_mm",
         "motor_body_bottom_height_mm",
         "mount_face_height_mm",

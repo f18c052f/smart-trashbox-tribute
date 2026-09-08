@@ -294,7 +294,10 @@ def test_derivation_from_a_config_file_lowers_all_five_heights_together(
     monkeypatch.setattr(
         layout_module,
         "_effective_rolling_radius_mm",
-        lambda nominal_mm: nominal_mm - compression_mm,
+        # ⚠️ 第2引数は観測（`layout.ObservedRollingRadius`。タスク 4.1 が配線した）。
+        # 本件は観測**無し**で縮んだ状態を作るため受け取って捨てる——差し替え点が
+        # 1箇所であることは変わっていない。
+        lambda nominal_mm, observed=None: nominal_mm - compression_mm,
     )
     after = {
         item.name: item.height_mm

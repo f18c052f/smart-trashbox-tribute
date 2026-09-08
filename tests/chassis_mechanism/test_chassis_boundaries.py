@@ -816,9 +816,19 @@ def test_upstream_importer_set_matches_the_component_sections() -> None:
     許可集合は Components 節から導いて `params` を含める。⚠️ 散文の側を黙って
     広げているのではなく、散文が挙げる4件が導出集合の**部分集合**であることを
     次のテストで固定し、どちらかが動けば落ちるようにしてある。
+
+    ⚠️ **`cli` はタスク 4.1 で加わった**（design.md `#### Cli` の Dependencies に
+    `- External: catch_mechanism の例外階層 …` を明記した）。design.md `#### Cli`
+    は「⚠️ **終了コード表は上流の例外階層も含む**（上流の失敗を包み直さない
+    ため）」と定めており、⚠️ **上流の例外の型を取らずにこの表は書けない**
+    ——型が無ければ上流の失敗は表に無い例外として既定値へ黙って落ち、
+    「上流の設定が壊れている」ことが終了コードから消える。⚠️ 緩めたのは
+    **公開入口の許可**だけであり、上流の**内部**モジュールへの import は
+    `find_upstream_internal_import_violations` が引き続きどのモジュールからも
+    禁じている。
     """
     assert UPSTREAM_IMPORT_ALLOWED_MODULES == frozenset(
-        {"params", "config", "joints", "baseline", "shapes"}
+        {"params", "config", "joints", "baseline", "shapes", "cli"}
     )
 
 
@@ -861,15 +871,25 @@ def test_only_designated_modules_import_upstream_in_current_tree() -> None:
         assert violations == [], f"{module_name}.py の想定外の上流 import: {violations}"
 
 
-@pytest.mark.parametrize("module_name", ["errors", "__init__", "layout", "clearance", "cli"])
+@pytest.mark.parametrize(
+    "module_name", ["errors", "__init__", "layout", "clearance", "assembly", "export"]
+)
 def test_detects_upstream_import_from_undesignated_module(module_name: str) -> None:
-    """違反ケース: 設計が上流依存を宣言していないモジュールが上流を import する。"""
+    """違反ケース: 設計が上流依存を宣言していないモジュールが上流を import する。
+
+    ⚠️ **`cli` はタスク 4.1 で許可側へ移った**（`#### Cli` の Dependencies に
+    `External: catch_mechanism …` を明記したため）。違反ケースの網を薄くしない
+    ため、代わりに `assembly` / `export`——どちらも design.md が上流依存を
+    宣言していないモジュールである——を並びへ足してある。
+    """
     fake_source = "from catch_mechanism import Provenance\n"
     violations = find_unexpected_upstream_importers(module_name, fake_source)
     assert violations != [], f"{module_name} の想定外の上流 import を検出できていない"
 
 
-@pytest.mark.parametrize("module_name", sorted({"params", "config", "joints", "baseline", "shapes"}))
+@pytest.mark.parametrize(
+    "module_name", sorted({"params", "config", "joints", "baseline", "shapes", "cli"})
+)
 def test_designated_modules_may_import_upstream(module_name: str) -> None:
     """設計が上流依存を宣言したモジュールの上流 import は違反ではない（誤検知回避）。
 
