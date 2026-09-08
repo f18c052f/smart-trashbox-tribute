@@ -199,7 +199,7 @@
   - _Depends: 1.3_
   - _Boundary: teleop_input, TeleopBuildProfile_
 
-- [ ] 4.2 パッド状態から指令への変換を実装し、ホストで検証する
+- [x] 4.2 パッド状態から指令への変換を実装し、ホストで検証する
   - 押している間だけ出力を許可し、離した時点で許可を取り消す
   - 左スティックを並進速度指令へ、右スティックの横方向を回転速度指令へ対応付ける
   - 台上での輪単体テストのために、対象とする輪を選んで単独で回せる指令を作る
@@ -605,3 +605,16 @@
   持たず、後続タスクで拡張する」という前例（1.3→1.4）に倣ったものであり、
   **tasks.md 側にこの拡張を明示的に担うタスクが今のところ無い**。
   BoundaryCheck に次に触るタスクで拾うこと。
+- **タスク 4.2**: ⚠️ **`firmware/lib/teleop_input/CMakeLists.txt` の SRCS は
+  glob ではなく明示リストである。** 新規ファイルを足すたびに SRCS へ追記し、
+  drivetrain_control 型を使うなら REQUIRES drivetrain_control も要ることを
+  クリーンビルドで確認すること（board_pins と違い glob 前提を置かない）。
+- **タスク 4.2**: 輪単体スピン時の速度は `pad.left_y` を流用し、上限は
+  `MappingParams.max_body_mm_s` を輪表面速度の上限として転用している。
+  いずれも要件・design.md に明記が無い実装判断（OQ-17 / M2a の実走調整対象）。
+  専用フィールドが要ると分かったら、そのときに `MappingParams` へ足すこと。
+- **タスク 4.2**: `pad.selected_wheel` が `[0, kWheelCount)` にも
+  「機体走行」を表す値にも当たらない場合（境界外の値）、`wheel_scoped=true`・
+  `output_enabled=true` のまま body/wheel 両方が全ゼロになる安全側の
+  無害な組み合わせに落ちる。`PadState` 自身の契約上起こらないはずだが、
+  未文書化のまま残っている。
