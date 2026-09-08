@@ -79,6 +79,8 @@ SDKCONFIG_PRODUCTION_PATH = FIRMWARE_DIR / "sdkconfig.defaults.production"
 TEST_NATIVE_DIR = FIRMWARE_DIR / "test" / "native"
 TEST_EMBEDDED_DIR = FIRMWARE_DIR / "test" / "embedded"
 LIB_INCLUDE_ROOT_DIR = FIRMWARE_DIR / "lib" / "drivetrain_control" / "include" / "drivetrain_control"
+# teleop-bringup タスク 3.4（要件 17.3, 17.5）: アダプタ層（3.1〜3.3 の3実装）。
+TELEOP_SRC_DIR = FIRMWARE_DIR / "src" / "teleop"
 
 PLATFORMIO_INI_TEXT = PLATFORMIO_INI_PATH.read_text(encoding="utf-8")
 ROOT_CMAKE_TEXT = ROOT_CMAKE_PATH.read_text(encoding="utf-8")
@@ -2478,3 +2480,474 @@ def test_does_not_flag_board_pins_legitimate_includes_in_crafted_input() -> None
         "}  // namespace board_pins\n"
     )
     assert find_forbidden_peripheral_includes(fake_header) == []
+
+
+# =============================================================================
+# 11. アダプタ層に判断が持ち込まれていないことを静的に検査する
+#     （teleop-bringup タスク 3.4、要件 17.3, 17.5）
+#
+# タスク 3.1〜3.3 が実装した3アダプタ（`firmware/src/teleop/*`）は、いずれも
+# 「判断・計算を持たない」ことを自身のヘッダコメントで明言している
+# （`EncoderPcntAdapter` は折り返しの桁上げを `WrapAccumulator` へ、
+# `BatteryAdcAdapter` は生値→ミリボルト換算を `VoltageScaler` へ委譲し、
+# `MotorLedcAdapter` は独自のクランプ・補正を一切加えない）。本節はこれを
+# コメントの言明としてではなく、静的検査として固定する。
+#
+# 要件 17.5（公開されていない内部構造への依存を検査で検出する）について:
+# `drivetrain_control/drivetrain_control.hpp` 自身の冒頭コメントが
+# 「下流はこのヘッダだけを include する」と明言しており、これが本節の
+# 適用対象である `firmware/src/teleop/**` そのものを指す（teleop-bringup は
+# `drivetrain_control` の唯一の下流 Spec の一つ）。ところが3アダプタの
+# `.hpp` は実装時点で `ports.hpp` / `types.hpp` / `wrap_accumulator.hpp` /
+# `voltage_scaler.hpp` / `config.hpp` を個別に直接 include しており、この
+# 契約に反していた。⚠️ **本タスクはこれを検査の新設と同時に是正した**
+# （include 行の置き換えのみ。ロジックは一切変更していない）:
+#   - `encoder_pcnt.hpp`: `ports.hpp` / `types.hpp` / `wrap_accumulator.hpp`
+#     → `drivetrain_control/drivetrain_control.hpp` の1行へ統合。
+#   - `motor_ledc.hpp`: `ports.hpp` / `types.hpp` → 同上。
+#   - `battery_adc.hpp`: `config.hpp` / `ports.hpp` / `types.hpp` /
+#     `voltage_scaler.hpp` → 同上。
+# 置き換え後に必要なシンボル（`EncoderPort` / `MotorOutputPort` /
+# `BatteryVoltagePort` / `EncoderCounts` / `WheelOutputs` / `VoltageSample` /
+# `WrapAccumulator` / `VoltageScaler` / `VoltageScalerParams`）はいずれも
+# `drivetrain_control.hpp` が再エクスポートする一覧に含まれる
+# （同ヘッダ冒頭コメント参照）。`.cpp` 側は元々それぞれの `.hpp` のみを
+# include しており、変更不要だった。
+#
+# 要件 17.3（判断・計算ロジックの回帰的検査）について: 「アダプタが独自の
+# 判断ロジックを持ち込んでいない」ことを一般に機械検査するのは困難だが、
+# タスク 3.1〜3.3 の設計判断が「委譲すべき計算の入口」を明確に1本ずつに
+# 絞っている（`WrapAccumulator::update()` / `VoltageScaler::toMilliVolts()`）
+# ため、「核が提供する換算結果を出力フィールドへ渡す代入の右辺が、必ず
+# その委譲呼び出し1つに一致する」という形で固定できる。`MotorLedcAdapter`
+# は委譲すべき部品を持たない（クランプ自体を禁じる設計）ため、
+# クランプ的パターン（`std::min/max/clamp` 呼び出し、または
+# `if (x 比較) x = ...;` という自己代入）の不在を直接検査する。
+# ---------------------------------------------------------------------------
+
+
+def _teleop_files() -> list[Path]:
+    """`firmware/src/teleop/` 配下の実ファイル（ヘッダ＋実装）を列挙する。"""
+    return sorted(TELEOP_SRC_DIR.glob("*.hpp")) + sorted(TELEOP_SRC_DIR.glob("*.cpp"))
+
+
+def test_teleop_files_is_non_empty() -> None:
+    """走査対象そのものが空振りでないことを確認する（前提の健全性）。"""
+    assert _teleop_files() != []
+
+
+def test_teleop_file_list_contains_the_known_adapter_files() -> None:
+    """空虚な緑の防止: 走査対象が実際に3アダプタの `.hpp`/`.cpp` を含んでいる。"""
+    names = {p.name for p in _teleop_files()}
+    assert {
+        "encoder_pcnt.hpp",
+        "encoder_pcnt.cpp",
+        "motor_ledc.hpp",
+        "motor_ledc.cpp",
+        "battery_adc.hpp",
+        "battery_adc.cpp",
+    } <= names
+
+
+def _violations_across_teleop_files(
+    check: Callable[[str], list[str]],
+) -> dict[str, list[str]]:
+    """`check` を `firmware/src/teleop` の全ファイルへ適用し、違反があった
+    ファイルのみを集める（`_violations_across_pure_logic_files` のアダプタ版）。
+    """
+    result: dict[str, list[str]] = {}
+    for path in _teleop_files():
+        violations = check(path.read_text(encoding="utf-8"))
+        if violations:
+            result[str(path.relative_to(REPO_ROOT))] = violations
+    return result
+
+
+# ---------------------------------------------------------------------------
+# 11a. 公開入口だけを使うこと（要件 17.5）
+# ---------------------------------------------------------------------------
+
+
+def find_disallowed_drivetrain_control_includes(text: str) -> list[str]:
+    """`drivetrain_control/` 配下のヘッダのうち、公開入口
+    （`drivetrain_control/drivetrain_control.hpp`）以外への直接 include を検出する。
+
+    該当すれば `#include` のヘッダ文字列（例:
+    `drivetrain_control/wrap_accumulator.hpp`）の一覧を返す。空列であれば
+    違反なし。`drivetrain_control/drivetrain_control.hpp` 自身の include は
+    許可する（それが公開入口そのものである）。
+    """
+    stripped = strip_cpp_comments(text)
+    violations = []
+    for match in _INCLUDE_TARGET_PATTERN.finditer(stripped):
+        header = match.group(1)
+        if header.startswith("drivetrain_control/") and header != "drivetrain_control/drivetrain_control.hpp":
+            violations.append(header)
+    return violations
+
+
+def test_no_teleop_file_includes_drivetrain_control_internal_headers_directly() -> None:
+    """要件 17.5: `firmware/src/teleop/**` は `drivetrain_control` の公開入口
+    （`drivetrain_control.hpp`）だけを include し、内部の個別ヘッダを直接
+    include しない。
+    """
+    violations = _violations_across_teleop_files(find_disallowed_drivetrain_control_includes)
+    assert violations == {}, f"drivetrain_control の内部ヘッダへの直接 include が混入している: {violations}"
+
+
+@pytest.mark.parametrize(
+    "internal_header",
+    [
+        "drivetrain_control/ports.hpp",
+        "drivetrain_control/types.hpp",
+        "drivetrain_control/wrap_accumulator.hpp",
+        "drivetrain_control/voltage_scaler.hpp",
+        "drivetrain_control/config.hpp",
+    ],
+)
+def test_detects_internal_drivetrain_control_header_include_in_crafted_input(
+    internal_header: str,
+) -> None:
+    """違反ケース: 公開入口ではない内部ヘッダへの直接 include が検出される。"""
+    fake_header = f'#pragma once\n#include "{internal_header}"\n'
+    violations = find_disallowed_drivetrain_control_includes(fake_header)
+    assert violations != []
+    assert internal_header in violations
+
+
+def test_does_not_flag_public_entry_header_in_crafted_input() -> None:
+    """誤検知回避: 公開入口 `drivetrain_control.hpp` 自身の include は違反にしない。"""
+    fake_header = (
+        "#pragma once\n"
+        '#include "board_pins/pin_map.hpp"\n'
+        '#include "drivetrain_control/drivetrain_control.hpp"\n'
+    )
+    assert find_disallowed_drivetrain_control_includes(fake_header) == []
+
+
+# ---------------------------------------------------------------------------
+# 11b. 関数本体の抽出（波括弧の深さを数える汎用ヘルパ）
+#
+# 11c/11d/11e が「特定のメンバ関数の本体だけ」を検査対象にするために使う。
+# 正規表現の単純な非貪欲マッチ（`\{.*?\}`）は関数内のネストした波括弧
+# （for/if 等）で誤って早期に閉じてしまうため、深さを数える。
+# ---------------------------------------------------------------------------
+
+
+def extract_function_body(text: str, signature_pattern: str) -> str | None:
+    """`signature_pattern` にマッチする関数シグネチャ直後の `{` から、対応する
+    閉じ `}` までの本体テキスト（波括弧自身は含まない）を取り出す。
+
+    `signature_pattern` は末尾が `\\{` で終わる正規表現であること（マッチ
+    末尾の直前の文字が開き波括弧である前提）。シグネチャが見つからない、
+    または対応する閉じ波括弧が無い場合は `None` を返す（「検査対象の関数が
+    見当たらない」ことを、違反0件の場合と区別できるようにする）。
+    """
+    match = re.search(signature_pattern, text)
+    if match is None:
+        return None
+    start = match.end() - 1
+    if start < 0 or start >= len(text) or text[start] != "{":
+        return None
+    depth = 0
+    for i in range(start, len(text)):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start + 1 : i]
+    return None
+
+
+def test_extract_function_body_handles_nested_braces() -> None:
+    fake_cpp = (
+        "int Foo::bar() {\n"
+        "  for (int i = 0; i < 1; ++i) {\n"
+        "    if (i == 0) {\n"
+        "      doStuff();\n"
+        "    }\n"
+        "  }\n"
+        "  return 1;\n"
+        "}\n"
+    )
+    body = extract_function_body(fake_cpp, r"Foo::bar\s*\(\s*\)\s*\{")
+    assert body is not None
+    assert "doStuff();" in body
+    assert body.count("{") == body.count("}")
+
+
+def test_extract_function_body_returns_none_when_signature_absent() -> None:
+    assert extract_function_body("int Foo::other() { return 0; }\n", r"Foo::bar\s*\(\s*\)\s*\{") is None
+
+
+# ---------------------------------------------------------------------------
+# 汎用: 「出力フィールドへの代入の右辺が、指定した委譲呼び出し1つに一致するか」
+# ---------------------------------------------------------------------------
+
+_ASSIGNMENT_STATEMENT_PATTERN = re.compile(
+    r"([A-Za-z_][\w.]*(?:\[[^\]]*\])?)\s*(?<![=!<>+\-*/%&|^])=(?!=)\s*([^;{}]+);"
+)
+"""`lhs = rhs;` の形の単純代入文を抽出する。`==` / `!=` / `<=` / `>=` /
+`+=` 等の複合代入・比較演算子は、代入演算子 `=` の直前の文字を除外する
+否定後読みで取り除く。"""
+
+
+def find_assignments_not_delegated(
+    body: str, lhs_keyword: str, allowed_rhs_pattern: re.Pattern[str]
+) -> list[str]:
+    """`body` 内の代入文のうち、左辺に `lhs_keyword`（小文字比較）を含むものを
+    対象に、右辺が `allowed_rhs_pattern` に完全一致（`fullmatch`）しないものを
+    違反として返す。`lhs = rhs` の文字列表現の一覧。空列であれば違反なし。
+    """
+    violations = []
+    for match in _ASSIGNMENT_STATEMENT_PATTERN.finditer(body):
+        lhs, rhs = match.group(1), match.group(2).strip()
+        if lhs_keyword not in lhs.lower():
+            continue
+        if not allowed_rhs_pattern.fullmatch(rhs):
+            violations.append(f"{lhs} = {rhs}")
+    return violations
+
+
+# ---------------------------------------------------------------------------
+# 11c. EncoderPcntAdapter::read(): 折り返しの桁上げは WrapAccumulator へ
+#      委譲されていること（要件 17.3, 4.3）
+# ---------------------------------------------------------------------------
+
+_ENCODER_READ_SIGNATURE_PATTERN = r"EncoderPcntAdapter::read\s*\(\s*\)\s*\{"
+_ENCODER_UPDATE_DELEGATION_PATTERN = re.compile(r"[A-Za-z_]\w*\[[^\]]*\]\.update\([^;]*\)")
+
+
+def find_encoder_wrap_carry_not_delegated(text: str) -> list[str]:
+    """`EncoderPcntAdapter::read()` 内で、累積カウント（`count` を含む変数）
+    への代入の右辺が `accumulators_[...].update(...)` の呼び出し1つに一致
+    しない箇所を検出する（要件 17.3, 4.3）。
+
+    `read()` が見つからないファイル（他の2アダプタ等）には適用対象が無い
+    ため空列を返す。
+    """
+    stripped = strip_cpp_comments(text)
+    body = extract_function_body(stripped, _ENCODER_READ_SIGNATURE_PATTERN)
+    if body is None:
+        return []
+    return find_assignments_not_delegated(body, "count", _ENCODER_UPDATE_DELEGATION_PATTERN)
+
+
+def test_encoder_read_delegates_wrap_carry_to_wrap_accumulator() -> None:
+    text = (TELEOP_SRC_DIR / "encoder_pcnt.cpp").read_text(encoding="utf-8")
+    assert find_encoder_wrap_carry_not_delegated(text) == []
+
+
+def test_extract_function_body_locates_the_real_encoder_read_method() -> None:
+    """空虚な緑の防止: 実ファイルに対して `read()` の本体が実際に見つかり、
+    委譲呼び出しを含んでいることを確かめる（シグネチャの変更で常に `None`
+    を返しているだけ、ではないことの担保）。
+    """
+    stripped = strip_cpp_comments((TELEOP_SRC_DIR / "encoder_pcnt.cpp").read_text(encoding="utf-8"))
+    body = extract_function_body(stripped, _ENCODER_READ_SIGNATURE_PATTERN)
+    assert body is not None
+    assert "accumulators_" in body
+    assert ".update(" in body
+
+
+def test_detects_manual_wrap_carry_arithmetic_in_crafted_encoder_input() -> None:
+    """違反ケース: 折り返しの桁上げを自前の加減算で行う架空の `read()` が検出される。"""
+    fake_cpp = (
+        "drivetrain_control::EncoderCounts EncoderPcntAdapter::read() {\n"
+        "  drivetrain_control::EncoderCounts counts{};\n"
+        "  for (std::uint8_t wheel = 0; wheel < drivetrain_control::kWheelCount; ++wheel) {\n"
+        "    int raw = 0;\n"
+        "    ESP_ERROR_CHECK(pcnt_unit_get_count(units_[wheel], &raw));\n"
+        "    std::int64_t delta = raw - last_raw_[wheel];\n"
+        "    if (delta < -32768) { delta += 65536; }\n"
+        "    if (delta > 32768) { delta -= 65536; }\n"
+        "    accum_[wheel] += delta;\n"
+        "    counts.count[wheel] = accum_[wheel];\n"
+        "  }\n"
+        "  return counts;\n"
+        "}\n"
+    )
+    violations = find_encoder_wrap_carry_not_delegated(fake_cpp)
+    assert violations != []
+    assert any("accum_" in v for v in violations)
+
+
+def test_detects_manual_modulus_wrap_arithmetic_in_crafted_encoder_input() -> None:
+    """違反ケース: `.update()` を呼ばず法演算を直接右辺へ書いた架空の `read()` が検出される。"""
+    fake_cpp = (
+        "drivetrain_control::EncoderCounts EncoderPcntAdapter::read() {\n"
+        "  drivetrain_control::EncoderCounts counts{};\n"
+        "  int raw = 0;\n"
+        "  ESP_ERROR_CHECK(pcnt_unit_get_count(units_[0], &raw));\n"
+        "  counts.count[0] = static_cast<std::int64_t>(raw) % 65536;\n"
+        "  return counts;\n"
+        "}\n"
+    )
+    violations = find_encoder_wrap_carry_not_delegated(fake_cpp)
+    assert violations != []
+    assert any("% 65536" in v for v in violations)
+
+
+def test_does_not_flag_unrelated_file_for_encoder_check_in_crafted_input() -> None:
+    """誤検知回避: `read()` を持たない架空の入力には適用対象が無い（空列）。"""
+    assert find_encoder_wrap_carry_not_delegated("void SomethingElse() {}\n") == []
+
+
+# ---------------------------------------------------------------------------
+# 11d. BatteryAdcAdapter::read(): 生値→ミリボルト換算は VoltageScaler へ
+#      委譲されていること（要件 17.3, 6.3）
+# ---------------------------------------------------------------------------
+
+_BATTERY_READ_SIGNATURE_PATTERN = r"BatteryAdcAdapter::read\s*\(\s*\)\s*\{"
+_VOLTAGE_SCALER_DELEGATION_PATTERN = re.compile(r"[A-Za-z_]\w*\.toMilliVolts\([^;]*\)")
+
+
+def find_battery_voltage_conversion_not_delegated(text: str) -> list[str]:
+    """`BatteryAdcAdapter::read()` 内で、`milli_volts` を含む変数への代入の
+    右辺が `scaler_.toMilliVolts(...)` の呼び出し1つに一致しない箇所を検出
+    する（要件 17.3, 6.3）。`read()` が見つからないファイルには適用対象が
+    無いため空列を返す。
+    """
+    stripped = strip_cpp_comments(text)
+    body = extract_function_body(stripped, _BATTERY_READ_SIGNATURE_PATTERN)
+    if body is None:
+        return []
+    return find_assignments_not_delegated(body, "milli_volts", _VOLTAGE_SCALER_DELEGATION_PATTERN)
+
+
+def test_battery_read_delegates_voltage_conversion_to_voltage_scaler() -> None:
+    text = (TELEOP_SRC_DIR / "battery_adc.cpp").read_text(encoding="utf-8")
+    assert find_battery_voltage_conversion_not_delegated(text) == []
+
+
+def test_extract_function_body_locates_the_real_battery_read_method() -> None:
+    """空虚な緑の防止: 実ファイルに対して `read()` の本体が実際に見つかり、
+    委譲呼び出しを含んでいることを確かめる。
+    """
+    stripped = strip_cpp_comments((TELEOP_SRC_DIR / "battery_adc.cpp").read_text(encoding="utf-8"))
+    body = extract_function_body(stripped, _BATTERY_READ_SIGNATURE_PATTERN)
+    assert body is not None
+    assert "scaler_" in body
+    assert ".toMilliVolts(" in body
+
+
+def test_detects_manual_voltage_scaling_arithmetic_in_crafted_battery_input() -> None:
+    """違反ケース: 分圧比の線形換算を自前の乗除算で行う架空の `read()` が検出される。"""
+    fake_cpp = (
+        "drivetrain_control::VoltageSample BatteryAdcAdapter::read() {\n"
+        "  drivetrain_control::VoltageSample sample;\n"
+        "  int raw = 0;\n"
+        "  if (adc_oneshot_read(unit_, channel_, &raw) != ESP_OK) { return sample; }\n"
+        "  sample.valid = true;\n"
+        "  sample.milli_volts = static_cast<std::int32_t>(raw) * 3300 / 4095;\n"
+        "  return sample;\n"
+        "}\n"
+    )
+    violations = find_battery_voltage_conversion_not_delegated(fake_cpp)
+    assert violations != []
+    assert any("3300" in v for v in violations)
+
+
+def test_does_not_flag_unrelated_file_for_battery_check_in_crafted_input() -> None:
+    """誤検知回避: `read()` を持たない架空の入力には適用対象が無い（空列）。"""
+    assert find_battery_voltage_conversion_not_delegated("void SomethingElse() {}\n") == []
+
+
+# ---------------------------------------------------------------------------
+# 11e. MotorLedcAdapter::write(): クランプ・制限ロジックを持たないこと
+#      （要件 17.3, 5.2）
+# ---------------------------------------------------------------------------
+
+_MOTOR_WRITE_SIGNATURE_PATTERN = r"MotorLedcAdapter::write\s*\([^)]*\)\s*\{"
+_CLAMP_HELPER_CALL_TOKENS: tuple[str, ...] = ("std::min(", "std::max(", "std::clamp(")
+_IF_SELF_REASSIGNMENT_PATTERN = re.compile(
+    r"if\s*\(([^()]*)\)\s*\{?\s*([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)\s*=\s*[^;]+;"
+)
+
+
+def find_motor_duty_clamping(text: str) -> list[str]:
+    """`MotorLedcAdapter::write()` 内に、大きさをクランプ/制限する形跡が無いかを
+    検出する（要件 17.3, 5.2 — 独自の制限・補正を加えない）。
+
+    2種類を検出する: (a) `std::min`/`std::max`/`std::clamp` の呼び出し、
+    (b) `if (cond) var = ...;` で `var` が `cond` にも登場する自己代入
+    （`if (x > max) x = max;` 型のクランプ）。`write()` が見つからない
+    ファイルには適用対象が無いため空列を返す。
+    """
+    stripped = strip_cpp_comments(text)
+    body = extract_function_body(stripped, _MOTOR_WRITE_SIGNATURE_PATTERN)
+    if body is None:
+        return []
+    violations = [f"{token} が write() 内で使われている" for token in _CLAMP_HELPER_CALL_TOKENS if token in body]
+    for match in _IF_SELF_REASSIGNMENT_PATTERN.finditer(body):
+        condition, var = match.group(1), match.group(2)
+        bare_var = var.rsplit(".", 1)[-1]
+        if re.search(r"\b" + re.escape(bare_var) + r"\b", condition):
+            violations.append(f"if ({condition.strip()}) {var} = ...;")
+    return violations
+
+
+def test_motor_write_has_no_clamping_logic() -> None:
+    text = (TELEOP_SRC_DIR / "motor_ledc.cpp").read_text(encoding="utf-8")
+    assert find_motor_duty_clamping(text) == []
+
+
+def test_extract_function_body_locates_the_real_motor_write_method() -> None:
+    """空虚な緑の防止: 実ファイルに対して `write()` の本体が実際に見つかる。"""
+    stripped = strip_cpp_comments((TELEOP_SRC_DIR / "motor_ledc.cpp").read_text(encoding="utf-8"))
+    body = extract_function_body(stripped, _MOTOR_WRITE_SIGNATURE_PATTERN)
+    assert body is not None
+    assert "ledc_set_duty(" in body
+
+
+def test_detects_if_based_clamp_in_crafted_motor_input() -> None:
+    """違反ケース: `if (x > max) x = max;` 型のクランプが検出される。"""
+    fake_cpp = (
+        "void MotorLedcAdapter::write(const drivetrain_control::WheelOutputs& outputs) {\n"
+        "  for (std::uint8_t wheel = 0; wheel < drivetrain_control::kWheelCount; ++wheel) {\n"
+        "    float magnitude = outputs.duty[wheel];\n"
+        "    if (magnitude > 1.0f) {\n"
+        "      magnitude = 1.0f;\n"
+        "    }\n"
+        "    ESP_ERROR_CHECK(ledc_set_duty(LEDC_LOW_SPEED_MODE, pwm_channel_[wheel], 0));\n"
+        "  }\n"
+        "}\n"
+    )
+    violations = find_motor_duty_clamping(fake_cpp)
+    assert violations != []
+    assert any("magnitude" in v for v in violations)
+
+
+def test_detects_std_clamp_helper_call_in_crafted_motor_input() -> None:
+    """違反ケース: `std::clamp` ヘルパの直接呼び出しが検出される。"""
+    fake_cpp = (
+        "void MotorLedcAdapter::write(const drivetrain_control::WheelOutputs& outputs) {\n"
+        "  float magnitude = std::clamp(outputs.duty[0], 0.0f, 1.0f);\n"
+        "  ESP_ERROR_CHECK(ledc_set_duty(LEDC_LOW_SPEED_MODE, pwm_channel_[0], 0));\n"
+        "}\n"
+    )
+    violations = find_motor_duty_clamping(fake_cpp)
+    assert violations != []
+    assert any("std::clamp(" in v for v in violations)
+
+
+def test_does_not_flag_direction_selection_if_in_crafted_motor_input() -> None:
+    """誤検知回避: 向き反転（要件 5.4）のような、条件式に登場しない変数への
+    代入は違反にしない。"""
+    fake_cpp = (
+        "void MotorLedcAdapter::write(const drivetrain_control::WheelOutputs& outputs) {\n"
+        "  const bool forward = outputs.duty[0] >= 0.0f;\n"
+        "  int dir_level = 0;\n"
+        "  if (forward != configs_[0].invert_direction) {\n"
+        "    dir_level = 1;\n"
+        "  }\n"
+        "  ESP_ERROR_CHECK(ledc_set_duty(LEDC_LOW_SPEED_MODE, pwm_channel_[0], 0));\n"
+        "}\n"
+    )
+    assert find_motor_duty_clamping(fake_cpp) == []
+
+
+def test_does_not_flag_unrelated_file_for_motor_check_in_crafted_input() -> None:
+    """誤検知回避: `write()` を持たない架空の入力には適用対象が無い（空列）。"""
+    assert find_motor_duty_clamping("void SomethingElse() {}\n") == []

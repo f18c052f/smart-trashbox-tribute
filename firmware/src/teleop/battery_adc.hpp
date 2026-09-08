@@ -75,10 +75,7 @@
 #include "esp_adc/adc_oneshot.h"
 
 #include "board_pins/pin_map.hpp"
-#include "drivetrain_control/config.hpp"
-#include "drivetrain_control/ports.hpp"
-#include "drivetrain_control/types.hpp"
-#include "drivetrain_control/voltage_scaler.hpp"
+#include "drivetrain_control/drivetrain_control.hpp"
 
 namespace teleop {
 

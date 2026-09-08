@@ -39,9 +39,7 @@
 #include "driver/pulse_cnt.h"
 
 #include "board_pins/pin_map.hpp"
-#include "drivetrain_control/ports.hpp"
-#include "drivetrain_control/types.hpp"
-#include "drivetrain_control/wrap_accumulator.hpp"
+#include "drivetrain_control/drivetrain_control.hpp"
 
 namespace teleop {
 

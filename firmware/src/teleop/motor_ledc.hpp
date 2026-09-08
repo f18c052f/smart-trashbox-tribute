@@ -49,8 +49,7 @@
 #include "driver/ledc.h"
 
 #include "board_pins/pin_map.hpp"
-#include "drivetrain_control/ports.hpp"
-#include "drivetrain_control/types.hpp"
+#include "drivetrain_control/drivetrain_control.hpp"
 
 namespace teleop {
 

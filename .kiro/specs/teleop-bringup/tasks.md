@@ -174,7 +174,7 @@
   - _Depends: 1.5_
   - _Boundary: BatteryAdcAdapter_
 
-- [ ] 3.4 アダプタ層に判断が持ち込まれていないことを静的に検査する
+- [x] 3.4 アダプタ層に判断が持ち込まれていないことを静的に検査する
   - アダプタが上流の公開入口だけを参照し、内部構造へ依存していないことを検査する
   - 折り返しの桁上げと電圧換算が上流の部品へ委ねられていることを検査する
   - 意図的に違反させた入力で検査が落ちることを示す
@@ -578,3 +578,18 @@
   グレースフルデグレード（`initialized_ = false`、以降 `read()` は常に `valid=false`）。
   **1回ごとの読み取り失敗**はラッチせず、その回だけ無効を返す。
   design.md の Error Handling 表がこの3段をそれぞれ別の行として既に規定している。
+- **タスク 3.4**: ⚠️ **アダプタ3本（3.1〜3.3）は当初 `drivetrain_control` の内部ヘッダ
+  （`ports.hpp` / `types.hpp` / `wrap_accumulator.hpp` / `voltage_scaler.hpp` /
+  `config.hpp`）を直接 include していた。** 要件 17.5（公開ヘッダ1本のみ）に反していたため、
+  本タスクで `drivetrain_control/drivetrain_control.hpp` への include 行の機械的な
+  差し替えのみを行った（ロジックは一切変更していない）。以降アダプタを書くときは
+  最初から公開ヘッダのみを include すること。
+- **タスク 3.4 → 今後アダプタに触る人宛（非ブロッキングの既知の穴）**:
+  静的検査のヒューリスティックには2つの回避余地がある。
+  (a) `find_motor_duty_clamping` は `std::clamp` / `if (x>max) x=max` 形しか
+  検出しない。`x = fminf(fmaxf(x, -1.0f), 1.0f)` のようなクランプは素通りする。
+  (b) 委譲検査（`find_encoder_wrap_carry_not_delegated` /
+  `find_battery_voltage_conversion_not_delegated`）は**最終代入の右辺**しか見ない。
+  中間変数へ判断ロジックを計算してから委譲呼び出しへ渡す形は検出できない。
+  いずれも直接的な違反は正しく検出できており、レビューでも非ブロッキングと判定済み。
+  拡張する場合は `fminf`/`fmaxf` 系トークンの検出と、引数式そのものの検査を足すとよい。
