@@ -1,0 +1,9 @@
+{
+  "name": "run_recorder",
+  "version": "0.1.0",
+  "description": "teleop-bringup task 6.1: 走行1回を1レコードとする記録の器（RunRecorder / RunSample）。走行中はRAMへリングバッファし、走行後に取り出す（tech.md 開発標準5）。ペリフェラルAPIもdrivetrain_controlも参照しないため、ホスト（native）と実機（teleop）の双方でコンパイルされる。上限到達時は最も古いサンプルを上書きし、overflowed()およびextractCsv()のメタ行で観測可能にする。固定側の投擲記録（prediction_core.record.ThrowRecord）とは型・依存関係とも独立した別形式（要件15.5）。",
+  "build": {
+    "srcDir": "src"
+  },
+  "includeDir": "include"
+}

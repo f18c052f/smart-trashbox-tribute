@@ -87,6 +87,13 @@ TELEOP_INPUT_CMAKE_PATH = TELEOP_INPUT_DIR / "CMakeLists.txt"
 TELEOP_INPUT_LIBRARY_JSON_PATH = TELEOP_INPUT_DIR / "library.json"
 TELEOP_INPUT_SRC_DIR = TELEOP_INPUT_DIR / "src"
 TELEOP_INPUT_INCLUDE_DIR = TELEOP_INPUT_DIR / "include" / "teleop_input"
+# teleop-bringup タスク 6.1（要件 15.1-15.5）: 走行1回を1レコードとする
+# 記録の器（RunRecorder / RunSample）のコンポーネント。
+RUN_RECORDER_DIR = FIRMWARE_DIR / "lib" / "run_recorder"
+RUN_RECORDER_CMAKE_PATH = RUN_RECORDER_DIR / "CMakeLists.txt"
+RUN_RECORDER_LIBRARY_JSON_PATH = RUN_RECORDER_DIR / "library.json"
+RUN_RECORDER_SRC_DIR = RUN_RECORDER_DIR / "src"
+RUN_RECORDER_INCLUDE_DIR = RUN_RECORDER_DIR / "include" / "run_recorder"
 TEST_SUPPORT_DIR = FIRMWARE_DIR / "lib" / "test_support"
 BUILD_PROFILE_HPP_PATH = FIRMWARE_DIR / "src" / "build_profile.hpp"
 SDKCONFIG_PRODUCTION_PATH = FIRMWARE_DIR / "sdkconfig.defaults.production"
@@ -255,7 +262,7 @@ def find_unexpected_embedded_component_dirs(
 #     おり、そちらが実質的な絞り込みを担う。lib/ 丸ごとの混入を防ぐという
 #     本節の主目的（`lib/test_support/` を除外すること）は変わらず成立する。
 EMBEDDED_COMPONENT_DIR_ALLOWLIST: frozenset[str] = frozenset(
-    {"drivetrain_control", "board_pins", "teleop_input", "components"}
+    {"drivetrain_control", "board_pins", "teleop_input", "run_recorder", "components"}
 )
 
 
@@ -2514,6 +2521,93 @@ def test_teleop_input_requirement_is_gated_on_the_teleop_profile() -> None:
 def test_production_components_allowlist_does_not_carry_teleop_input() -> None:
     """本番の `COMPONENTS` allowlist は teleop_input を含まない（allowlist へ触れずに済む）。"""
     assert "teleop_input" not in parse_components_allowlist(ROOT_CMAKE_TEXT)
+
+
+# ---------------------------------------------------------------------------
+# 9c. 走行記録コンポーネント run_recorder の登録（teleop-bringup タスク 6.1、
+#     要件 15.1-15.5）
+#
+# セクション9（board_pins）/ 9b（teleop_input）と同じ観点を、走行1回を1
+# レコードとする記録の器（RunRecorder / RunSample）を持つ run_recorder へ
+# 適用する。検査ロジック自体は使い回し、新規に定義し直さない。
+#
+# ⚠️ design.md "File Structure Plan" は run_recorder を `firmware/src/teleop/`
+# に置く形を示しているが、本タスクはペリフェラル API を一切参照しない純
+# データ・純ロジックである点（board_pins / teleop_input と同じ性質）を根拠に
+# `firmware/lib/` へ配置した（`include/run_recorder/run_recorder.hpp` の
+# ファイル冒頭コメント参照）。このセクションは、その配置判断が
+# board_pins/teleop_input と同じ「二重マニフェスト・テレオペ限定 REQUIRES・
+# 本番 allowlist 非混入」という established パターンから外れていないことを
+# 固定する。
+# ---------------------------------------------------------------------------
+
+
+def _actual_run_recorder_source_paths() -> set[str]:
+    return {
+        f"src/{p.relative_to(RUN_RECORDER_SRC_DIR).as_posix()}"
+        for p in RUN_RECORDER_SRC_DIR.rglob("*.cpp")
+    }
+
+
+def test_run_recorder_has_both_manifests() -> None:
+    """run_recorder が IDF コンポーネント manifest と PlatformIO manifest を同居させる。
+
+    片方だけだと、実機ビルドかホストビルドのどちらかから見えなくなる。
+    """
+    assert (
+        RUN_RECORDER_CMAKE_PATH.is_file()
+    ), "run_recorder に CMakeLists.txt が無い（実機から見えない）"
+    assert (
+        RUN_RECORDER_LIBRARY_JSON_PATH.is_file()
+    ), "run_recorder に library.json が無い（ホストから見えない）"
+
+
+def test_run_recorder_cmakelists_srcs_matches_actual_source_files() -> None:
+    """`lib/run_recorder/CMakeLists.txt` の SRCS 集合が実体と一致する。
+
+    drivetrain_control / board_pins / teleop_input と同じ Risk R2
+    （`SRCS` 更新漏れで `native` だけ通る）の回帰。
+    """
+    cmake_text = RUN_RECORDER_CMAKE_PATH.read_text(encoding="utf-8")
+    violations = find_source_set_mismatch(cmake_text, _actual_run_recorder_source_paths())
+    assert violations == [], f"run_recorder の SRCS 集合が実体とずれている: {violations}"
+
+
+def test_run_recorder_has_at_least_one_translation_unit() -> None:
+    """run_recorder が翻訳単位を持つ（ヘッダのみだと実機ビルドで一度もコンパイルされない）。
+
+    ヘッダのみのコンポーネントは IDF では INTERFACE ライブラリになり、利用側が
+    現れるまでコンパイルされない。タスク 6.1 の観測可能な完了状態を利用側
+    （task 6.2 の TeleopApp）の有無に依存させないために、実体を持つソースを
+    1本以上要求する。
+    """
+    assert _actual_run_recorder_source_paths() != set()
+
+
+def test_run_recorder_headers_exist_at_the_planned_path() -> None:
+    """`run_recorder.hpp`（RunSample / RunRecorder を定義する唯一の公開ヘッダ）が実在する。"""
+    assert (RUN_RECORDER_INCLUDE_DIR / "run_recorder.hpp").is_file()
+
+
+def test_run_recorder_is_registered_individually_in_extra_component_dirs() -> None:
+    """ルート `CMakeLists.txt` が `lib/run_recorder` を個別に登録している。"""
+    args = [
+        a.replace("\\", "/").rstrip("/") for a in parse_extra_component_dirs_append_args(ROOT_CMAKE_TEXT)
+    ]
+    assert any(
+        a.endswith("lib/run_recorder") for a in args
+    ), f"lib/run_recorder の個別登録が無い: {args}"
+
+
+def test_run_recorder_requirement_is_gated_on_the_teleop_profile() -> None:
+    """`firmware/src/CMakeLists.txt` が run_recorder をテレオペ時のみ REQUIRES へ足す。"""
+    violations = find_ungated_teleop_component_references(APP_CMAKE_TEXT, "run_recorder")
+    assert violations == [], f"run_recorder がテレオペ限定の外側で参照されている: {violations}"
+
+
+def test_production_components_allowlist_does_not_carry_run_recorder() -> None:
+    """本番の `COMPONENTS` allowlist は run_recorder を含まない（allowlist へ触れずに済む）。"""
+    assert "run_recorder" not in parse_components_allowlist(ROOT_CMAKE_TEXT)
 
 
 # ---------------------------------------------------------------------------

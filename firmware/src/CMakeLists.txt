@@ -78,6 +78,15 @@ endif()
 # mechanism that keeps the radio out of the production image
 # (requirement 1.4). Keeping the REQUIRES teleop-only is what lets that
 # allowlist stay untouched.
+# teleop-bringup task 6.1 (requirements.md 15.1-15.5): run_recorder carries
+# the run-record type (RunSample) and the RAM-buffering recorder
+# (RunRecorder). Needed on the device once task 6.2's TeleopApp feeds it
+# per-cycle samples; REQUIRES-ing it here now (like board_pins/teleop_input
+# before their first consumer existed) is also what makes ESP-IDF actually
+# compile its translation unit (src/run_recorder.cpp) on [env:teleop] -- see
+# that component's CMakeLists.txt / run_recorder.cpp header comments for why
+# a component with no consumer would otherwise never be built.
+#
 # teleop-bringup task 5.1 (requirements.md 7.1): Bluepad32, fetched by
 # scripts/fetch_bluepad32.py into firmware/.deps/bluepad32/src/components
 # (see firmware/CMakeLists.txt's gated EXTRA_COMPONENT_DIRS entry above it).
@@ -87,7 +96,7 @@ endif()
 # EXTRA_COMPONENT_DIRS is not the same as being built into the app.
 set(DRIVETRAIN_APP_REQUIRES drivetrain_control)
 if(DEFINED ENV{DRIVETRAIN_BUILD_TELEOP})
-    list(APPEND DRIVETRAIN_APP_REQUIRES board_pins teleop_input bluepad32)
+    list(APPEND DRIVETRAIN_APP_REQUIRES board_pins teleop_input run_recorder bluepad32)
 endif()
 
 idf_component_register(

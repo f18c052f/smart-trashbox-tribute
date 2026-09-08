@@ -49,6 +49,23 @@ list(APPEND EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/lib/board_pins")
 # REQUIRES only when DRIVETRAIN_BUILD_TELEOP is set.
 list(APPEND EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/lib/teleop_input")
 
+# teleop-bringup task 6.1 (requirements.md 15.1-15.5; design.md "File
+# Structure Plan" lists run_recorder under src/teleop/, but this task
+# relocates it to lib/ -- see include/run_recorder/run_recorder.hpp's header
+# comment for the reasoning: it is pure data/pure logic with no peripheral
+# API calls, the same host-testability argument that put board_pins and
+# teleop_input here rather than in src/teleop/). Listed INDIVIDUALLY for the
+# same reason as board_pins/teleop_input above -- naming lib/ wholesale here
+# would pull lib/test_support/ into the IDF component search.
+#
+# Same production-safety argument as board_pins/teleop_input: nothing in the
+# [env:production] component graph (src/drivetrain_control/__pio_env) ever
+# names run_recorder, so this line does NOT add it to the production image
+# and the COMPONENTS allowlist below does not need to change.
+# firmware/src/CMakeLists.txt adds run_recorder to the app component's
+# REQUIRES only when DRIVETRAIN_BUILD_TELEOP is set.
+list(APPEND EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/lib/run_recorder")
+
 # teleop-bringup task 5.1 (requirements.md 7.1; design.md ControllerLink
 # "External: Bluepad32 / BTstack (P0)"): Bluepad32 (raw ESP-IDF platform)
 # and BTstack, fetched by scripts/fetch_bluepad32.py ([env:teleop]-only
