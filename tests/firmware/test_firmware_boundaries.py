@@ -13,8 +13,8 @@
    `lib/drivetrain_control/src/*.cpp` の実体集合が一致すること
    （タスク1.1 Risk R2: 「`SRCS` 更新漏れで `native` だけ通る」の回帰）。
 2. **テスト専用ライブラリの非混入**: ルート `CMakeLists.txt` の
-   `EXTRA_COMPONENT_DIRS` が `lib` ディレクトリ全体ではなく
-   `lib/drivetrain_control` を直接指しており、将来追加されるテスト専用
+   `EXTRA_COMPONENT_DIRS` が `lib` ディレクトリ全体ではなく、許可した
+   コンポーネントディレクトリを個別に直接指しており、テスト専用
    ライブラリ（`lib/test_support/` 等）が組込みビルドの探索対象へ
    自動的に混入しない構造になっていること（要件16.3）。
 3. **3つのビルド環境の存在とホストテスト環境の実機非依存**（要件1.1, 1.5）。
@@ -25,6 +25,13 @@
 7. **外部プラットフォーム定義が更新で内容の変化しない成果物として固定
    されていること**（要件1.7）。
 8. **ホストテストと実機テストの振り分け設定の存在**（要件16.7）。
+9. **端子割当コンポーネント `board_pins` の登録**（teleop-bringup 要件 2.1）:
+   `firmware/lib/board_pins/` が IDF コンポーネント manifest（`CMakeLists.txt`）と
+   PlatformIO manifest（`library.json`）を同居させ、ホストビルドと実機ビルドの
+   双方から見えること。ルート `CMakeLists.txt` へ個別に登録されていること。
+   そして `firmware/src/CMakeLists.txt` がこれをテレオペ用ビルドのときだけ
+   `REQUIRES` へ足し、本番の `COMPONENTS` allowlist へ触れずに済む形で
+   あること。
 
 **本ファイルは PlatformIO/CMake/ESP-IDF のいずれも実行しない**（`pio run` /
 `cmake` を呼び出さない）。`configparser` による INI 解析と正規表現による
@@ -59,6 +66,14 @@ PLATFORMIO_INI_PATH = FIRMWARE_DIR / "platformio.ini"
 ROOT_CMAKE_PATH = FIRMWARE_DIR / "CMakeLists.txt"
 LIB_CMAKE_PATH = FIRMWARE_DIR / "lib" / "drivetrain_control" / "CMakeLists.txt"
 LIB_SRC_DIR = FIRMWARE_DIR / "lib" / "drivetrain_control" / "src"
+# teleop-bringup タスク 1.3（要件 2.1）: 端子割当の正のコンポーネント。
+APP_CMAKE_PATH = FIRMWARE_DIR / "src" / "CMakeLists.txt"
+BOARD_PINS_DIR = FIRMWARE_DIR / "lib" / "board_pins"
+BOARD_PINS_CMAKE_PATH = BOARD_PINS_DIR / "CMakeLists.txt"
+BOARD_PINS_LIBRARY_JSON_PATH = BOARD_PINS_DIR / "library.json"
+BOARD_PINS_SRC_DIR = BOARD_PINS_DIR / "src"
+BOARD_PINS_INCLUDE_DIR = BOARD_PINS_DIR / "include" / "board_pins"
+TEST_SUPPORT_DIR = FIRMWARE_DIR / "lib" / "test_support"
 BUILD_PROFILE_HPP_PATH = FIRMWARE_DIR / "src" / "build_profile.hpp"
 SDKCONFIG_PRODUCTION_PATH = FIRMWARE_DIR / "sdkconfig.defaults.production"
 TEST_NATIVE_DIR = FIRMWARE_DIR / "test" / "native"
@@ -69,6 +84,7 @@ PLATFORMIO_INI_TEXT = PLATFORMIO_INI_PATH.read_text(encoding="utf-8")
 ROOT_CMAKE_TEXT = ROOT_CMAKE_PATH.read_text(encoding="utf-8")
 LIB_CMAKE_TEXT = LIB_CMAKE_PATH.read_text(encoding="utf-8")
 BUILD_PROFILE_HPP_TEXT = BUILD_PROFILE_HPP_PATH.read_text(encoding="utf-8")
+APP_CMAKE_TEXT = APP_CMAKE_PATH.read_text(encoding="utf-8")
 SDKCONFIG_PRODUCTION_TEXT = SDKCONFIG_PRODUCTION_PATH.read_text(encoding="utf-8")
 
 
@@ -190,14 +206,69 @@ def find_test_only_library_leak_into_embedded_search(cmake_text: str) -> list[st
     return violations
 
 
-def test_root_cmakelists_extra_component_dirs_points_only_at_drivetrain_control() -> None:
-    """`EXTRA_COMPONENT_DIRS` が `lib/drivetrain_control` を直接指す（`lib` 丸ごとではない）。"""
+def find_unexpected_embedded_component_dirs(
+    cmake_text: str, allowlist: frozenset[str]
+) -> list[str]:
+    """`EXTRA_COMPONENT_DIRS` の各引数が、想定したコンポーネントディレクトリを
+    **個別に**指しているかを検査する（要件16.3）。
+
+    許可された名前以外の末尾要素（`lib` 丸ごと・`test_support` 等）を持つ引数を
+    違反として返す。空列であれば違反なし。
+    """
+    return [
+        arg
+        for arg in parse_extra_component_dirs_append_args(cmake_text)
+        if arg.replace("\\", "/").rstrip("/").split("/")[-1] not in allowlist
+    ]
+
+
+# 組込みビルドの探索対象として明示的に許可するコンポーネントディレクトリ名。
+# ⚠️ ここへ名前を足すことは「そのディレクトリを実機ビルドから見えるようにする」
+# 決定そのものである。`lib/test_support/`（ホスト専用）は決して含めない。
+#   - drivetrain_control: 純ロジックの核（drivetrain-core タスク 1.1）
+#   - board_pins: 端子割当の正（teleop-bringup タスク 1.3、要件 2.1）
+EMBEDDED_COMPONENT_DIR_ALLOWLIST: frozenset[str] = frozenset(
+    {"drivetrain_control", "board_pins"}
+)
+
+
+def test_root_cmakelists_extra_component_dirs_points_at_individual_components() -> None:
+    """`EXTRA_COMPONENT_DIRS` が各コンポーネントを直接指す（`lib` 丸ごとではない）。"""
     args = parse_extra_component_dirs_append_args(ROOT_CMAKE_TEXT)
     assert args != [], "EXTRA_COMPONENT_DIRS への list(APPEND ...) が見つからない"
-    assert all(
-        arg.replace("\\", "/").rstrip("/").endswith("lib/drivetrain_control") for arg in args
+    assert (
+        find_unexpected_embedded_component_dirs(
+            ROOT_CMAKE_TEXT, EMBEDDED_COMPONENT_DIR_ALLOWLIST
+        )
+        == []
     )
     assert find_test_only_library_leak_into_embedded_search(ROOT_CMAKE_TEXT) == []
+    assert "test_support" not in EMBEDDED_COMPONENT_DIR_ALLOWLIST
+
+
+def test_detects_unlisted_component_dir_in_extra_component_dirs_in_crafted_input() -> None:
+    """違反ケース: 許可していないディレクトリ（`lib/test_support`）の追加が検出される。"""
+    fake_cmake = (
+        'list(APPEND EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/lib/drivetrain_control")\n'
+        'list(APPEND EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/lib/test_support")\n'
+    )
+    violations = find_unexpected_embedded_component_dirs(
+        fake_cmake, EMBEDDED_COMPONENT_DIR_ALLOWLIST
+    )
+    assert violations != []
+    assert any("test_support" in v for v in violations)
+
+
+def test_does_not_flag_allowlisted_component_dirs_in_crafted_input() -> None:
+    """誤検知回避: 許可済みのコンポーネントを個別に列挙する形は違反にしない。"""
+    fake_cmake = (
+        'list(APPEND EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/lib/drivetrain_control")\n'
+        'list(APPEND EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/lib/board_pins")\n'
+    )
+    assert (
+        find_unexpected_embedded_component_dirs(fake_cmake, EMBEDDED_COMPONENT_DIR_ALLOWLIST)
+        == []
+    )
 
 
 def test_detects_bare_lib_directory_in_extra_component_dirs_in_crafted_input() -> None:
@@ -2151,3 +2222,169 @@ def test_license_section_extraction_stops_at_the_next_section() -> None:
     section = extract_markdown_section(fake_readme, RADIO_LICENSE_SECTION_HEADING)
     assert "BTstack" in section
     assert "オープンソースではない" not in section
+
+
+# ---------------------------------------------------------------------------
+# 9. 端子割当コンポーネント board_pins の登録（teleop-bringup タスク 1.3、要件 2.1）
+#
+# 本節が固定するのは「board_pins がホストビルドと実機ビルドの双方から見える
+# 形で登録されており、かつテレオペ側からのみ参照される」ことである。
+#
+# ⚠️ ホスト側から見えることが要件 2.7 の前提そのものである。`firmware/src/`
+# は `test_build_src` 既定 `no` によりネイティブビルドに含まれないため、
+# 端子割当をアプリ層へ置くと成立検査をホストで回せない。二重マニフェスト
+# （CMakeLists.txt + library.json）の同居がその担保であり、`lib/test_support/`
+# が CMakeLists.txt を**持たない**ことでホスト専用に留まっているのと対になる。
+# ---------------------------------------------------------------------------
+
+_CMAKE_IF_RE = re.compile(r"^\s*if\s*\(", re.IGNORECASE)
+_CMAKE_ENDIF_RE = re.compile(r"^\s*endif\s*\(", re.IGNORECASE)
+_TELEOP_GATE_RE = re.compile(
+    r"^\s*if\s*\(\s*DEFINED\s+ENV\{DRIVETRAIN_BUILD_TELEOP\}\s*\)", re.IGNORECASE
+)
+
+
+def find_ungated_teleop_component_references(cmake_text: str, component: str) -> list[str]:
+    """テレオペ限定であるべきコンポーネント名が、`if(DEFINED ENV{DRIVETRAIN_BUILD_TELEOP})`
+    ブロックの外側で参照されている箇所を検出する。
+
+    ⚠️ 本番側でも参照すると、ESP-IDF の要求展開により board_pins が本番の
+    コンポーネントグラフへ入り、`firmware/CMakeLists.txt` の `COMPONENTS`
+    allowlist（本番から無線を除外している機構、要件 1.4）の変更を強いられる。
+    テレオペ限定に保つことが、その allowlist へ触れずに済ませる条件である。
+
+    コメント（`#` 以降）は除外する。違反箇所を `行番号: 行` の形で返す。
+    """
+    violations: list[str] = []
+    gate_stack: list[bool] = []
+    for lineno, raw in enumerate(cmake_text.splitlines(), start=1):
+        line = raw.split("#", 1)[0]
+        if _CMAKE_ENDIF_RE.match(line):
+            if gate_stack:
+                gate_stack.pop()
+            continue
+        if _CMAKE_IF_RE.match(line):
+            gate_stack.append(bool(_TELEOP_GATE_RE.match(line)))
+        if component in line and not any(gate_stack):
+            violations.append(f"{lineno}: {raw.strip()}")
+    return violations
+
+
+def _actual_board_pins_source_paths() -> set[str]:
+    return {f"src/{p.relative_to(BOARD_PINS_SRC_DIR).as_posix()}" for p in BOARD_PINS_SRC_DIR.rglob("*.cpp")}
+
+
+def test_board_pins_has_both_manifests() -> None:
+    """board_pins が IDF コンポーネント manifest と PlatformIO manifest を同居させる。
+
+    片方だけだと、実機ビルドかホストビルドのどちらかから見えなくなる。
+    """
+    assert BOARD_PINS_CMAKE_PATH.is_file(), "board_pins に CMakeLists.txt が無い（実機から見えない）"
+    assert BOARD_PINS_LIBRARY_JSON_PATH.is_file(), "board_pins に library.json が無い（ホストから見えない）"
+
+
+def test_test_support_still_has_no_idf_manifest() -> None:
+    """対比: ホスト専用の test_support は CMakeLists.txt を持たないままである（要件16.3）。"""
+    assert (TEST_SUPPORT_DIR / "library.json").is_file()
+    assert not (TEST_SUPPORT_DIR / "CMakeLists.txt").exists()
+
+
+def test_board_pins_cmakelists_srcs_matches_actual_source_files() -> None:
+    """`lib/board_pins/CMakeLists.txt` の SRCS 集合が実体と一致する。
+
+    drivetrain_control と同じ Risk R2（`SRCS` 更新漏れで `native` だけ通る）の回帰。
+    """
+    cmake_text = BOARD_PINS_CMAKE_PATH.read_text(encoding="utf-8")
+    violations = find_source_set_mismatch(cmake_text, _actual_board_pins_source_paths())
+    assert violations == [], f"board_pins の SRCS 集合が実体とずれている: {violations}"
+
+
+def test_board_pins_has_at_least_one_translation_unit() -> None:
+    """board_pins が翻訳単位を持つ（ヘッダのみだと実機ビルドで一度もコンパイルされない）。
+
+    ヘッダのみのコンポーネントは IDF では INTERFACE ライブラリになり、利用側が
+    現れるまでコンパイルされない。タスク 1.3 の観測可能な完了状態
+    「ホスト向けビルドと実機向けビルドの双方でこの部品がコンパイルされ」を
+    利用側の有無に依存させないために、実体を持つソースを1本以上要求する。
+    """
+    assert _actual_board_pins_source_paths() != set()
+
+
+def test_board_pins_headers_exist_at_the_planned_paths() -> None:
+    """design.md "File Structure Plan" が定めた 2 ヘッダが実在する。"""
+    assert (BOARD_PINS_INCLUDE_DIR / "pin_map.hpp").is_file()
+    assert (BOARD_PINS_INCLUDE_DIR / "pin_rules.hpp").is_file()
+
+
+def test_board_pins_is_registered_individually_in_extra_component_dirs() -> None:
+    """ルート `CMakeLists.txt` が `lib/board_pins` を個別に登録している。"""
+    args = [a.replace("\\", "/").rstrip("/") for a in parse_extra_component_dirs_append_args(ROOT_CMAKE_TEXT)]
+    assert any(a.endswith("lib/board_pins") for a in args), f"lib/board_pins の個別登録が無い: {args}"
+
+
+def test_board_pins_requirement_is_gated_on_the_teleop_profile() -> None:
+    """`firmware/src/CMakeLists.txt` が board_pins をテレオペ時のみ REQUIRES へ足す。"""
+    violations = find_ungated_teleop_component_references(APP_CMAKE_TEXT, "board_pins")
+    assert violations == [], f"board_pins がテレオペ限定の外側で参照されている: {violations}"
+
+
+def test_gate_check_is_not_vacuous_against_the_real_app_cmakelists() -> None:
+    """空虚な緑の防止: 同じ検査を、ゲートの外側にある `drivetrain_control` へ
+    実ファイル上で適用すると違反として報告される。
+
+    ⚠️ これが無いと、`board_pins` 側の緑が「検査が実ファイルに対して何も
+    見ていないだけ」でも成立してしまう。`drivetrain_control` は3環境すべてで
+    必要な核であり、意図的にゲートの外側にある。
+    """
+    assert find_ungated_teleop_component_references(APP_CMAKE_TEXT, "drivetrain_control") != []
+
+
+def test_production_components_allowlist_does_not_carry_board_pins() -> None:
+    """本番の `COMPONENTS` allowlist は board_pins を含まない（allowlist へ触れずに済む）。"""
+    assert "board_pins" not in parse_components_allowlist(ROOT_CMAKE_TEXT)
+
+
+def test_detects_ungated_component_requirement_in_crafted_input() -> None:
+    """違反ケース: プロファイル判定の外側で board_pins を REQUIRES へ足す形が検出される。"""
+    fake_cmake = (
+        "set(DRIVETRAIN_APP_REQUIRES drivetrain_control board_pins)\n"
+        "idf_component_register(SRCS main.cpp REQUIRES ${DRIVETRAIN_APP_REQUIRES})\n"
+    )
+    assert find_ungated_teleop_component_references(fake_cmake, "board_pins") != []
+
+
+def test_detects_component_gated_on_the_production_profile_in_crafted_input() -> None:
+    """違反ケース: 本番プロファイル側の判定へ入れてしまった形が検出される。"""
+    fake_cmake = (
+        "if(DEFINED ENV{DRIVETRAIN_BUILD_PRODUCTION})\n"
+        "    list(APPEND DRIVETRAIN_APP_REQUIRES board_pins)\n"
+        "endif()\n"
+    )
+    assert find_ungated_teleop_component_references(fake_cmake, "board_pins") != []
+
+
+def test_does_not_flag_teleop_gated_component_in_crafted_input() -> None:
+    """誤検知回避: テレオペ判定の内側での参照は違反にしない。"""
+    fake_cmake = (
+        "if(DEFINED ENV{DRIVETRAIN_BUILD_TELEOP})\n"
+        "    list(APPEND DRIVETRAIN_APP_REQUIRES board_pins)\n"
+        "endif()\n"
+    )
+    assert find_ungated_teleop_component_references(fake_cmake, "board_pins") == []
+
+
+def test_gate_detection_survives_an_unrelated_enclosing_if_in_crafted_input() -> None:
+    """入れ子の判定を取り違えない: 無関係な `if` の内側は「ゲート済み」にならない。"""
+    fake_cmake = (
+        "if(NOT DEFINED ENV{DRIVETRAIN_BUILD_TELEOP} AND NOT DEFINED ENV{DRIVETRAIN_BUILD_PRODUCTION})\n"
+        "    message(FATAL_ERROR \"...\")\n"
+        "endif()\n"
+        "list(APPEND DRIVETRAIN_APP_REQUIRES board_pins)\n"
+    )
+    assert find_ungated_teleop_component_references(fake_cmake, "board_pins") != []
+
+
+def test_gate_detection_ignores_comments_in_crafted_input() -> None:
+    """コメント中のコンポーネント名を参照と誤認しない。"""
+    fake_cmake = "# board_pins は teleop 限定である\nset(X 1)\n"
+    assert find_ungated_teleop_component_references(fake_cmake, "board_pins") == []

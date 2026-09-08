@@ -53,8 +53,29 @@ if(DEFINED ENV{DRIVETRAIN_BUILD_TELEOP})
     list(APPEND DRIVETRAIN_APP_SRCS ${DRIVETRAIN_TELEOP_SRCS})
 endif()
 
+# teleop-bringup task 1.3 (requirements.md 2.1; design.md "File Structure
+# Plan" Modified Files): board_pins carries the pin-assignment source of
+# truth and is needed only by the teleop-side adapters (tasks 3.1-3.3) and
+# BenchApp (task 7.1).
+#
+# ⚠️ Gated on the DRIVETRAIN_BUILD_TELEOP *environment* variable, not a CMake
+# cache variable, for exactly the reason spelled out above: this file's
+# idf_component_register() requirements are re-evaluated inside ESP-IDF's
+# `cmake -P` scripting-mode subprocess, which does not receive custom cache
+# variables.
+#
+# ⚠️ Adding board_pins unconditionally would drag it into the production
+# component graph via requirement expansion, which would force a change to
+# the COMPONENTS allowlist in firmware/CMakeLists.txt -- the mechanism that
+# keeps the radio out of the production image (requirement 1.4). Keeping the
+# REQUIRES teleop-only is what lets that allowlist stay untouched.
+set(DRIVETRAIN_APP_REQUIRES drivetrain_control)
+if(DEFINED ENV{DRIVETRAIN_BUILD_TELEOP})
+    list(APPEND DRIVETRAIN_APP_REQUIRES board_pins)
+endif()
+
 idf_component_register(
     SRCS ${DRIVETRAIN_APP_SRCS}
     INCLUDE_DIRS "."
-    REQUIRES drivetrain_control
+    REQUIRES ${DRIVETRAIN_APP_REQUIRES}
 )

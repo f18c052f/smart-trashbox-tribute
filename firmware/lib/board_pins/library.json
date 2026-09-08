@@ -1,0 +1,9 @@
+{
+  "name": "board_pins",
+  "version": "0.1.0",
+  "description": "teleop-bringup task 1.3: 端子割当の単一の正（ESP32 classic の端子特性表と割当を表す型）。ペリフェラル API を参照しないため、ホスト（native）と実機（teleop）の双方でコンパイルされる。CMakeLists.txt を併せ持つ点が lib/test_support/ との違いであり、要件 2.7（成立検査を実機へ書き込むことなく実行できること）が成り立つ根拠である。",
+  "build": {
+    "srcDir": "src"
+  },
+  "includeDir": "include"
+}

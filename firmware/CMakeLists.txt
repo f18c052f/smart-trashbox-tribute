@@ -1,10 +1,10 @@
 # firmware/CMakeLists.txt — ESP-IDF project root for the teleop/production
 # firmware builds (drivetrain-core task 1.1).
 #
-# EXTRA_COMPONENT_DIRS points DIRECTLY at lib/drivetrain_control, not at
-# lib/ as a whole. This is deliberate: it is what keeps lib/test_support/
-# (host-test-only, added in a later task) out of every firmware link, since
-# a directory not listed here is never discovered by the IDF component
+# EXTRA_COMPONENT_DIRS points DIRECTLY at each component directory under
+# lib/, not at lib/ as a whole. This is deliberate: it is what keeps
+# lib/test_support/ (host-test-only) out of every firmware link, since a
+# directory not listed here is never discovered by the IDF component
 # search. See:
 #   - research.md "Decision: 純ロジックを「2マニフェスト同居ディレクトリ」として配置する"
 #   - design.md "File Structure Plan" (File Structure Plan の要点, 2nd bullet)
@@ -20,6 +20,20 @@
 cmake_minimum_required(VERSION 3.16)
 
 list(APPEND EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/lib/drivetrain_control")
+
+# teleop-bringup task 1.3 (requirements.md 2.1; design.md "File Structure
+# Plan" Modified Files): the pin-assignment source of truth. Listed
+# INDIVIDUALLY, for the same reason drivetrain_control is -- naming lib/
+# wholesale here would pull lib/test_support/ into the IDF component search.
+#
+# Being discovered is not the same as being built: for [env:production] the
+# COMPONENTS allowlist below still restricts the build seeds to
+# src/drivetrain_control/__pio_env, and nothing in that graph requires
+# board_pins, so this line does NOT add board_pins to the production image
+# and the allowlist does not need to change. firmware/src/CMakeLists.txt
+# adds board_pins to the app component's REQUIRES only when
+# DRIVETRAIN_BUILD_TELEOP is set.
+list(APPEND EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/lib/board_pins")
 
 # drivetrain-core task 1.2 (requirements.md 1.4): keep esp_wifi's object code
 # out of the linked production ELF/BIN.
