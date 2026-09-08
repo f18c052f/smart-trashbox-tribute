@@ -704,19 +704,6 @@ def test_an_assumed_observation_pulls_the_provenance_down(tmp_path: Path) -> Non
     )
 
 
-def test_the_observation_is_not_merged_into_the_parameters_digest(
-    tmp_path: Path,
-) -> None:
-    """⚠️ **`ResolvedParams` へ観測を混ぜない**（識別子が観測のたびに動くため）。"""
-    before = parameters_digest(_params().chassis)
-    _measurements_with_representative(
-        tmp_path / "measurements.json",
-        diameter_mm=58.5,
-        provenance=Provenance.MEASURED,
-    )
-    assert parameters_digest(_params().chassis) == before
-
-
 def test_the_cli_passes_the_recorded_observation_into_the_geometry(
     tmp_path: Path,
 ) -> None:

@@ -579,7 +579,7 @@
 
 ### 4.3 が残した申し送り
 
-- **⚠️ 恒真テストを撤去すること（`/kiro-validate-impl` または群の確定時）**:
+- **⟨撤去済み: 群4の確定時に削除した⟩ 恒真テストであった**:
   `tests/chassis_mechanism/test_chassis_cli.py::test_the_observation_is_not_merged_into_the_parameters_digest`
   は ⚠️ **落ちようがない**。`tmp_path` へ観測ファイルを書くが**どのコード経路もそれを
   読まず**、主張は `parameters_digest(_params().chassis)` を2回比べる `f(x) == f(x)`
