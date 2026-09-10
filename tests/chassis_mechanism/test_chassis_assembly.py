@@ -95,7 +95,7 @@ _ASSEMBLY_TREE: ast.Module = ast.parse(_ASSEMBLY_SOURCE)
 #: 再生成が要求される（design.md `#### Baseline`）。二重に書いているのは、
 #: 観測を**書き込む側**からも同じ錨を打つためである。
 PINNED_PARAMETERS_DIGEST = (
-    "sha256:a43f10847749cbbc5f0e403510bde7de631cd4a960b5a79aac6124d2533fd43d"
+    "sha256:a0fad02893af5841202c2e79cff6f129589a59af5b383a0016ec13b2a12cbb89"
 )
 
 #: 完了判定に現れてはならない語彙（要件 9.8 / 9.9）。

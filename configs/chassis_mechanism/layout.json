@@ -10,8 +10,8 @@
   ],
   "axial_stack_mm": [
     4.0,
-    16.8,
-    29.6
+    15.7,
+    27.4
   ],
   "base_radius_mm": 135.2,
   "formula": "hub_center_to_mount_face_mm + bracket.mount_face_to_wheel_center_mm",

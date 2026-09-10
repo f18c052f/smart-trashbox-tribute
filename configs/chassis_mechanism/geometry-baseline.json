@@ -1,7 +1,7 @@
 {
   "bbox_abs_tolerance_mm": 0.001,
   "generator_version": "build123d 0.11.1",
-  "parameters_digest": "sha256:a43f10847749cbbc5f0e403510bde7de631cd4a960b5a79aac6124d2533fd43d",
+  "parameters_digest": "sha256:a0fad02893af5841202c2e79cff6f129589a59af5b383a0016ec13b2a12cbb89",
   "parts": {
     "adapter_segment_1": {
       "bbox_mm": [
@@ -140,30 +140,30 @@
     },
     "service_stand_1": {
       "bbox_mm": [
-        88.6,
+        86.4,
         89.9,
         48.000000000000014
       ],
       "solid_count": 1,
-      "volume_mm3": 196885.9714174381
+      "volume_mm3": 192472.4664367722
     },
     "service_stand_2": {
       "bbox_mm": [
-        88.6,
+        86.4,
         89.9,
         48.000000000000014
       ],
       "solid_count": 1,
-      "volume_mm3": 196885.9714174381
+      "volume_mm3": 192472.4664367722
     },
     "service_stand_3": {
       "bbox_mm": [
-        88.6,
+        86.4,
         89.9,
         48.000000000000014
       ],
       "solid_count": 1,
-      "volume_mm3": 196885.9714174381
+      "volume_mm3": 192472.4664367722
     }
   },
   "schema_version": "1.0",

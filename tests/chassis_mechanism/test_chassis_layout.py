@@ -573,7 +573,14 @@ def test_vertical_stack_rejects_an_axle_center_that_is_not_the_rolling_radius() 
 
 
 def test_axial_stack_matches_the_value_derived_in_bom() -> None:
-    """軸方向スタックは `docs/bom.md` が導出した 16.8 / 29.6mm と照合できる形で持つ。"""
+    """軸方向スタックは `docs/bom.md` が導出した 15.7 / 27.4mm と照合できる形で持つ。
+
+    ⚠️ **下2行の直書きは仕掛け線である。** 上の1行（設定からの導出）が本来の
+    不変条件であり、直書きは⚠️ **寸法が動いたときに `docs/bom.md` の更新を
+    強制するため**に置いてある。導出へ書き換えて「保守が楽になった」としないこと
+    ——そうすると設定と文書が黙って食い違う。⚠️ **落ちたら BOM を直すこと。**
+    2026-09-10 にホイール幅を実測（25.6 → 23.4mm）した際、実際にこれが発火した。
+    """
     params = _params()
     layout = derive_layout(params)
     flange = params.chassis.hub.flange_thickness_mm
@@ -581,8 +588,8 @@ def test_axial_stack_matches_the_value_derived_in_bom() -> None:
     assert layout.axial_stack_mm == pytest.approx(
         (flange, flange + width / 2.0, flange + width)
     )
-    assert layout.axial_stack_mm[1] == pytest.approx(16.8)
-    assert layout.axial_stack_mm[2] == pytest.approx(29.6)
+    assert layout.axial_stack_mm[1] == pytest.approx(15.7)
+    assert layout.axial_stack_mm[2] == pytest.approx(27.4)
 
 
 # ---------------------------------------------------------------------------

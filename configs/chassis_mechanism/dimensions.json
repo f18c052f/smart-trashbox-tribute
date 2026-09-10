@@ -72,7 +72,7 @@
   },
   "motor": {
     "body_diameter_mm": 37.0,
-    "body_length_mm": 70.6,
+    "body_length_mm": 65.9,
     "shaft_diameter_mm": 6.0,
     "shaft_flat_present": true,
     "shaft_length_mm": 15.5
@@ -171,7 +171,7 @@
     "wheel.mass_g": "assumed",
     "wheel.mount_hole_count": "assumed",
     "wheel.nominal_diameter_mm": "measured",
-    "wheel.width_mm": "assumed"
+    "wheel.width_mm": "measured"
   },
   "schema_version": "1.0",
   "stand": {
@@ -186,6 +186,6 @@
     "mass_g": 80.0,
     "mount_hole_count": 6,
     "nominal_diameter_mm": 57.9,
-    "width_mm": 25.6
+    "width_mm": 23.4
   }
 }

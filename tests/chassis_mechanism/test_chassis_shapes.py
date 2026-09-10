@@ -395,7 +395,9 @@ def test_the_placed_legs_leave_the_minimum_hand_access(
     詰めるパラメータ変更が黙って造形物になる）。
     """
     assert geometry.leg_separation_mm >= MIN_HAND_ACCESS_MM
-    assert geometry.leg_separation_mm == pytest.approx(96.1, abs=0.1)
+    # ⚠️ 変更検知の仕掛け線（本来の主張は上の下限のほう）。ホイール幅を実測
+    # 23.4mm へ改めた際、脚の開きは 96.1 → 98.0mm へ**広がった**。
+    assert geometry.leg_separation_mm == pytest.approx(98.0, abs=0.1)
     assert geometry.leg_count == inputs.leg_count
 
 

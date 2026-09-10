@@ -106,6 +106,9 @@ MEASURED_PATHS: frozenset[str] = frozenset(
         "battery.height_mm",
         "battery.mass_g",
         "wheel.nominal_diameter_mm",
+        # ⚠️ 図面値 25.6mm ではなく実測 23.4mm（相当品であり図面と違う）。
+        # ⚠️ **軸方向スタックを通じてモータの位置に効く**ため、直径より影響が大きい。
+        "wheel.width_mm",
         # ⚠️ **締結に使う2穴の中心距離**（2026-09-10 実測、29.6mm）。現物の
         # ブラケットは穴を4つ持つが、半径方向のもう一方のピッチ 22.9mm は
         # ⚠️ **使わない**（バッテリトレイの耳が入らないため。上限は 5.2mm）。
@@ -789,7 +792,7 @@ def test_digest_is_pinned_to_a_stable_literal() -> None:
     """
     assert (
         parameters_digest(load_params().chassis)
-        == "sha256:a43f10847749cbbc5f0e403510bde7de631cd4a960b5a79aac6124d2533fd43d"
+        == "sha256:a0fad02893af5841202c2e79cff6f129589a59af5b383a0016ec13b2a12cbb89"
     )
 
 
