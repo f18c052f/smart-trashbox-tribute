@@ -4038,7 +4038,9 @@ def test_material_separates_the_three_passages_in_every_plate_they_cross(
     wall_mm = guide.passage_spacing_mm - guide.channel_width_mm
     assert wall_mm >= guide.wall_thickness_mm
 
-    def wall_probe(left: Any, right: Any, z_range: tuple[float, float]) -> Any:
+    def cylinder_probe(
+        left: Any, right: Any, z_range: tuple[float, float], diameter_mm: float
+    ) -> Any:
         z_min, z_max = z_range
         return Location(
             (
@@ -4047,10 +4049,13 @@ def test_material_separates_the_three_passages_in_every_plate_they_cross(
                 (z_min + z_max) / 2.0,
             )
         ) * Cylinder(
-            wall_mm / 2.0,
+            diameter_mm / 2.0,
             z_max - z_min,
             align=(Align.CENTER, Align.CENTER, Align.CENTER),
         )
+
+    def wall_probe(left: Any, right: Any, z_range: tuple[float, float]) -> Any:
+        return cylinder_probe(left, right, z_range, wall_mm)
 
     hub_z = (
         drive_base.underside_height_mm + _EPS_MM,
@@ -4070,9 +4075,19 @@ def test_material_separates_the_three_passages_in_every_plate_they_cross(
                 _volume(probe), rel=1e-9
             ), (left.name, right.name, label)
 
-    # ⚠️ 空振りでないこと: 穴そのものの位置に立てた同じ円柱は材料に当たらない。
+    # ⚠️ 空振りでないこと: 穴そのものの位置に立てた円柱は材料に当たらない。
+    #
+    # ⚠️ **穴に収まる太さで測る。** 通し穴の径は `cable.channel_width_mm` であり、
+    # 壁の太さ（穴の間隔 − 通路の内寸）とは別の量である——壁のほうが太ければ、
+    # 穴の中心に立てた「壁の太さの円柱」は⚠️ **穴の縁を越えて材料へ食い込み**、
+    # 穴が開いていても空振りに見えない（通路の内寸 8.0 → 7.0 で実際にそうなった）。
+    # ⚠️ **壁の太さを上限に残す**——壁のほうが細ければ、これまで通り壁の太さで測る。
+    bore_probe_diameter_mm = min(
+        wall_mm, guide.channel_width_mm - _BOTH_SIDES_MM * _EPS_MM
+    )
+    assert bore_probe_diameter_mm > 0.0
     for route in guide.routes:
-        bore = wall_probe(route, route, hub_z)
+        bore = cylinder_probe(route, route, hub_z, bore_probe_diameter_mm)
         assert _volume(hub & bore) == 0.0, route.name
 
 

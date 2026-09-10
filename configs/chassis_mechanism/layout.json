@@ -29,18 +29,18 @@
   "provenance": "assumed",
   "schema_version": "1.0",
   "tipping": {
-    "accel_limit_mm_s2": 8663.918946037,
-    "cog_height_mm": 76.516129032,
+    "accel_limit_mm_s2": 8555.213151261,
+    "cog_height_mm": 77.488372093,
     "is_pass_criterion": false,
     "note": "転倒余裕は未実測の推定であり、⚠️ 合否条件ではない（要件 3.5 / 3.4 の決定1 条件4）。未達を理由に設計を変えず、実測と性能値の決定は m2-motion-validation が持つ。搭載物の質量と保持高さは仮値であり、合成重心の見積もりもその上に載っている。"
   },
   "vertical": {
-    "axle_center_height_mm": 30.0,
-    "effective_rolling_radius_mm": 30.0,
+    "axle_center_height_mm": 28.95,
+    "effective_rolling_radius_mm": 28.95,
     "fastener_bottom_height_mm": 57.0,
-    "motor_body_bottom_height_mm": 11.5,
+    "motor_body_bottom_height_mm": 10.45,
     "mount_face_height_mm": 60.0,
-    "nominal_rolling_radius_mm": 30.0
+    "nominal_rolling_radius_mm": 28.95
   },
   "wheel_angles_deg": [
     0.0,

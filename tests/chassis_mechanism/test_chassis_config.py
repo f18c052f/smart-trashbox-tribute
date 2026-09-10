@@ -82,18 +82,30 @@ UPSTREAM_COMPONENTS: frozenset[str] = frozenset(
 
 #: 出荷時点で**実測**として記録されるパス（要件 1.9 / requirements.md A-8, A-9）。
 #:
-#: ⚠️ **A-9 が挙げる確定済みの値のうち、実測を名乗れるのは付属ブラケットの4値
-#: だけである。** ホイールとハブは**非純正品**（A-8）であり、図面・メーカー資料
-#: から取った公称寸法は「実測で置き換えられていない非純正部品の公称寸法」
-#: そのものであるため、要件 1.9 により**仮値**として扱う。モータの外形も
-#: 商品仕様からの転記であり実測ではない（`docs/drivetrain-spec.md §3`）。
-#: 本 Spec がこれから測るのは、まさにこの仮値の側である。
+#: ⚠️ **実測を名乗れるのは、現物に当たって測った値だけである。** 出荷時点では
+#: 付属ブラケットの4値に加え、群5（現物採寸）で測ったバッテリの外形3値と質量、
+#: ホイールの公称径が実測へ昇格している。
+#:
+#: ⚠️ **ここに増やせるのは「測った」ものだけである。** 図面・メーカー資料・商品
+#: 仕様からの転記は、非純正品（A-8）であっても実測ではない——要件 1.9 により
+#: **仮値**として扱う。ハブ内径 Ø6 もモータの外形も、`docs/drivetrain-spec.md §3`
+#: からの転記であって現物に当たっていない。ここが緩むと、公称値の上に載った
+#: 設計が「実測に基づく」と主張してしまう。
+#:
+#: ⚠️ **`stand.support_span_mm` と `cable.channel_width_mm` はここに入らない。**
+#: どちらも実測（ホイール径・配線束）の**帰結として引き下げた仮値**であり、
+#: その寸法そのものを測ったわけではない。
 MEASURED_PATHS: frozenset[str] = frozenset(
     {
         "bracket.outline_x_mm",
         "bracket.outline_y_mm",
         "bracket.mount_face_to_contact_mm",
         "bracket.mount_face_to_wheel_center_mm",
+        "battery.length_mm",
+        "battery.width_mm",
+        "battery.height_mm",
+        "battery.mass_g",
+        "wheel.nominal_diameter_mm",
     }
 )
 
@@ -214,12 +226,16 @@ def test_shipped_provenance_keys_match_the_parameter_path_table() -> None:
 
 
 def test_shipped_provenance_names_exactly_the_measured_paths() -> None:
-    """実測を名乗るのは付属ブラケットの4値だけである（要件 1.9 / A-8, A-9）。
+    """実測を名乗るのは実際に測った値だけである（要件 1.9 / A-8, A-9）。
 
-    ⚠️ **非純正部品の公称寸法を実測に格上げしない。** ホイール Ø60 も
-    ハブ内径 Ø6 も図面・メーカー資料の値であり、本 Spec がこれから測る対象
-    そのものである。ここが緩むと、公称値の上に載った設計が「実測に基づく」と
-    主張してしまう。
+    ⚠️ **測っていない公称寸法を実測に格上げしない。** ハブ内径 Ø6 もモータの
+    外形も図面・メーカー資料の値であり、本 Spec がこれから測る対象そのもので
+    ある。ここが緩むと、公称値の上に載った設計が「実測に基づく」と主張して
+    しまう。
+
+    ⚠️ **逆に、測った値を仮値のまま据え置かない。** 群5（現物採寸）でバッテリ
+    とホイールを測った時点で、その4＋1値は実測である——`MEASURED_PATHS` は
+    「これまで通り4値」ではなく「**いま現物に当たっている値の全体**」である。
     """
     document = _shipped_document()
     measured = {
@@ -736,7 +752,7 @@ def test_digest_is_pinned_to_a_stable_literal() -> None:
     """
     assert (
         parameters_digest(load_params().chassis)
-        == "sha256:705602bfbb130502cf77a303ff3d5068a01ba42bf6ba3bf1442c95a975c077f7"
+        == "sha256:8b2b05128bdf8e8e3890b2f66174b37bc96f8a376b9211185349edcc0d44119b"
     )
 
 
@@ -783,9 +799,21 @@ def test_digest_is_independent_of_formatting(tmp_path: Path) -> None:
 
     scrambled_document = dict(reversed(list(document.items())))
     scrambled_document["wheel"] = dict(reversed(list(document["wheel"].items())))
-    scrambled_document["wheel"]["nominal_diameter_mm"] = 60
     scrambled_document["bracket"] = dict(document["bracket"])
-    scrambled_document["bracket"]["mount_face_to_contact_mm"] = 6.0e1
+    # ⚠️ **整数と小数の書き分けは出荷値そのものから作る**（値は1つも動かさない）。
+    # ⚠️ 特定の項目に「たまたま整数値だった出荷値」を直書きすると、その項目が
+    # 小数の実測値へ動いた瞬間に**書式の差ではなく値の差**を測ってしまう
+    # ——実際 `wheel.nominal_diameter_mm` は 60.0 から 57.9 へ動いた。
+    # ここでは整数値を持つ小数フィールドを**探して** JSON の整数リテラルへ
+    # 書き直す（`57.9` のような非整数値には手を触れない）。
+    rewritten_as_int = 0
+    for component in ("wheel", "bracket"):
+        for field_name, value in list(scrambled_document[component].items()):
+            if isinstance(value, float) and not isinstance(value, bool):
+                if value.is_integer():
+                    scrambled_document[component][field_name] = int(value)
+                    rewritten_as_int += 1
+    assert rewritten_as_int, "整数リテラルへ書き直せる小数フィールドが1つも無い"
     scrambled = load_params(
         _write(
             tmp_path,
@@ -855,10 +883,23 @@ def test_digest_changes_when_provenance_changes(tmp_path: Path) -> None:
     """
     document = _shipped_document()
     baseline = load_params(_write(tmp_path, document, name="baseline.json")).chassis
-    assert document["provenance"]["wheel.nominal_diameter_mm"] == "assumed"
-    document["provenance"]["wheel.nominal_diameter_mm"] = "measured"
-    measured = load_params(_write(tmp_path, document, name="measured.json")).chassis
-    assert parameters_digest(measured) != parameters_digest(baseline)
+    # ⚠️ **昇格させるパスは出荷の出所表から選ぶ。** 特定のパスを直書きすると、
+    # そのパスが実測へ昇格した日に「仮値である」という前提のほうが先に崩れ、
+    # 識別子の感度を1件も測らないまま赤くなる（`wheel.nominal_diameter_mm` で
+    # 実際に起きた）。⚠️ **1件だけでなく全件**見る——出所表のどの行が動いても
+    # 識別子は動かねばならない。
+    assumed_paths = sorted(
+        path for path, value in document["provenance"].items() if value == "assumed"
+    )
+    assert assumed_paths, "仮値のパスが1つも無い（この検査は昇格を測れない）"
+    for path in assumed_paths:
+        promoted = dict(document)
+        promoted["provenance"] = dict(document["provenance"])
+        promoted["provenance"][path] = "measured"
+        measured = load_params(
+            _write(tmp_path, promoted, name="measured.json")
+        ).chassis
+        assert parameters_digest(measured) != parameters_digest(baseline), path
 
 
 def test_digest_is_stable_across_calls() -> None:

@@ -3008,6 +3008,22 @@ _SEAT_FIT_TOLERANCE_MM: Final[float] = 1e-9
 導出のどちらかが壊れたことを意味する。
 """
 
+_DECK_FREE_TOP_TOLERANCE_MM: Final[float] = 1e-9
+"""受け止めデッキの筒の下端と「部品の頭 ＋ 放熱の隙間」を比べる許容差。
+
+⚠️ **寸法ではない。** `catch_deck_rise_mm` は定義そのものが
+「基板デッキの高さ ＋ 板厚 ＋ スタンドオフ ＋ 部品の頭 ＋ 放熱の隙間 ＋ 重ね代」
+であり、そこから重ね代を引いた筒の下端は⚠️ **要求される高さと恒等的に等しい**
+——出荷の設計は関門の上にちょうど載っている。両辺は加算の順序が違うだけなので、
+⚠️ **缶の底の高さが2進小数で表せない値になると最終桁だけが食い違う**
+（ホイール Ø57.9 の実効転がり半径を観測で動かすと 132.79999999999998 対 132.8
+になり、`1.4e-14mm` の食い込みで発火した）。
+
+⚠️ **緩めているのは丸めだけである。** この関門が捕まえる本物の食い込みは
+重ね代（`deck_collar_length_mm`、出荷値 18.4mm）の規模であり、`1e-9mm` の
+許容差がそれを隠すことはない。
+"""
+
 
 def _module_count(params: ResolvedParams) -> int:
     """基板デッキが受け持つ基板類の数（要件 7.4）。"""
@@ -3112,7 +3128,7 @@ def deck_stack_geometry(
     # 奪う**（`joints.DECK_RISE_FORMULAS` の警告）。⚠️ この検査は
     # `catch_deck_rise_mm` が重ね代を落とした瞬間に発火する。
     required_free_top_mm = component_top_height_mm + board.cooling_gap_mm
-    if catch_tube_bottom_height_mm < required_free_top_mm:
+    if catch_tube_bottom_height_mm < required_free_top_mm - _DECK_FREE_TOP_TOLERANCE_MM:
         raise GeometryError(
             f"受け止めデッキの筒の下端 {catch_tube_bottom_height_mm!r}mm が、"
             f"搭載部品の頭と放熱の隙間が要求する高さ {required_free_top_mm!r}mm を"

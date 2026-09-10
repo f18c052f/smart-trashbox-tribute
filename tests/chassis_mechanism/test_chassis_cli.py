@@ -862,10 +862,23 @@ def test_load_compression_is_the_difference_from_the_nominal_radius() -> None:
 def test_the_layout_command_reports_the_difference_from_the_nominal_diameter(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """要件 10.4: 実効転がり径と**公称値との差**が読める形で出る。"""
+    """要件 10.4: 実効転がり径と**公称値との差**が読める形で出る。
+
+    ⚠️ **差は公称径から導く。** 「1.5」のような直書きは、公称径が実測で動いた
+    瞬間に差そのものを見ないまま落ちる（60.0 → 57.9 で実際に起きた）。
+    ⚠️ **数字列の含有ではなく値で照合する**——`"1.5"` は `"21.5"` にも
+    `"1.53"` にも含まれてしまい、差が出ていない出力を通してしまう。
+    """
+    import re
+
+    observed_diameter_mm = 58.5
+    nominal_diameter_mm = _params().chassis.wheel.nominal_diameter_mm
+    assert observed_diameter_mm != pytest.approx(nominal_diameter_mm), (
+        "観測が公称と同値では「差が出る」ことを示せない"
+    )
     measurements = _measurements_with_representative(
         tmp_path / "measurements.json",
-        diameter_mm=58.5,
+        diameter_mm=observed_diameter_mm,
         provenance=Provenance.MEASURED,
     )
     assert (
@@ -881,8 +894,16 @@ def test_the_layout_command_reports_the_difference_from_the_nominal_diameter(
         == cli_module.EXIT_OK
     )
     out = capsys.readouterr().out
-    assert "58.5" in out
-    assert "1.5" in out, f"公称 60.0mm との差 1.5mm が出力に無い: {out}"
+    assert str(observed_diameter_mm) in out
+    printed = re.search(
+        r"実効転がり径 (\S+?)mm（公称 (\S+?)mm / 差 (\S+?)mm", out
+    )
+    assert printed is not None, f"実効転がり径と公称値との差の行が出力に無い: {out}"
+    assert float(printed.group(1)) == pytest.approx(observed_diameter_mm)
+    assert float(printed.group(2)) == pytest.approx(nominal_diameter_mm)
+    assert float(printed.group(3)) == pytest.approx(
+        nominal_diameter_mm - observed_diameter_mm
+    ), f"公称 {nominal_diameter_mm}mm との差が出力に無い: {out}"
 
 
 # ---------------------------------------------------------------------------
@@ -964,6 +985,19 @@ def test_layout_check_rejects_a_simulator_config_without_the_key(
     )
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "⚠️ **タスク 7.1 が還元するまで一致しない。** ホイールの公称径が実測で "
+        "57.9mm になり、出荷のシミュレータ設定（60.0mm）と食い違う。⚠️ **いま "
+        "57.9 を書き込んではならない**——7.1 が還元するのは*荷重下の実効転がり径*"
+        "であり公称値ではない（measurements.json の representative_wheel_diameter_mm "
+        "は今も null）。しかも 59.5mm 未満へ還元すると trajectory_sim の要件 4.8 の"
+        "検査が落ちる（到達可否の掃引格子では 48mm と区別できなくなる）。"
+        "⚠️ **strict=True である**——7.1 の決着を経ずに還元すれば、この検査が "
+        "XPASS で赤くなって知らせる（要件 10.6, 10.7, 10.8）。"
+    ),
+)
 def test_the_shipped_simulator_config_agrees_with_the_current_geometry(
     tmp_path: Path,
 ) -> None:
@@ -1244,9 +1278,12 @@ def test_check_reports_every_clearance_violation(
     モータ胴体下面が床下（負）になって `VerticalStack` が先に拒否する。
     到達できる最大が本件の2部位である。
     """
+    import re
+
     violating = {"motor_body", "bracket"}
+    raised_minimum_mm = 27.0
     document = json.loads(DEFAULT_DIMENSIONS_PATH.read_text(encoding="utf-8"))
-    document["clearance"]["min_ground_clearance_mm"] = 27.0
+    document["clearance"]["min_ground_clearance_mm"] = raised_minimum_mm
     dimensions = tmp_path / "dimensions.json"
     dimensions.write_text(
         json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
@@ -1274,7 +1311,26 @@ def test_check_reports_every_clearance_violation(
     err = capsys.readouterr().err
     for name in violating:
         assert name in err, f"違反した部位 {name} が報告されていない"
-    assert "15.5" in err, f"不足量が報告されていない: {err}"
+    # ⚠️ **不足量は下限と鉛直スタックから導く。** 「15.5」のような直書きは、
+    # 車軸高さがホイールの実測で動いた瞬間に嘘になる（60.0 → 57.9 で実際に
+    # 落ちた）。⚠️ **数字列の含有ではなく値で照合する**——部位ごとに
+    # 「隙間・下限・不足量」の3つ組を読み、⚠️ **不足量が下限と隙間の差である**
+    # ことまで見る（不足量の欄に何を入れても通る検査にしない）。
+    reported = {
+        name: (float(gap_mm), float(limit_mm), float(shortfall_mm))
+        for name, gap_mm, limit_mm, shortfall_mm in re.findall(
+            r"(\w+) の隙間 (\S+?)mm が下限 (\S+?)mm を (\S+?)mm 下回る", err
+        )
+    }
+    assert set(reported) == violating, f"報告された部位が違う: {err}"
+    vertical = derive_layout(load_params(dimensions)).vertical
+    for name, (gap_mm, limit_mm, shortfall_mm) in reported.items():
+        assert limit_mm == pytest.approx(raised_minimum_mm), name
+        assert shortfall_mm == pytest.approx(limit_mm - gap_mm), name
+        assert shortfall_mm > 0.0, name
+    assert reported["motor_body"][0] == pytest.approx(
+        vertical.motor_body_bottom_height_mm
+    ), f"モータ胴体の隙間が鉛直スタックの高さと一致しない: {err}"
     for name in set(CLEARANCE_ITEM_NAMES) - violating:
         assert name not in err, f"違反していない部位 {name} が違反として並んでいる"
 

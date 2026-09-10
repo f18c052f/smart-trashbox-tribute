@@ -2744,27 +2744,75 @@ def test_a_wider_arm_narrows_the_free_arc_until_the_routes_merge(
 
     ⚠️ **これは 3.2 が記録したアーム幅の knife-edge と同じつまみの帰結である。**
     耳へつながる腕はアームの幅から動き、腕が太るほど⚠️ **穴を置ける弧は両側から
-    削られる**。1.2 倍で穴どうしの壁が残らなくなり、1.5 倍で弧そのものが消える。
-    ⚠️ **どちらも黙って合流させず、寸法パラメータを名指しして拒否する。**
+    削られる**。1.3 倍で穴どうしの壁が残らなくなり、1.9 倍で穴の居場所そのものが
+    立ち上がりの内側から消える。⚠️ **どちらも黙って合流させず、寸法パラメータを
+    名指しして拒否する。**
+
+    ⚠️ **倍率は「落ちる値」を探して決めたのではなく、叩く関門を名指しして
+    決めてある。** 出荷寸法の全域を 0.01 刻みで走査すると、アームの幅だけを
+    太らせて到達できる関門は
+    ⚠️ **合流（1.27〜1.81 倍）→ 穴の居場所が無い（1.82 倍〜）の2つだけ**で
+    ある——自由な弧そのものが消える関門（「配線が降りる先が無い」）へは
+    ⚠️ **アームの幅からは届かない**。そちらはバッテリトレイの外周が決めており、
+    `test_no_free_arc_for_the_passages_is_rejected_by_naming_the_tray` が
+    `battery.length_mm` で叩く。⚠️ **倍率を上げて別の関門を鳴らしたものを
+    「同じ反例」と言わない**（Ø60.0 の頃は 1.5 倍が弧の消滅へ届いていた）。
     """
     params, layout = shipped
 
     with pytest.raises(GeometryError) as merged:
-        cable_guide_geometry(_with_arm_width(params, 1.2), layout)  # type: ignore[arg-type]
+        cable_guide_geometry(_with_arm_width(params, 1.3), layout)  # type: ignore[arg-type]
     message = str(merged.value)
     assert "1つの穴へ合流する" in message
     assert "base.arm_width_mm" in message
     assert "cable.channel_width_mm" in message
     assert "cable.wall_thickness_mm" in message
+    # ⚠️ **叩いた関門を名指しする**（別の関門が先に鳴っていれば反例ではない）。
+    assert "立ち上がりの内側に穴の居場所が無い" not in message
+    assert "配線が降りる先が無い" not in message
 
-    with pytest.raises(GeometryError) as gone:
-        cable_guide_geometry(_with_arm_width(params, 1.5), layout)  # type: ignore[arg-type]
-    message = str(gone.value)
-    assert "配線が降りる先が無い" in message
+    with pytest.raises(GeometryError) as no_room:
+        cable_guide_geometry(_with_arm_width(params, 1.9), layout)  # type: ignore[arg-type]
+    message = str(no_room.value)
+    assert "立ち上がりの内側に穴の居場所が無い" in message
     assert "base.arm_width_mm" in message
+    assert "1つの穴へ合流する" not in message
 
     # ⚠️ 出荷の幅では通る（この検査が幅そのものを疑っていない証拠である）。
     assert cable_guide_geometry(_with_arm_width(params, 1.0), layout).routes  # type: ignore[arg-type]
+
+
+def test_no_free_arc_for_the_passages_is_rejected_by_naming_the_tray(
+    shipped: tuple[object, object]
+) -> None:
+    """⚠️ **穴を置ける弧が1つも残らない入力は、塞いでいる寸法を名指して拒否される。**
+
+    ⚠️ **弧を消しているのはバッテリトレイの外周である。** 通し穴の下が3つの
+    取付角のどれかでトレイの影に入れば、⚠️ **そこには配線が降りる先が無い**
+    ——アームの幅を太らせても、その手前で「穴の居場所が無い」関門が先に鳴る
+    ため、この枝はトレイ側のつまみでしか踏めない
+    （`test_a_wider_arm_narrows_the_free_arc_until_the_routes_merge` の申し送り）。
+
+    ⚠️ **叩いた関門を名指しする。** 「配線が降りる先が無い」は2箇所にある
+    ——弧が1つも無い枝と、走査が跨いだ塞がりを後から見つける枝である。ここが
+    見たいのは前者であり、⚠️ **後者へ流れ着いたものを同じ反例と言わない**。
+    """
+    params, _layout = shipped
+    layout = derive_layout(params)  # type: ignore[arg-type]
+
+    with pytest.raises(GeometryError) as gone:
+        cable_guide_geometry(_with_battery(shipped, length_mm=90.0), layout)  # type: ignore[arg-type]
+    message = str(gone.value)
+    assert "配線が降りる先が無い" in message
+    # ⚠️ 弧が1つも無い枝である（走査が跨いだ塞がりの枝ではない）。
+    assert "どの角でもいずれかの取付角で" in message
+    assert "battery.length_mm" in message
+    assert "battery.fuse_holder_width_mm" in message
+    assert "base.arm_width_mm" in message
+    assert "1つの穴へ合流する" not in message
+
+    # ⚠️ 出荷のバッテリでは通る（この検査がトレイそのものを疑っていない証拠）。
+    assert cable_guide_geometry(params, layout).routes  # type: ignore[arg-type]
 
 
 def _free_air_leg_distances_mm(
@@ -2824,8 +2872,8 @@ def test_a_thin_wall_brings_the_free_air_legs_together(
     ⚠️ **穴の間隔だけでは足りない。** 渡りの口から中央部の通し穴までは壁の無い
     自由空間であり、⚠️ **口の並びを決めているのは `cable.wall_thickness_mm`**
     ——弧も穴の間隔も壁の厚さでは動かないため、⚠️ **壁を薄くすると口だけが内側へ
-    寄り、脚が近づく**。壁 0.5mm では穴の間隔 14.47mm はそのままに `motor` と
-    `supply` の脚が 5.75mm まで詰まる（要る間隔は通路の内寸 8.0mm）——
+    寄り、脚が近づく**。壁 0.5mm では穴の間隔 14.87mm はそのままに `motor` と
+    `supply` の脚が 4.68mm まで詰まる（要る間隔は通路の内寸 7.0mm）——
     ⚠️ **束が同じ空間を共有すれば、取り違えは配線を挿す直前に起きる。**
     """
     params, layout = shipped
@@ -2842,12 +2890,25 @@ def test_a_thin_wall_brings_the_free_air_legs_together(
     assert "1つの穴へ合流する" not in message
 
     # ⚠️ **出荷の寸法では通る**（この検査が壁の厚さそのものを疑っていない証拠）。
+    # ⚠️ この 7.5121mm は**実装が持っていない量**である（`cable_guide_geometry`
+    # は脚の距離を記録に残さず、関門の中で捨てる）。`guide` から導き直せば
+    # `_free_air_leg_distances_mm` を2度書くだけの循環になるため、⚠️ **独立に
+    # 組み立てた値の直書きのまま**にしてある——寸法が動いたらここも読み直す。
     distances_mm = _free_air_leg_distances_mm(guide)
-    assert min(distances_mm.values()) == pytest.approx(8.3798, abs=1e-4)
-    assert distances_mm["motor", "supply"] == pytest.approx(8.3798, abs=1e-4)
+    assert min(distances_mm.values()) == pytest.approx(7.5121, abs=1e-4)
+    assert distances_mm["motor", "supply"] == pytest.approx(7.5121, abs=1e-4)
     assert min(distances_mm.values()) >= guide.channel_width_mm
-    # ⚠️ **余裕は 0.38mm しかない**（要件 1.9 の実測と同時に見直す申し送り）。
-    assert min(distances_mm.values()) - guide.channel_width_mm < 0.5
+    # ⚠️ **余裕は薄い**（要件 1.9 の実測と同時に見直す申し送り）。⚠️ その薄さを
+    # 「0.5mm 未満」のような絶対値で書かない——実測が入るたびに値が動き
+    # （0.3798mm → 0.5121mm）、⚠️ **薄さの主張ではなく数字の更新作業になる**。
+    # ⚠️ **壁をわずか 0.5mm 削るだけで関門が鳴る**ことで薄さを示す。
+    with pytest.raises(GeometryError) as barely:
+        cable_guide_geometry(  # type: ignore[arg-type]
+            _replace_cable(params, wall_thickness_mm=guide.wall_thickness_mm - 0.5),
+            layout,
+        )
+    assert "自由空間を渡る脚どうしが" in str(barely.value)
+    assert "cable.wall_thickness_mm" in str(barely.value)
 
 
 def test_the_window_lets_the_wiring_out_above_the_board_plane(
@@ -2932,6 +2993,46 @@ def _too_low_for_the_floor(params: object) -> object:
     )
 
 
+def _reported_clearance_shortfalls(
+    message: str,
+) -> dict[str, tuple[float, float, float]]:
+    """関門のメッセージから「部位 → (隙間, 下限, 不足量)」を読み取る。
+
+    ⚠️ **不足量を数字列の含有で見ない。** `"20.5mm 下回る"` のような直書きは
+    ホイール径やバッテリの実測で機体が上下した瞬間に嘘になり（Ø60.0 → Ø57.9
+    で実際に落ちた）、⚠️ 部分一致は `"1.0mm 下回る"` が `"21.0mm 下回る"` に
+    当たるなど**別の部位の値**でも通ってしまう。値で照合し、⚠️ **不足量が下限
+    と隙間の差であること**まで見る。
+    """
+    import re
+
+    return {
+        name: (float(gap_mm), float(minimum_mm), float(shortfall_mm))
+        for name, gap_mm, minimum_mm, shortfall_mm in re.findall(
+            r"(\w+) の隙間 (\S+?)mm が下限 (\S+?)mm を (\S+?)mm 下回る", message
+        )
+    }
+
+
+def _reported_envelope_excesses(
+    message: str,
+) -> dict[tuple[str, str], tuple[float, float, float]]:
+    """関門のメッセージから「(断片, 軸) → (外接箱, 上限, 超過量)」を読み取る。
+
+    ⚠️ `_reported_clearance_shortfalls` と同じ理由で、超過量は直書きせず
+    **値**で照合する（外接箱はバッテリの実測でそのまま動く）。
+    """
+    import re
+
+    return {
+        (part_name, axis): (float(envelope_mm), float(limit_mm), float(excess_mm))
+        for part_name, axis, envelope_mm, limit_mm, excess_mm in re.findall(
+            r"(\w+) の 軸 (\w+) が (\S+?)mm で上限 (\S+?)mm を (\S+?)mm 超過",
+            message,
+        )
+    }
+
+
 def test_the_shipped_parameters_pass_the_gate(shipped: tuple[object, object]) -> None:
     """⚠️ **出荷の寸法は関門を通る**（反例の対。関門そのものが空振りでない証拠）。"""
     params, layout = shipped
@@ -2960,9 +3061,23 @@ def test_the_gate_lists_every_floor_clearance_shortfall(
     # ⚠️ 下限を上回る2部位は現れない（見ていない部位と余裕のある部位を混同しない）。
     assert "base_underside" not in message
     assert "cable" not in message
-    # ⚠️ 不足量が部位ごとに出る（20.5mm ＝ 32.0 − 11.5、1.0mm ＝ 32.0 − 31.0）。
-    assert "20.5mm 下回る" in message
-    assert "1.0mm 下回る" in message
+    # ⚠️ 不足量が部位ごとに出る。⚠️ **値は下限と鉛直スタックから導く**
+    # （直書きは車軸高さが実測で動いた瞬間に嘘になる）。
+    reported = _reported_clearance_shortfalls(message)
+    assert set(reported) == {"motor_body", "bracket", "fastener"}, message
+    minimum_mm = tripped.chassis.clearance.min_ground_clearance_mm  # type: ignore[attr-defined]
+    for name, (gap_mm, limit_mm, shortfall_mm) in reported.items():
+        assert limit_mm == pytest.approx(minimum_mm), name
+        assert shortfall_mm == pytest.approx(limit_mm - gap_mm), name
+        assert shortfall_mm > 0.0, name
+    # ⚠️ **報告された隙間は鉛直スタックそのもの**である（別の量を不足量欄へ
+    # 詰めても通る検査にしない）。
+    assert reported["motor_body"][0] == pytest.approx(
+        layout.vertical.motor_body_bottom_height_mm
+    ), message
+    assert reported["fastener"][0] == pytest.approx(
+        layout.vertical.fastener_bottom_height_mm
+    ), message
 
 
 def test_the_gate_stops_the_build_before_a_single_solid_is_made(
@@ -2998,10 +3113,19 @@ def test_the_gate_lists_every_build_volume_excess_of_every_part(
     import dataclasses
 
     params, layout = shipped
+    # ⚠️ **造形面の上限はトレイの外接箱から導く。** 「45.0」のような直書きは、
+    # ⚠️ **バッテリの実測でトレイが縮んだ瞬間に z が上限へ届かなくなり**、
+    # 「同じ部品の複数の軸が全件出る」という本件の主眼を測らないまま緑になる
+    # （高さ 26.0 → 23.2 で実際にそうなった）。x も z も⚠️ **トレイが必ず超える
+    # 側**へ、同じだけ内側に置く。
+    trip_margin_mm = 1.0
+    tray_envelope = battery_tray_geometry(params, layout).envelope  # type: ignore[arg-type]
     small = dataclasses.replace(
         params,  # type: ignore[arg-type]
         printing=dataclasses.replace(
-            params.printing, build_x_mm=160.0, build_z_mm=45.0  # type: ignore[attr-defined]
+            params.printing,  # type: ignore[attr-defined]
+            build_x_mm=tray_envelope.x_mm - trip_margin_mm,
+            build_z_mm=tray_envelope.z_mm - trip_margin_mm,
         ),
     )
     with pytest.raises(GeometryError) as excinfo:
@@ -3021,8 +3145,22 @@ def test_the_gate_lists_every_build_volume_excess_of_every_part(
     # ⚠️ **同じ部品の複数の軸も全件**である（バッテリトレイは x と z の両方）。
     assert "軸 x" in message
     assert "軸 z" in message
-    assert "13.599999999999994mm 超過" in message
-    assert "30.900000000000006mm 超過" in message
+    # ⚠️ 超過量は**造形面の上限と外接箱から導く**（直書きは、バッテリの実測で
+    # トレイの外接箱が動いた瞬間に嘘になる）。
+    reported = _reported_envelope_excesses(message)
+    assert ("battery_tray", "x") in reported, message
+    assert ("battery_tray", "z") in reported, message
+    assert ("board_deck_1", "z") in reported, message
+    for key, (envelope_mm, limit_mm, excess_mm) in reported.items():
+        assert excess_mm == pytest.approx(envelope_mm - limit_mm), key
+        assert excess_mm > 0.0, key
+    assert reported["battery_tray", "x"][1] == pytest.approx(small.printing.build_x_mm)
+    assert reported["battery_tray", "z"][1] == pytest.approx(small.printing.build_z_mm)
+    # ⚠️ **報告された外接箱はトレイの実際の外接箱である**（超過量の欄へ別の量を
+    # 詰めても通る検査にしない）。
+    tray_envelope = battery_tray_geometry(small, layout).envelope  # type: ignore[arg-type]
+    assert reported["battery_tray", "x"][0] == pytest.approx(tray_envelope.x_mm)
+    assert reported["battery_tray", "z"][0] == pytest.approx(tray_envelope.z_mm)
     # ⚠️ 見直す先が部品ごとに示される（家族ごとの例外を1つへまとめた代償を払わない）。
     assert "バッテリの寸法か配置半径を見直すこと" in message
 
@@ -3115,7 +3253,17 @@ def test_the_gate_carries_every_kind_of_violation_it_has_already_computed(
         check_before_build(tripped, layout)  # type: ignore[arg-type]
     message = str(excinfo.value)
     # ⚠️ 送出された型そのものの内容（隙間の不足）は全件出る。
-    assert "20.5mm 下回る" in message
+    # ⚠️ **値は下限と鉛直スタックから導く**（直書きは実測で機体が上下すると嘘に）。
+    reported = _reported_clearance_shortfalls(message)
+    assert set(reported) == {"motor_body", "bracket", "fastener"}, message
+    minimum_mm = tripped.chassis.clearance.min_ground_clearance_mm  # type: ignore[attr-defined]
+    for name, (gap_mm, limit_mm, shortfall_mm) in reported.items():
+        assert limit_mm == pytest.approx(minimum_mm), name
+        assert shortfall_mm == pytest.approx(limit_mm - gap_mm), name
+        assert shortfall_mm > 0.0, name
+    assert reported["motor_body"][0] == pytest.approx(
+        layout.vertical.motor_body_bottom_height_mm
+    ), message
     # ⚠️ **捨てられていた側**——同じ失敗に併せて載る。
     assert "hub_plate__motor_arm_1" in message
     assert "dowel" in message
@@ -3166,10 +3314,28 @@ def test_the_envelope_failure_carries_both_of_the_other_two_kinds(
         check_before_build(tripped, layout)  # type: ignore[arg-type]
     message = str(excinfo.value)
     # 1. 送出された型そのものの内容（外接箱の超過）。
+    #    ⚠️ 超過量・不足量とも**上限と幾何から導く**（直書きは実測で動くと嘘に）。
     assert "battery_tray" in message
-    assert "13.599999999999994mm 超過" in message
+    excesses = _reported_envelope_excesses(message)
+    assert ("battery_tray", "x") in excesses, message
+    for key, (envelope_mm, limit_mm, excess_mm) in excesses.items():
+        assert excess_mm == pytest.approx(envelope_mm - limit_mm), key
+        assert excess_mm > 0.0, key
+    assert excesses["battery_tray", "x"][1] == pytest.approx(tripped.printing.build_x_mm)
+    assert excesses["battery_tray", "x"][0] == pytest.approx(
+        battery_tray_geometry(tripped, layout).envelope.x_mm  # type: ignore[arg-type]
+    )
     # 2. ⚠️ 併せて載る床との隙間（`clearance_also`）。
-    assert "20.5mm 下回る" in message
+    shortfalls = _reported_clearance_shortfalls(message)
+    assert set(shortfalls) == {"motor_body", "bracket", "fastener"}, message
+    minimum_mm = tripped.chassis.clearance.min_ground_clearance_mm  # type: ignore[attr-defined]
+    for name, (gap_mm, limit_mm, shortfall_mm) in shortfalls.items():
+        assert limit_mm == pytest.approx(minimum_mm), name
+        assert shortfall_mm == pytest.approx(limit_mm - gap_mm), name
+        assert shortfall_mm > 0.0, name
+    assert shortfalls["motor_body"][0] == pytest.approx(
+        layout.vertical.motor_body_bottom_height_mm
+    ), message
     # 3. ⚠️ 併せて載る要素の未実現（`realisation_also`）。
     #    ⚠️ **2 と 3 の両方**が同時に出ることが本件の主眼である。
     assert "hub_plate__motor_arm_1" in message

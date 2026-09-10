@@ -19,12 +19,12 @@
   "battery": {
     "fuse_holder_length_mm": 35.0,
     "fuse_holder_width_mm": 12.0,
-    "height_mm": 26.0,
+    "height_mm": 23.2,
     "hold_height_mm": 44.0,
-    "length_mm": 76.0,
-    "mass_g": 130.0,
+    "length_mm": 77.8,
+    "mass_g": 121.0,
     "tray_wall_thickness_mm": 3.0,
-    "width_mm": 35.0
+    "width_mm": 32.5
   },
   "board": {
     "can_clearance_mm": 2.0,
@@ -48,7 +48,7 @@
     "outline_y_mm": 38.8
   },
   "cable": {
-    "channel_width_mm": 8.0,
+    "channel_width_mm": 7.0,
     "wall_thickness_mm": 3.0
   },
   "clearance": {
@@ -107,12 +107,12 @@
     "base.wheel_count": "assumed",
     "battery.fuse_holder_length_mm": "assumed",
     "battery.fuse_holder_width_mm": "assumed",
-    "battery.height_mm": "assumed",
+    "battery.height_mm": "measured",
     "battery.hold_height_mm": "assumed",
-    "battery.length_mm": "assumed",
-    "battery.mass_g": "assumed",
+    "battery.length_mm": "measured",
+    "battery.mass_g": "measured",
     "battery.tray_wall_thickness_mm": "assumed",
-    "battery.width_mm": "assumed",
+    "battery.width_mm": "measured",
     "board.can_clearance_mm": "assumed",
     "board.component_height_mm": "assumed",
     "board.cooling_gap_mm": "assumed",
@@ -170,14 +170,14 @@
     "wheel.center_bore_diameter_mm": "assumed",
     "wheel.mass_g": "assumed",
     "wheel.mount_hole_count": "assumed",
-    "wheel.nominal_diameter_mm": "assumed",
+    "wheel.nominal_diameter_mm": "measured",
     "wheel.width_mm": "assumed"
   },
   "schema_version": "1.0",
   "stand": {
     "leg_count": 3,
     "lift_height_mm": 20.0,
-    "support_span_mm": 40.0,
+    "support_span_mm": 38.0,
     "wheel_rotation_clearance_mm": 10.0
   },
   "wheel": {
@@ -185,7 +185,7 @@
     "center_bore_diameter_mm": 12.5,
     "mass_g": 80.0,
     "mount_hole_count": 6,
-    "nominal_diameter_mm": 60.0,
+    "nominal_diameter_mm": 57.9,
     "width_mm": 25.6
   }
 }

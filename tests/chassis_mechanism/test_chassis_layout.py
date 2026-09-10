@@ -423,18 +423,42 @@ def test_base_plate_below_the_axle_center_is_rejected() -> None:
 
 
 def test_fastener_below_the_axle_center_is_rejected_with_the_pair_and_amount() -> None:
-    """締結の下端が車軸中心より低い入力は、逆転した対と量を示して拒否される。"""
+    """締結の下端が車軸中心より低い入力は、逆転した対と量を示して拒否される。
+
+    ⚠️ **逆転量は成立する幾何から導く。** 「10」のような直書きは、車軸中心の
+    高さがホイール径の実測で動いた瞬間に嘘になる（Ø60.0 → Ø57.9 で実際に
+    落ちた）。⚠️ **部分文字列では量を見たことにならない**——`"10"` は
+    `"110.0"` にも `"8.9510"` にも含まれる。値で照合する。
+    """
+    import re
+
+    protrusion_mm = 40.0
     params = _params()
+    sound = derive_layout(params).vertical
     broken = _with_chassis(
         params,
-        clearance=replace(params.chassis.clearance, fastener_protrusion_mm=40.0),
+        clearance=replace(
+            params.chassis.clearance, fastener_protrusion_mm=protrusion_mm
+        ),
     )
     with pytest.raises(GeometryError) as excinfo:
         derive_layout(broken)
     message = str(excinfo.value)
     assert "fastener_bottom_height_mm" in message
     assert "axle_center_height_mm" in message
-    assert "10" in message
+    inverted = re.search(
+        r"fastener_bottom_height_mm=(\S+?) は axle_center_height_mm=(\S+?) "
+        r"より (\S+?)mm 低い",
+        message,
+    )
+    assert inverted is not None, f"逆転した対と量が読めない: {message}"
+    expected_fastener_bottom_mm = sound.mount_face_height_mm - protrusion_mm
+    assert float(inverted.group(1)) == pytest.approx(expected_fastener_bottom_mm)
+    assert float(inverted.group(2)) == pytest.approx(sound.axle_center_height_mm)
+    assert float(inverted.group(3)) == pytest.approx(
+        sound.axle_center_height_mm - expected_fastener_bottom_mm
+    )
+    assert float(inverted.group(3)) > 0.0
 
 
 def test_motor_body_bottom_level_with_the_axle_center_is_rejected() -> None:

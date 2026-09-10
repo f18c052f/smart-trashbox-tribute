@@ -169,7 +169,7 @@
       "print_normal_axis": "x"
     },
     {
-      "bearing_area_mm2": 1024.0,
+      "bearing_area_mm2": 972.8,
       "bolt_count": 0,
       "bolt_length_mm": 0.0,
       "dowel_count": 0,
@@ -183,7 +183,7 @@
       "print_normal_axis": "y"
     },
     {
-      "bearing_area_mm2": 1024.0,
+      "bearing_area_mm2": 972.8,
       "bolt_count": 0,
       "bolt_length_mm": 0.0,
       "dowel_count": 0,
@@ -197,7 +197,7 @@
       "print_normal_axis": "y"
     },
     {
-      "bearing_area_mm2": 1024.0,
+      "bearing_area_mm2": 972.8,
       "bolt_count": 0,
       "bolt_length_mm": 0.0,
       "dowel_count": 0,
@@ -255,6 +255,6 @@
       "length_mm": 5.7
     }
   ],
-  "parameters_digest": "sha256:705602bfbb130502cf77a303ff3d5068a01ba42bf6ba3bf1442c95a975c077f7",
+  "parameters_digest": "sha256:8b2b05128bdf8e8e3890b2f66174b37bc96f8a376b9211185349edcc0d44119b",
   "schema_version": "1.0"
 }
