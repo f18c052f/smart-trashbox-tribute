@@ -148,6 +148,13 @@ MEASURED_PATHS = frozenset(
         "trash_can.bottom_outer_diameter_mm",
         "trash_can.height_mm",
         "trash_can.taper_deg",
+        # ⚠️ **下の2件は当初から実測であったが、出所が仮値のまま記録されていた**
+        # （bf8426f「実物の採寸値を寸法設定ファイルへ反映する」で値だけが
+        # 140.0 → 170.0 と更新され、兄弟項目が measured へ上がる中でこの行だけ
+        # assumed に残された）。⚠️ **底の切断の判断はこの2件に依存する**——
+        # 残す縁の幅（要件 6.5）と、縁の肉厚。2026-09-10 に利用者が再確認した。
+        "trash_can.bottom_flat_diameter_mm",
+        "trash_can.bottom_thickness_mm",
     }
 )
 """⚠️ 実物を採寸した項目（タスク 5.2）。**この表に無いパスはすべて仮値である。**"""

@@ -87,7 +87,7 @@
     {
       "bearing_area_mm2": 172.190693343,
       "bolt_count": 3,
-      "bolt_length_mm": 13.2,
+      "bolt_length_mm": 12.8,
       "dowel_count": 0,
       "insert_count": 0,
       "members": [
@@ -222,7 +222,7 @@
       "count": 3,
       "designation": "M3",
       "kind": "bolt",
-      "length_mm": 13.2
+      "length_mm": 12.8
     },
     {
       "count": 6,

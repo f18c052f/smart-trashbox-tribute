@@ -17,9 +17,9 @@
   },
   "provenance": {
     "target_object.diameter_mm": "assumed",
-    "trash_can.bottom_flat_diameter_mm": "assumed",
+    "trash_can.bottom_flat_diameter_mm": "measured",
     "trash_can.bottom_outer_diameter_mm": "measured",
-    "trash_can.bottom_thickness_mm": "assumed",
+    "trash_can.bottom_thickness_mm": "measured",
     "trash_can.height_mm": "measured",
     "trash_can.mass_g": "assumed",
     "trash_can.opening_inner_diameter_mm": "measured",
@@ -47,7 +47,7 @@
   "trash_can": {
     "bottom_flat_diameter_mm": 170.0,
     "bottom_outer_diameter_mm": 180.0,
-    "bottom_thickness_mm": 1.5,
+    "bottom_thickness_mm": 1.1,
     "height_mm": 235.0,
     "mass_g": 228.0,
     "model_id": "yamada-kagaku-no335",
