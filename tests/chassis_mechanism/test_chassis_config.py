@@ -106,6 +106,12 @@ MEASURED_PATHS: frozenset[str] = frozenset(
         "battery.height_mm",
         "battery.mass_g",
         "wheel.nominal_diameter_mm",
+        # ⚠️ **締結に使う2穴の中心距離**（2026-09-10 実測、29.6mm）。現物の
+        # ブラケットは穴を4つ持つが、半径方向のもう一方のピッチ 22.9mm は
+        # ⚠️ **使わない**（バッテリトレイの耳が入らないため。上限は 5.2mm）。
+        # ⚠️ `bracket.mount_hole_count` は実測を名乗らない——2 は「持っている数」
+        # ではなく「使う数」であり、設計の判断だからである。
+        "bracket.mount_hole_pitch_mm",
     }
 )
 
@@ -255,6 +261,37 @@ def test_shipped_bracket_reference_face_is_still_assumed() -> None:
     document = _shipped_document()
     assert document["provenance"]["bracket.mount_face_reference"] == "assumed"
     assert document["bracket"]["mount_face_reference"].strip()
+
+
+def test_shipped_bracket_outline_is_the_measured_rectangle() -> None:
+    """ブラケット外形は実測であり、⚠️ **長いほうがモータ軸方向**である（要件 1.9）。
+
+    ⚠️ **どちらの軸がどちらかを取り違えると、この2値を読む記述が黙って反転する。**
+    `docs/bom.md §B` は「モータ軸方向に長い」と述べており、モータ軸は機体の
+    **半径方向**である（`layout` の `base_radius_mm = hub_center_to_mount_face_mm
+    + bracket.mount_face_to_wheel_center_mm` の第2項が軸方向の距離である）。
+    したがって `outline_x_mm` が半径方向、`outline_y_mm` が接線方向であり、
+    ⚠️ **接線方向の外形はアームの幅に載らなければならない**——載らなければ足が
+    アームからはみ出す。
+
+    ⚠️ **かつてここには 41.3 × 38.8mm が `measured` として入っていた**——実際には
+    写真からの目視であった（tasks.md 群5 の申し送り）。目視を実測として記録すると、
+    出所の表だけでは誤りに届かない。
+    """
+    document = _shipped_document()
+    bracket = document["bracket"]
+    # ⚠️ **不変条件を値の錨より先に置く。** 逆に並べると、値を書き換える変異は
+    # どれも錨のほうで止まり、⚠️ 不変条件そのものは一度も落ちない——「守られて
+    # いる」という誤った信号だけが残る。
+    # ⚠️ モータ軸方向（＝半径方向）が長い。取り違えればここが落ちる。
+    assert bracket["outline_x_mm"] > bracket["outline_y_mm"]
+    # ⚠️ 接線方向の外形はアームの幅の中にある（足がはみ出さない）。
+    assert bracket["outline_y_mm"] <= document["base"]["arm_width_mm"]
+    # 実測値そのものの錨（⚠️ 測り直したときは併せて更新する）。
+    assert bracket["outline_x_mm"] == 43.1
+    assert bracket["outline_y_mm"] == 40.0
+    assert document["provenance"]["bracket.outline_x_mm"] == "measured"
+    assert document["provenance"]["bracket.outline_y_mm"] == "measured"
 
 
 def test_shipped_document_does_not_duplicate_upstream_components() -> None:
@@ -752,7 +789,7 @@ def test_digest_is_pinned_to_a_stable_literal() -> None:
     """
     assert (
         parameters_digest(load_params().chassis)
-        == "sha256:8b2b05128bdf8e8e3890b2f66174b37bc96f8a376b9211185349edcc0d44119b"
+        == "sha256:a43f10847749cbbc5f0e403510bde7de631cd4a960b5a79aac6124d2533fd43d"
     )
 
 
