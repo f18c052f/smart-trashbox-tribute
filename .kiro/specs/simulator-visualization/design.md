@@ -160,6 +160,7 @@ graph LR
     Schema --> PlanContext
     Scale --> PlanRegion
     Scale --> PlanAnimation
+    Scale --> Render
     Format --> PlanRegion
     Format --> PlanContext
     PlanRegion --> Render
@@ -185,7 +186,7 @@ graph LR
 | 2 | `plan/region.ts` | `schema`, `scale`, `format` | 不可 |
 | 2 | `plan/animation.ts` | `schema`, `scale` | 不可 |
 | 2 | `plan/context.ts` | `schema`, `format` | 不可 |
-| 3 | `view/render.ts` | `schema`, `format`, `plan/*` | **可** |
+| 3 | `view/render.ts` | `schema`, `format`, `scale`, `plan/*` | **可** |
 | 4 | `app.ts` | 0〜3 のすべて | **可** |
 | 5 | `main.ts` | `app` のみ | **可** |
 
@@ -195,6 +196,14 @@ graph LR
 >
 > `plan/animation.ts` が `format` を import しないのは意図的である。アニメーション面の文言は
 > `view/render.ts` 側で組み立てる。フレームごとに文字列を作らないための措置である。
+>
+> `view/render.ts` が `scale` を import してよいのは、格子点をピクセル座標へ変換する処理
+> （Requirements Traceability の要件 2.1 行が既に「Renderer, Scale | `linearMap`」と定めている）
+> と、軌跡アニメーションの物理座標をピクセル座標へ変換する処理を本モジュールが担うためである。
+> `plan/region.ts` / `plan/animation.ts` はピクセル座標を作らない（前者は軸の並び順のみを、
+> 後者は物理座標のみを扱う）ため、線形写像の実装は `scale.ts` の `linearMap` / `padRange` を
+> ここで直接呼ぶ以外に置き場が無い。二重実装を避けるための辺であり、`lerp` は引き続き
+> `scale.ts` 以外で書かない（境界検査 B-7）。
 
 ### Technology Stack
 
@@ -311,7 +320,7 @@ viz/
 - `sweep.axes[]` = `{ name, unit, values[] }`。`values` の要素は数値または文字列
 - `sweep.catch_ratio_threshold` は `null` になりうる（試行 1 回の掃引）
 - `cells[]` = `{ axis_values[], status, success_ratio, metrics, not_evaluated_reason }`
-- `calibration.notice` は較正済みの場合 `null` になりうる
+- `calibration.notice` は**未較正のときのみ存在する**。較正済み（`m1_calibrated` / `m2_calibrated`）では上流が**キー自体を省略する**（`src/trajectory_sim/serialize.py` の `_calibration_to_dict`）
 
 ### 列挙値（上流の値をそのまま用いる。翻訳表は `format.ts` が持つ）
 
@@ -410,7 +419,8 @@ stateDiagram-v2
 | 1.5 | 入力に無い量を作らない | Loader, 全 Planner | 境界検査 B-5 / B-6 / B-8 | — |
 | 1.6 | ファイル名を併せて提示 | ContextPlanner | `ContextPlan.identity` | 読み込み |
 | 1.7 | 記録が無くても図は描く | Loader, App | `SweepView.recordsIssue` | 読み込み |
-| 2.1 | 格子点を軸の値の位置へ配置 | RegionPlanner, Scale | `buildRegionPlan`, `linearMap` | — |
+| 2.1 | 格子点を軸の値の位置へ配置（並び順） | RegionPlanner | `buildRegionPlan` | — |
+| 2.1 | 格子点をピクセル座標へ変換（描画時） | Renderer, Scale | `linearMap` | — |
 | 2.2 | 状態を視覚的に区別 | RegionPlanner, Renderer | `RegionCell.fillKey` | — |
 | 2.3 | 軸の名前・単位・値をラベルに | RegionPlanner, Format | `RegionPlan.xAxis` / `yAxis` | — |
 | 2.4 | 成立割合と閾値の併記 | RegionPlanner | `RegionPlan.legend` | — |
@@ -530,7 +540,7 @@ export interface CellResult {
 
 export interface Calibration {
   readonly stage: CalibrationStage;
-  readonly notice: string | null;
+  readonly notice?: string | null;
 }
 
 export interface SampleEntry {
@@ -763,8 +773,16 @@ export interface RegionPlan {
   readonly displayNote: string;     // 色分けは表示上の取り決めである旨（要件 2.9）
 }
 
+/** RegionPlanner が読む項目だけを構造的に宣言する。層 2 は層 1（`load.ts`）を
+ * import できないため（Dependency Direction）、`SweepView` そのものではなく
+ * この最小構造を受け取る。実際の呼び出しでは `SweepView` を渡してよい
+ * （構造的部分型により代入可能）。 */
+export interface RegionSource {
+  readonly document: SweepDocument;
+}
+
 export function defaultSelection(sweep: SweepSpec): AxisSelection;
-export function buildRegionPlan(view: SweepView, selection: AxisSelection): RegionPlan;
+export function buildRegionPlan(view: RegionSource, selection: AxisSelection): RegionPlan;
 ```
 
 - Preconditions: `selection` の軸番号が `sweep.axes` の範囲内であること
@@ -874,7 +892,20 @@ export interface ContextPlan {
   readonly warnings: readonly string[];
 }
 
-export function buildContextPlan(view: SweepView, warnings: readonly LoadIssue[]): ContextPlan;
+/** ContextPlanner が読む項目だけを構造的に宣言する。層 2 は層 1（`load.ts`）を
+ * import できないため（Dependency Direction）、`SweepView` そのものではなく
+ * この最小構造を受け取る。実際の呼び出しでは `SweepView` を渡してよい
+ * （構造的部分型により代入可能）。 */
+export interface ContextSource {
+  readonly fileName: string;
+  readonly document: SweepDocument;
+}
+
+/** `LoadIssue` のうち本モジュールが読む項目（`detail`）だけを構造的に宣言する。
+ * `code` / `path` は Loader 内部の機構であり、ここでは必要としない。 */
+export interface ContextWarning { readonly detail: string; }
+
+export function buildContextPlan(view: ContextSource, warnings: readonly ContextWarning[]): ContextPlan;
 ```
 
 - Postconditions: `exclusions` の要素数と各 `items` の長さは、入力の `model_exclusions` と一致する
@@ -907,7 +938,13 @@ export function buildContextPlan(view: SweepView, warnings: readonly LoadIssue[]
 ```typescript
 export function renderContext(host: Element, plan: ContextPlan): void;
 export function renderRegion(host: Element, plan: RegionPlan): void;
-export function renderLoadFailure(host: Element, issues: readonly LoadIssue[]): void;
+
+/** `LoadIssue` のうち本モジュールが表示する項目（`path` / `detail`）だけを構造的に宣言する。
+ * 層 3（`view/render.ts`）は層 1（`load.ts`）を import できないため（Dependency Direction）、
+ * `LoadIssue` そのものではなくこの最小構造を受け取る。実際の呼び出しでは `LoadIssue` を
+ * 渡してよい（構造的部分型により代入可能。`plan/region.ts` の `RegionSource` と同じ理由）。 */
+export interface RenderableIssue { readonly path: string; readonly detail: string; }
+export function renderLoadFailure(host: Element, issues: readonly RenderableIssue[]): void;
 
 export interface AnimationView { readonly showFrame: (frame: FramePlan) => void; }
 export function createAnimationView(host: Element, plan: AnimationPlan): AnimationView;
@@ -993,6 +1030,10 @@ export function startApp(root: Document): void;
 
 > **B-6 と B-10 は「回避可能だが、回避が見える」検査である。** これが本 Spec の要件 7.6 の趣旨であり、
 > 検査の目的は違反を物理的に不可能にすることではなく、**違反が黙って入り込まない**ようにすることである。
+>
+> **B-6 の `predict` は `-ion` / `-ions` の名詞形（`predictions` / `PredictionEntry` / `PredictionMarker` 等）を例外とする。**
+> これらは上流 `trajectory-simulator` の出力フィールド名であり、要件 1.2（上流のフィールド名をそのまま使う）が求める
+> 必須語彙であって、アルゴリズムの実装ではないため（Decision 1）。他の 8 語にこの例外は無い。
 
 ---
 

@@ -22,3 +22,7 @@ var/
 
 # 作業メモ
 note.md
+
+# 表示レイヤの依存物とビルド出力
+viz/node_modules/
+viz/dist/

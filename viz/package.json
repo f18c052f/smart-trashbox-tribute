@@ -1,0 +1,18 @@
+{
+  "name": "stb-viz-view",
+  "version": "0.1.0",
+  "private": true,
+  "description": "掃引結果 JSON を開発PC のブラウザで表示する層",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "tsc && node --test dist/tests/*.test.js"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "typescript": "^5.5.0"
+  }
+}

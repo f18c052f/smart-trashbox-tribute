@@ -1,0 +1,320 @@
+/* 最小限のレイアウトと、図の色の定義。CSS フレームワークを使わない。 */
+
+:root {
+  /* 画面の地色と文字色 */
+  --surface-color: #ffffff;
+  --surface-muted-color: #f4f4f5;
+  --text-color: #1a1a1a;
+  --border-color: #d4d4d8;
+
+  /* 図の骨格 */
+  --figure-background-color: #ffffff;
+  --axis-color: #52525b;
+  --grid-line-color: #e4e4e7;
+
+  /* 格子点の色。RegionCell.fillKey をそのままクラス名に写す（要件 2.2 / 2.5）。
+     帯は plan/region.ts の SUCCESS_RATIO_BANDS と同じ 0 始まりの 4 段（band-0〜band-3）。
+     success_ratio を持つ格子点は状態を問わず帯が付くため（fillKeyOf は catchable に
+     限らず帯を付ける）、catchable / not-catchable / not-evaluated のいずれにも
+     band-0〜band-3 のバリエーションが存在する。以前の定義は band-1〜band-4（1 始まり）
+     しか持たず、catchable 以外の帯・成立割合を持たない素の状態色が欠けていた。 */
+  --cell-catchable-color: #e3f3e6;
+  --cell-catchable-band-0-color: #cfe8d5;
+  --cell-catchable-band-1-color: #9ed2ac;
+  --cell-catchable-band-2-color: #6bb984;
+  --cell-catchable-band-3-color: #3d9d5e;
+
+  --cell-not-catchable-color: #f6e9e6;
+  --cell-not-catchable-band-0-color: #e8d5cf;
+  --cell-not-catchable-band-1-color: #dcb8ae;
+  --cell-not-catchable-band-2-color: #cf9a8c;
+  --cell-not-catchable-band-3-color: #bf7c6b;
+
+  --cell-not-evaluated-color: #e4e4e7;
+  --cell-not-evaluated-band-0-color: #d4d4d8;
+  --cell-not-evaluated-band-1-color: #c1c1c6;
+  --cell-not-evaluated-band-2-color: #adadb3;
+  --cell-not-evaluated-band-3-color: #98989f;
+  --cell-not-evaluated-stroke-color: #a1a1aa;
+
+  /* 凡例専用のスウォッチ色。帯そのもの（状態を問わない）と、上流の判定閾値の凡例に使う。
+     格子点の色（上の --cell-*）とは別の名前空間に持ち、混ざらないようにする。 */
+  --legend-band-0-color: #d4d4d8;
+  --legend-band-1-color: #a1a1aa;
+  --legend-band-2-color: #71717a;
+  --legend-band-3-color: #3f3f46;
+  --legend-threshold-color: transparent;
+
+  /* 軌跡アニメーション */
+  --track-line-color: #3f6cb3;
+  --track-head-color: #1f3f73;
+  --track-invalid-color: #a1a1aa;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--surface-color);
+  color: var(--text-color);
+  font-family: system-ui, sans-serif;
+  line-height: 1.6;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  max-width: 72rem;
+  margin: 0 auto;
+  padding: 1rem;
+}
+
+svg {
+  background: var(--figure-background-color);
+  max-width: 100%;
+  height: auto;
+}
+
+/* --- キャッチ可能領域の図（要件 2.1〜2.9）。fillKey をクラス名としてそのまま受け取り、
+   色の対応はここだけに置く（plan/region.ts と view/render.ts は色を決めない）。 --- */
+
+.region-axis-label,
+.region-axis-name,
+.region-legend-label {
+  fill: var(--text-color);
+  font-family: system-ui, sans-serif;
+  font-size: 0.75rem;
+}
+
+.region-axis-label--column,
+.region-axis-name--x {
+  text-anchor: middle;
+}
+
+.region-axis-label--row,
+.region-axis-name--y {
+  text-anchor: end;
+  dominant-baseline: middle;
+}
+
+.region-cell {
+  stroke: var(--axis-color);
+  stroke-width: 1;
+}
+
+.region-cell.catchable { fill: var(--cell-catchable-color); }
+.region-cell.catchable-band-0 { fill: var(--cell-catchable-band-0-color); }
+.region-cell.catchable-band-1 { fill: var(--cell-catchable-band-1-color); }
+.region-cell.catchable-band-2 { fill: var(--cell-catchable-band-2-color); }
+.region-cell.catchable-band-3 { fill: var(--cell-catchable-band-3-color); }
+
+.region-cell.not-catchable { fill: var(--cell-not-catchable-color); }
+.region-cell.not-catchable-band-0 { fill: var(--cell-not-catchable-band-0-color); }
+.region-cell.not-catchable-band-1 { fill: var(--cell-not-catchable-band-1-color); }
+.region-cell.not-catchable-band-2 { fill: var(--cell-not-catchable-band-2-color); }
+.region-cell.not-catchable-band-3 { fill: var(--cell-not-catchable-band-3-color); }
+
+.region-cell.not-evaluated,
+.region-cell.not-evaluated-band-0,
+.region-cell.not-evaluated-band-1,
+.region-cell.not-evaluated-band-2,
+.region-cell.not-evaluated-band-3 {
+  stroke: var(--cell-not-evaluated-stroke-color);
+  stroke-dasharray: 3 2;
+}
+.region-cell.not-evaluated { fill: var(--cell-not-evaluated-color); }
+.region-cell.not-evaluated-band-0 { fill: var(--cell-not-evaluated-band-0-color); }
+.region-cell.not-evaluated-band-1 { fill: var(--cell-not-evaluated-band-1-color); }
+.region-cell.not-evaluated-band-2 { fill: var(--cell-not-evaluated-band-2-color); }
+.region-cell.not-evaluated-band-3 { fill: var(--cell-not-evaluated-band-3-color); }
+
+.region-legend-swatch {
+  stroke: var(--axis-color);
+  stroke-width: 1;
+}
+.region-legend-swatch.catchable { fill: var(--cell-catchable-color); }
+.region-legend-swatch.not-catchable { fill: var(--cell-not-catchable-color); }
+.region-legend-swatch.not-evaluated {
+  fill: var(--cell-not-evaluated-color);
+  stroke: var(--cell-not-evaluated-stroke-color);
+  stroke-dasharray: 3 2;
+}
+.region-legend-swatch.band-0 { fill: var(--legend-band-0-color); }
+.region-legend-swatch.band-1 { fill: var(--legend-band-1-color); }
+.region-legend-swatch.band-2 { fill: var(--legend-band-2-color); }
+.region-legend-swatch.band-3 { fill: var(--legend-band-3-color); }
+.region-legend-swatch.threshold {
+  fill: var(--legend-threshold-color);
+  stroke: var(--axis-color);
+  stroke-dasharray: 2 2;
+}
+
+.region-notes {
+  font-size: 0.85rem;
+  color: var(--text-color);
+}
+
+.region-fixed-axes {
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
+/* --- 前提・限界・同一性のパネル（要件 3.1〜3.5 / 4.1〜4.4） --- */
+
+.context-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.context-calibration-banner {
+  padding: 0.5rem 0.75rem;
+  background: var(--surface-muted-color);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+}
+
+.context-calibration-stage {
+  font-weight: 600;
+}
+
+.context-warnings,
+.context-exclusion-items {
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
+.context-identity {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem 0.75rem;
+  margin: 0;
+}
+
+.context-identity-label {
+  color: var(--axis-color);
+}
+
+.context-exclusion-stage {
+  margin: 0.25rem 0;
+}
+
+table.context-drivetrain,
+table.context-parameters {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+table.context-drivetrain td,
+table.context-parameters td {
+  border-bottom: 1px solid var(--border-color);
+  padding: 0.25rem 0.5rem;
+  text-align: left;
+}
+
+/* --- 読み込み失敗（要件 1.2 / 1.3） --- */
+
+.load-failure-heading {
+  font-weight: 600;
+  color: var(--text-color);
+}
+
+.load-failure-issues {
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
+/* --- 軌跡アニメーション（要件 5.1〜5.5） --- */
+
+.track-view {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.track-path {
+  fill: none;
+  stroke: var(--track-line-color);
+  stroke-width: 1;
+  opacity: 0.35;
+}
+
+.track-path-traversed {
+  fill: none;
+  stroke: var(--track-line-color);
+  stroke-width: 2;
+}
+
+.track-prediction {
+  fill: var(--track-invalid-color);
+  stroke: var(--track-head-color);
+  stroke-width: 1;
+}
+
+.track-prediction--active {
+  fill: var(--track-head-color);
+}
+
+.track-head {
+  fill: var(--track-head-color);
+}
+
+.track-head--hidden {
+  display: none;
+}
+
+.track-time {
+  fill: var(--text-color);
+  font-family: system-ui, sans-serif;
+  font-size: 0.75rem;
+}
+
+.track-prediction-list {
+  margin: 0;
+  padding-left: 1.25rem;
+  font-size: 0.85rem;
+}
+
+.track-prediction-row--active {
+  font-weight: 600;
+}
+
+.track-unavailable {
+  color: var(--axis-color);
+  font-style: italic;
+}
+
+/* --- 画面の組み立て（app.ts が動的に生成する操作パネル）。既存のパネル同様、
+   flex の縦積みと軽い余白だけで、新しい配色は増やさない。 --- */
+
+.app-axis-controls,
+.app-record-controls,
+.app-playback-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 0.85rem;
+}
+
+.app-axis-fixed-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.app-axis-label,
+.app-axis-fixed-label,
+.app-record-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.app-track-host {
+  display: flex;
+  justify-content: center;
+}
