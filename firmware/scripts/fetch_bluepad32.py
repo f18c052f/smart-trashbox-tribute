@@ -63,6 +63,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -118,6 +119,32 @@ BLUEPAD32_REF = "4.2.0"
 # (requirement 10.6: no PCNT/core/Bluepad32 in the bench *link*) is verified
 # against .pio/build/bench/firmware.map instead, not by skipping this fetch.
 _EXPECTED_PIOENVS = frozenset({"teleop", "bench"})
+
+
+def _rmtree_force(path: Path) -> None:
+    """`shutil.rmtree` that can also remove a git checkout on Windows.
+
+    ⚠️ Verified empirically: a plain `shutil.rmtree` on a previous
+    `.deps/bluepad32` checkout fails with
+    `PermissionError: [WinError 5]` on
+    `.git/modules/external/btstack/objects/pack/pack-*.idx`. Git marks pack
+    files read-only, and on Windows the read-only attribute blocks
+    `os.unlink` outright (on POSIX the *directory* write bit is what
+    governs removal, so the same tree deletes fine there -- which is why
+    this only ever bites Windows users).
+
+    The handler clears the read-only bit and retries the operation that
+    failed. Anything that still fails after that is a real error and is
+    allowed to propagate.
+    """
+
+    def _on_error(func, target, _exc_info):  # type: ignore[no-untyped-def]
+        os.chmod(target, stat.S_IWRITE)
+        func(target)
+
+    # `onerror` (not `onexc`) because PlatformIO pins Python 3.11 here; the
+    # newer `onexc` spelling does not exist before 3.12.
+    shutil.rmtree(path, onerror=_on_error)
 
 
 def _run(args: list[str], cwd: Path, extra_env: dict[str, str] | None = None) -> None:
@@ -232,15 +259,44 @@ def fetch_and_integrate() -> None:
 
     if BLUEPAD32_DIR.exists():
         print(f"[fetch_bluepad32] removing incomplete previous checkout at {BLUEPAD32_DIR}")
-        shutil.rmtree(BLUEPAD32_DIR)
+        _rmtree_force(BLUEPAD32_DIR)
 
     DEPS_DIR.mkdir(parents=True, exist_ok=True)
 
     print(f"[fetch_bluepad32] cloning {BLUEPAD32_REPO} @ {BLUEPAD32_REF} (recursive, shallow)")
+    # ⚠️ Disable end-of-line translation for this clone and every git
+    # subprocess it spawns (submodules included).
+    #
+    # Verified empirically on Windows with a global `core.autocrlf=true`:
+    # the checkout rewrites Bluepad32's own `external/patches/*.patch` to
+    # CRLF, and the `git apply` below then fails with
+    # "error: corrupt patch at line 20" -- git's patch parser rejects the
+    # CR before the newline in the hunk body. The checked-out BTstack
+    # sources would be CRLF too, so even a byte-correct patch could fail to
+    # match its context lines. Both halves of the problem disappear if the
+    # working tree is left as-is (LF).
+    #
+    # `-c` (as opposed to `--config`) is what propagates: git exports it via
+    # GIT_CONFIG_PARAMETERS, which child git processes inherit -- that is
+    # how `--recurse-submodules` picks it up for the BTstack submodule.
+    # `--config` is kept as well so that any *later* git operation inside
+    # the clone (e.g. a manual re-checkout while debugging) keeps the same
+    # setting rather than silently reverting to the user's global value.
+    #
+    # ⚠️ This project's own `.gitattributes` cannot fix this: it governs
+    # this repository, not a third-party repository cloned into `.deps/`.
     _run(
         [
             "git",
+            "-c",
+            "core.autocrlf=false",
+            "-c",
+            "core.eol=lf",
             "clone",
+            "--config",
+            "core.autocrlf=false",
+            "--config",
+            "core.eol=lf",
             "--branch",
             BLUEPAD32_REF,
             "--depth",
