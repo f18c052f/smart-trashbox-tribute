@@ -113,6 +113,22 @@ Tool Manager: tool-scons@4.41101.0 has been installed!
 ⚠️ **VSCode 拡張が Core を 6.2.0 へ上げ直すと再発する。** 症状は同じなので、
 `tool-scons` のインストール行が2種類出ていたら本節を疑う。
 
+🔶 **入れる拡張そのものを間違えている可能性がある。** PlatformIO が生成した
+`firmware/.vscode/extensions.json` は次を推奨している。
+
+```json
+"recommendations": ["Jason2866.esp-decoder", "pioarduino.pioarduino-ide"],
+"unwantedRecommendations": ["ms-vscode.cpptools-extension-pack"]
+```
+
+つまり本プロジェクトが想定しているのは **`pioarduino.pioarduino-ide`** であって、
+素の「PlatformIO IDE」拡張ではない。素の拡張は自前の Core（6.2.0）を管理するため、
+上記の版不一致を持ち込む。再発したら拡張を pioarduino 版へ入れ替えて試すこと。
+
+⚠️ この推奨は VSCode 拡張の導入時に自動生成されたものであり、
+**追跡対象にしてある**（`.gitignore` で `extensions.json` だけ除外していない）。
+他の `.vscode/` 配下はこのマシンの絶対パスを含むため追跡しない。
+
 🔶 **試して外れた仮説**（同じ道を辿らないための記録）:
 
 - 「素の `platformio` と `pioarduino` が同じモジュールツリーを奪い合っている」

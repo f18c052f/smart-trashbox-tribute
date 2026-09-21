@@ -17,6 +17,14 @@ venv/
 # エディタ / OS
 .DS_Store
 
+# VSCode。自動生成物はこのマシンの絶対パスを含むため追跡しない。
+# extensions.json だけは可搬であり、⚠️ **どの拡張を入れるべきか**（pioarduino 版）を
+# 示すため追跡する（bringup-procedure.md §0.2 を参照）。
+.vscode/*
+!.vscode/extensions.json
+firmware/.vscode/*
+!firmware/.vscode/extensions.json
+
 # 記録データ・ログ・ベンチ結果の出力先（要件 12.6）
 var/
 
