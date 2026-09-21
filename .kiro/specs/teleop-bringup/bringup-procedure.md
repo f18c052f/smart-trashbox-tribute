@@ -20,22 +20,40 @@
 | タスク 2.3（回路図） | 🔶 作図入力まで完了（[`schematic-draft.md`](./schematic-draft.md) / [`schematic-draft.html`](./schematic-draft.html)）。成果物の `schematic.svg` は Cirkit Designer で作図中 |
 | タスク 8.1（本手順書） | ✅ この文書 |
 | タスク 8.2 以降 | ⬜ 未着手 |
-| **案B のファーム実装** | 🔶 **書き上げ済み・未コンパイル**（`firmware/src/teleop/motor_ledc.{hpp,cpp}`） |
-| **ビルド環境** | ⛔ **ESP-IDF ツールチェーン未導入。VSCode の PlatformIO 拡張を入れ直す予定** |
+| **案B のファーム実装** | ✅ **ビルド確認済み**（`firmware/src/teleop/motor_ledc.{hpp,cpp}`）。⚠️ 挙動の確認は未了。E-3 が行う |
+| **ビルド環境** | ✅ **解決済み**。`[env:bench]` / `[env:teleop]` とも SUCCESS。つまずいた点は §0.2 に全部残してある |
 
-### 0.2 ⛔ いまのブロッカー
+### 0.2 ✅ ビルド環境（解決済み・つまずいた点の記録）
 
-**ESP-IDF ツールチェーンが入っていない。** `~/.platformio/packages/` の
-`tool-cmake` / `tool-ninja` / `toolchain-xtensa-esp-elf` / `tool-esptool` 等が
-中身の無い殻で、`.piopm`（導入済みの印）だけが残っているため PlatformIO が取り直さない。
-`~/.espressif` も存在しない。
+**2026-09-21 に `[env:bench]` / `[env:teleop]` とも SUCCESS。**
 
-**解消手順**: `~/.platformio` をフォルダごと削除 → VSCode の PlatformIO 拡張を導入 →
+| ビルド | Flash | RAM |
+|---|---|---|
+| `[env:bench]` | 207,133 B | 18,220 B (5.6%) |
+| `[env:teleop]` | 538,373 B | 99,140 B (30.3%) |
+
+✅ **要件 10.6 の分離も確認済み。** bench の ELF には `uni_bt_setup` /
+`btstack_run_loop_execute` / `pcnt_new_unit` のいずれも存在しない（teleop には存在する）。
+⚠️ `firmware.map` の grep では判定できない。捨てられたセクションや探索した書庫も
+拾ってしまうため、**`nm` で ELF のシンボルを見ること**。
+
+本節は環境構築でつまずいた点をすべて記録してある。⚠️ **新しいマシンで環境を作るときは
+ここを上から順に確認する。**
+
+#### 環境構築の初期手順
+
+`~/.platformio` をフォルダごと削除 → VSCode の PlatformIO 拡張を導入 →
 `firmware/` で `pio run -e bench`。初回はツールチェーン約1GB と Bluepad32 / BTstack の
 取得が走り、20分程度かかる。
 
-⚠️ **その初回ビルドには、`firmware/scripts/fetch_bluepad32.py` の Windows 対応2件が必須である**
-（本リポジトリは `core.autocrlf=true` の環境にある）。素のままだと必ず次で止まる。
+⚠️ **ツールチェーンの導入が途中で失敗すると、`tool-cmake` などが中身の無い殻のまま
+`.piopm`（導入済みの印）だけ残り、PlatformIO が二度と取り直さない。**
+`~/.espressif` が作られていなければ導入は完了していない。
+この状態になったら `~/.platformio` を消してやり直すのが早い。
+
+#### ⚠️ `fetch_bluepad32.py` の Windows 対応が必須
+
+本リポジトリは `core.autocrlf=true` の環境にある。素のままだと必ず次で止まる。
 
 | 症状 | 原因 | 対応 |
 |---|---|---|
@@ -43,6 +61,75 @@
 | `PermissionError: [WinError 5]` | git のパックファイルが読み取り専用で `shutil.rmtree` が消せない | 読み取り専用ビットを落として再試行する `onerror` ハンドラ |
 
 いずれも修正済み（`f0f7c2f`）で、Bluepad32 の取得とパッチ適用まで通ることは確認済みである。
+
+#### ⚠️ VSCode 拡張は `firmware/` をルートにして開く
+
+PlatformIO の VSCode 拡張は、**ワークスペースのルートに `platformio.ini` があること**を
+前提にする。本リポジトリでは `firmware/platformio.ini` にあるため、
+**リポジトリのルートを開いたままでは拡張が働かない。**
+
+→ `firmware/` を別ウィンドウでルートとして開き直す
+（またはマルチルートワークスペースへ `firmware/` を足す）。
+
+⚠️ `platformio.ini` をリポジトリのルートへ移すことでは解決しない。
+固定側（Python）と移動体側（ファームウェア）を分ける `structure.md` の構成が崩れる。
+
+#### ⚠️ platform と PlatformIO Core が要求する SCons の版が食い違う
+
+**これが最後まで残ったブロッカーである。**
+
+本プロジェクトは pioarduino の platform-espressif32 を **55.03.311 に固定**して使う
+（要件 1.7）。この platform とコアが、**同じ `tool-scons` というパッケージ名に対して
+別の版を要求する**。
+
+| 要求元 | 要求する版 | 出典 |
+|---|---|---|
+| platform 55.03.311 | **4.40801.0**（SCons 4.8.1） | `platforms/espressif32/platform.json` の `tool-scons` |
+| Core **6.2.0** | 4.41101.0（scons-local 4.11.1） | Core の `platformio/dependencies.py` |
+| Core **6.1.19** | **4.40801.0**（scons-local 4.8.1） | 同上（wheel を展開して確認） |
+
+同じディレクトリ（`packages/tool-scons`）を奪い合うため、毎回こうなる。
+
+```
+Tool Manager: tool-scons@4.40801.0 has been installed!     <- platform が要求
+Tool Manager: tool-scons@4.41101.0 has been installed!     <- Core 6.2.0 が要求
+Tool Manager: tool-scons@4.41101.0 has been installed!
+...
+*** [.pio/build/bench/firmware.elf] ModuleNotFoundError : No module named 'SCons.Tool.FortranCommon'
+```
+
+⚠️ **ビルド後に `packages/tool-scons` ごと消えている**（実測）。
+不完全な状態でリンク段に使われるため、上記のエラーになる。
+
+⚠️ **ESP-IDF 側のコンパイルは全部通る。落ちるのは最後のリンク段だけ**である。
+そのため「あと少し」に見えるが、原因は環境の版不一致であってコードではない。
+
+**対処**: Core を platform に合わせて **6.1.19** へ下げる。**これで解決した。**
+
+```
+<PlatformIO Core Dir>/penv/Scripts/python.exe -m pip install --no-cache-dir "pioarduino==6.1.19"
+```
+
+⚠️ **VSCode 拡張が Core を 6.2.0 へ上げ直すと再発する。** 症状は同じなので、
+`tool-scons` のインストール行が2種類出ていたら本節を疑う。
+
+🔶 **試して外れた仮説**（同じ道を辿らないための記録）:
+
+- 「素の `platformio` と `pioarduino` が同じモジュールツリーを奪い合っている」
+  → 両方アンインストールして `pioarduino` だけにしても**再現した**。無関係だった。
+- 「`.pio` に古い SCons の状態が残っている」
+  → `.pio` を消しても**再現した**。無関係だった。
+
+#### 🔶 Flash サイズの警告（別件・未対応）
+
+```
+Warning! Flash memory size mismatch detected. Expected 4MB, found 2MB!
+```
+
+`board = esp32dev` は 4MB を想定するが、`sdkconfig.defaults*` のどれも
+`CONFIG_ESPTOOLPY_FLASHSIZE_*` を設定していないため ESP-IDF の既定（2MB）になる。
+`board_build.partitions = partitions_singleapp_large.csv` は 4MB 前提の表であり、
+**書き込み時に破綻する可能性がある**。ビルドが通ったら確かめる（タスク 1.1 の範囲）。
 
 ### 0.3 確定済みの設計判断（実施中に迷ったらここを見る）
 
