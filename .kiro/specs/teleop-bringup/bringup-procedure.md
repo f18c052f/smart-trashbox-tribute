@@ -104,7 +104,32 @@ Tool Manager: tool-scons@4.41101.0 has been installed!
 ⚠️ **ESP-IDF 側のコンパイルは全部通る。落ちるのは最後のリンク段だけ**である。
 そのため「あと少し」に見えるが、原因は環境の版不一致であってコードではない。
 
-**対処**: Core を platform に合わせて **6.1.19** へ下げる。**これで解決した。**
+**対処（本筋）**: ⚠️ **VSCode 拡張を pioarduino 版にする。**
+
+```
+code --uninstall-extension platformio.platformio-ide
+code --uninstall-extension ms-vscode.cpptools-extension-pack
+code --install-extension pioarduino.pioarduino-ide
+code --install-extension Jason2866.esp-decoder
+code --install-extension ms-vscode.cpptools
+```
+
+🔶 最後の1行に注意。`unwantedRecommendations` にあるのは **cpptools の
+「拡張パック」**であって cpptools 本体ではない。パックを消すと本体まで
+一緒に消えるため、本体だけ入れ直す（PlatformIO が生成する
+`c_cpp_properties.json` はこれ向けである）。
+
+**対処（応急）**: Core を platform に合わせて **6.1.19** へ下げる。
+
+```
+<PlatformIO Core Dir>/penv/Scripts/python.exe -m pip install --no-cache-dir "pioarduino==6.1.19"
+```
+
+⚠️ こちらは拡張の管理外で手当てする形なので、**拡張が Core を入れ直すと元に戻る**。
+恒久的には上の「本筋」で直すこと。
+
+2026-09-21 の実績: まず応急でビルドを通し、そのあと拡張を入れ替えた。
+入れ替え後も `[env:bench]` は SUCCESS のままであることを確認済み。
 
 ```
 <PlatformIO Core Dir>/penv/Scripts/python.exe -m pip install --no-cache-dir "pioarduino==6.1.19"
@@ -113,7 +138,7 @@ Tool Manager: tool-scons@4.41101.0 has been installed!
 ⚠️ **VSCode 拡張が Core を 6.2.0 へ上げ直すと再発する。** 症状は同じなので、
 `tool-scons` のインストール行が2種類出ていたら本節を疑う。
 
-🔶 **入れる拡張そのものを間違えている可能性がある。** PlatformIO が生成した
+⚠️ **根本原因は「入れた拡張が違う」ことだった。** PlatformIO が生成した
 `firmware/.vscode/extensions.json` は次を推奨している。
 
 ```json
@@ -123,7 +148,11 @@ Tool Manager: tool-scons@4.41101.0 has been installed!
 
 つまり本プロジェクトが想定しているのは **`pioarduino.pioarduino-ide`** であって、
 素の「PlatformIO IDE」拡張ではない。素の拡張は自前の Core（6.2.0）を管理するため、
-上記の版不一致を持ち込む。再発したら拡張を pioarduino 版へ入れ替えて試すこと。
+上記の版不一致を持ち込む。
+
+⚠️ 実際、環境を作り直した際に入っていたのは素の `platformio.platformio-ide` であり、
+`unwantedRecommendations` の `ms-vscode.cpptools-extension-pack` も入っていた。
+**推奨のとおりに入れ替えるのが本筋**である（手順は下記）。
 
 ⚠️ この推奨は VSCode 拡張の導入時に自動生成されたものであり、
 **追跡対象にしてある**（`.gitignore` で `extensions.json` だけ除外していない）。
