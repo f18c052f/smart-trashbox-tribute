@@ -128,8 +128,21 @@ code --install-extension ms-vscode.cpptools
 ⚠️ こちらは拡張の管理外で手当てする形なので、**拡張が Core を入れ直すと元に戻る**。
 恒久的には上の「本筋」で直すこと。
 
-2026-09-21 の実績: まず応急でビルドを通し、そのあと拡張を入れ替えた。
-入れ替え後も `[env:bench]` は SUCCESS のままであることを確認済み。
+**2026-09-21 に決着した状態**（ここへ収束すれば正しい）:
+
+| 項目 | 値 |
+|---|---|
+| VSCode 拡張 | `pioarduino.pioarduino-ide` ＋ `jason2866.esp-decoder` ＋ `ms-vscode.cpptools` |
+| PlatformIO Core | `pioarduino` **6.1.19** |
+| `packages/tool-scons` | **4.40801.0**（消えずに残る） |
+| ビルド | `[env:bench]` / `[env:teleop]` とも SUCCESS |
+
+⚠️ **`tool-scons` が 4.40801.0 のまま残っていることが健全さの目印である。**
+毎回2種類インストールされて消えるなら、また版が食い違っている。
+
+🔶 拡張を入れ替えた直後は、古い VSCode ウィンドウが
+「Both extensions cannot be active at the same time」を出すことがある。
+**pioarduino IDE を選び、ウィンドウを開き直す。**
 
 ```
 <PlatformIO Core Dir>/penv/Scripts/python.exe -m pip install --no-cache-dir "pioarduino==6.1.19"
