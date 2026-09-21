@@ -1,0 +1,1553 @@
+<title>3輪オムニ足回り結線図</title>
+<style>
+  :root {
+    --sans: "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic UI", "Yu Gothic", "Noto Sans JP", "Meiryo", system-ui, sans-serif;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, "Roboto Mono", monospace;
+
+    --paper: #E9EDF1;
+    --surface: #FFFFFF;
+    --surface-2: #F5F8FA;
+    --ink: #111A21;
+    --ink-2: #3C4A55;
+    --muted: #6A7A86;
+    --line: #C4CED6;
+    --line-soft: #DDE4EA;
+    --accent: #0B6E75;
+    --accent-ink: #085257;
+    --accent-wash: #0b6e751a;
+    --warn: #A8402B;
+    --warn-wash: #a8402b14;
+    --warn-line: #a8402b45;
+
+    --w-red: #CE3A34;
+    --w-wht: #FFFFFF;
+    --w-blk: #12181D;
+    --w-blu: #2563A8;
+    --w-yel: #D2A017;
+    --w-grn: #2E8B45;
+    --w-sig: #5E7181;
+    --w-5v:  #C96A1E;
+    --wire-outline: #2B343C;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #0D1419;
+      --surface: #141D24;
+      --surface-2: #1A242C;
+      --ink: #E6EDF2;
+      --ink-2: #B2C0CA;
+      --muted: #7C8C98;
+      --line: #2B3843;
+      --line-soft: #222D36;
+      --accent: #45B8B0;
+      --accent-ink: #7FD6CF;
+      --accent-wash: #45b8b01f;
+      --warn: #E28A6C;
+      --warn-wash: #e28a6c14;
+      --warn-line: #e28a6c45;
+
+      --w-red: #F0685F;
+      --w-wht: #FFFFFF;
+      --w-blk: #090D11;
+      --w-blu: #5CA2E8;
+      --w-yel: #E6C04C;
+      --w-grn: #4FC06B;
+      --w-sig: #8FA3B2;
+      --w-5v:  #E89544;
+      --wire-outline: #DBE4EB;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper: #0D1419;
+    --surface: #141D24;
+    --surface-2: #1A242C;
+    --ink: #E6EDF2;
+    --ink-2: #B2C0CA;
+    --muted: #7C8C98;
+    --line: #2B3843;
+    --line-soft: #222D36;
+    --accent: #45B8B0;
+    --accent-ink: #7FD6CF;
+    --accent-wash: #45b8b01f;
+    --warn: #E28A6C;
+    --warn-wash: #e28a6c14;
+    --warn-line: #e28a6c45;
+
+    --w-red: #F0685F;
+    --w-wht: #FFFFFF;
+    --w-blk: #090D11;
+    --w-blu: #5CA2E8;
+    --w-yel: #E6C04C;
+    --w-grn: #4FC06B;
+    --w-sig: #8FA3B2;
+    --w-5v:  #E89544;
+    --wire-outline: #DBE4EB;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.75;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 1140px;
+    margin: 0 auto;
+    padding: 40px 20px 96px;
+    display: flex;
+    flex-direction: column;
+    gap: 34px;
+  }
+
+  /* ---- masthead ---- */
+  .mast { display: flex; flex-direction: column; gap: 10px; padding-bottom: 6px; }
+  .mast__eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .18em;
+    color: var(--accent);
+    text-transform: uppercase;
+  }
+  .mast__title {
+    margin: 0;
+    font-size: clamp(26px, 4vw, 38px);
+    line-height: 1.2;
+    letter-spacing: -.01em;
+    font-weight: 700;
+    text-wrap: balance;
+  }
+  .mast__lede { margin: 0; max-width: 64ch; color: var(--ink-2); }
+  .mast__meta {
+    display: flex; flex-wrap: wrap; gap: 8px 18px;
+    margin-top: 6px; padding-top: 14px;
+    border-top: 1px solid var(--line);
+    font-family: var(--mono); font-size: 11.5px; color: var(--muted);
+  }
+
+  /* ---- prose ---- */
+  h2 {
+    margin: 0 0 2px;
+    font-size: 20px; font-weight: 700; letter-spacing: -.005em;
+  }
+  p { margin: 0; max-width: 72ch; }
+  .sec { display: flex; flex-direction: column; gap: 14px; }
+
+  /* ---- callout ---- */
+  .warn {
+    border: 1px solid var(--warn-line);
+    border-left: 3px solid var(--warn);
+    background: var(--warn-wash);
+    border-radius: 3px;
+    padding: 18px 20px;
+    display: flex; flex-direction: column; gap: 12px;
+  }
+  .warn__h {
+    font-weight: 700; font-size: 16px; color: var(--warn);
+    display: flex; gap: 9px; align-items: baseline;
+  }
+  .warn__tag {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .14em;
+    border: 1px solid var(--warn-line); color: var(--warn);
+    padding: 2px 7px; border-radius: 2px; white-space: nowrap;
+  }
+
+  .okb {
+    border: 1px solid var(--accent);
+    border-left: 3px solid var(--accent);
+    background: var(--accent-wash);
+    border-radius: 3px;
+    padding: 18px 20px;
+    display: flex; flex-direction: column; gap: 12px;
+  }
+  .okb__h {
+    font-weight: 700; font-size: 16px; color: var(--accent-ink);
+    display: flex; gap: 9px; align-items: baseline;
+  }
+  .okb__tag {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .14em;
+    border: 1px solid var(--accent); color: var(--accent-ink);
+    padding: 2px 7px; border-radius: 2px; white-space: nowrap;
+  }
+  .pill.g { border-color: var(--accent); color: var(--accent-ink); }
+
+  /* ---- figure panel: title-block styling borrowed from drafting sheets ---- */
+  .fig {
+    border: 1px solid var(--line);
+    background: var(--surface);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .fig__head {
+    display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
+    padding: 11px 16px;
+    border-bottom: 1px solid var(--line);
+    background: var(--surface-2);
+  }
+  .fig__no {
+    font-family: var(--mono); font-size: 11px; font-weight: 600;
+    letter-spacing: .16em; color: var(--accent);
+  }
+  .fig__title { font-size: 14.5px; font-weight: 700; }
+  .fig__sub { font-size: 12.5px; color: var(--muted); margin-left: auto; }
+  .fig__body { padding: 16px 14px; overflow-x: auto; }
+  .fig__foot {
+    padding: 12px 16px 14px;
+    border-top: 1px dashed var(--line-soft);
+    font-size: 12.5px; color: var(--muted);
+    display: flex; flex-direction: column; gap: 5px;
+  }
+  .fig__foot b { color: var(--ink-2); font-weight: 600; }
+
+  /* ---- tables ---- */
+  .tbl-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 3px; background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; min-width: 520px; }
+  caption {
+    caption-side: top; text-align: left;
+    padding: 11px 14px; background: var(--surface-2);
+    border-bottom: 1px solid var(--line);
+    font-size: 12.5px; font-weight: 600; color: var(--ink-2);
+  }
+  th, td { padding: 8px 14px; text-align: left; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+  thead th {
+    font-family: var(--mono); font-size: 11px; font-weight: 600;
+    letter-spacing: .1em; color: var(--muted); text-transform: uppercase;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  td.m, th.m { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .pill {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .06em;
+    padding: 1px 6px; border-radius: 2px; border: 1px solid var(--warn-line);
+    color: var(--warn); white-space: nowrap;
+  }
+  .swatch {
+    display: inline-block; width: 11px; height: 11px; border-radius: 2px;
+    border: 1px solid var(--wire-outline); vertical-align: -1px; margin-right: 7px;
+  }
+
+  ul { margin: 0; padding-left: 1.15em; max-width: 72ch; }
+  li { margin-bottom: 5px; }
+  li::marker { color: var(--muted); }
+  code {
+    font-family: var(--mono); font-size: .88em;
+    background: var(--accent-wash); color: var(--accent-ink);
+    padding: 1px 5px; border-radius: 2px;
+  }
+
+  /* ---- svg primitives ---- */
+  .dia { display: block; min-width: 900px; width: 100%; height: auto; }
+  .bx   { fill: var(--surface-2); stroke: var(--ink-2); stroke-width: 1.4; }
+  .bxd  { fill: none; stroke: var(--muted); stroke-width: 1.4; stroke-dasharray: 6 4; }
+  .ref  { fill: var(--ink); font: 700 12.5px var(--mono); letter-spacing: .05em; }
+  .nm   { fill: var(--ink-2); font: 500 11.5px var(--sans); }
+  .pin  { fill: var(--ink-2); font: 500 10.5px var(--mono); letter-spacing: .04em; }
+  .net  { fill: var(--ink-2); font: 600 10.5px var(--mono); letter-spacing: .07em; }
+  .nt   { fill: var(--muted); font: 400 11px var(--sans); }
+  .nw   { fill: var(--warn); font: 600 11px var(--sans); }
+  .ok   { fill: var(--accent); font: 700 12px var(--sans); }
+  .dot  { fill: var(--ink-2); }
+  .tpdot { fill: var(--accent); }
+  .tptx { fill: var(--accent); font: 700 10.5px var(--mono); letter-spacing: .06em; }
+
+  .wo { fill: none; stroke: var(--wire-outline); stroke-width: 6.2; stroke-linecap: round; stroke-linejoin: round; }
+  .wo.t { stroke-width: 4.6; }
+  .w  { fill: none; stroke-width: 3.4; stroke-linecap: round; stroke-linejoin: round; }
+  .w.t { stroke-width: 2.0; }
+  .w.dash { stroke-dasharray: 9 5; }
+  .red { stroke: var(--w-red); } .wht { stroke: var(--w-wht); } .blk { stroke: var(--w-blk); }
+  .blu { stroke: var(--w-blu); } .yel { stroke: var(--w-yel); } .grn { stroke: var(--w-grn); }
+  .sig { stroke: var(--w-sig); } .v5  { stroke: var(--w-5v); }
+  .plate { stroke: var(--ink-2); stroke-width: 2.6; stroke-linecap: round; }
+
+  @media (max-width: 720px) {
+    .wrap { padding: 28px 12px 72px; gap: 26px; }
+    .fig__body { padding: 12px 8px; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="mast">
+    <div class="mast__eyebrow">配線図 たたき台 / 作図用</div>
+    <h1 class="mast__title">3輪オムニ足回り結線図</h1>
+    <p class="mast__lede">
+      LiPo バッテリからモータドライバ3台・ESP32・エンコーダまでを、部品ごとの箱と端子名で描いた図です。
+      Cirkit Designer で本番の回路図を描くときの下敷きとして使ってください。
+      <b>IN1 / IN2 の駆動方法は案B（ファーム側で直接駆動）に決着しました。</b>
+      結線そのものは変わりませんが、線の意味が変わるため図2 の注記まで写してください。
+    </p>
+    <div class="mast__meta">
+      <span>部品は docs/bom.md 準拠</span>
+      <span>端子番号は kShippedPinPlan 準拠</span>
+      <span>MCU は classic ESP32（ESP32-WROOM-32）</span>
+      <span>IN1/IN2 駆動 = 案B 決着済み</span>
+      <span>図1・2・2b・2c・3・4</span>
+    </div>
+  </header>
+
+  <!-- ============ 読み方 ============ -->
+  <section class="sec">
+    <h2>図の読み方</h2>
+    <p>
+      配線は<strong>実際のハーネスの色でそのまま描いて</strong>あります。
+      <span class="swatch" style="background:var(--w-red)"></span>赤 と
+      <span class="swatch" style="background:var(--w-wht)"></span>白 がモータの動力線、
+      <span class="swatch" style="background:var(--w-blu)"></span>青 と
+      <span class="swatch" style="background:var(--w-blk)"></span>黒 がエンコーダの電源とグランド、
+      <span class="swatch" style="background:var(--w-yel)"></span>黄 /
+      <span class="swatch" style="background:var(--w-grn)"></span>緑 がエンコーダのA相・B相です。
+      <span class="swatch" style="background:var(--w-sig)"></span>灰色は ESP32 からドライバへの制御信号、
+      <span class="swatch" style="background:var(--w-5v)"></span>橙は 5V 系です。
+    </p>
+    <div class="warn">
+      <div class="warn__h"><span class="warn__tag">配線色の罠</span><span>黒はグランドだが、モータ電源の負側は白である</span></div>
+      <p style="color:var(--ink-2)">
+        このモータは <b>黒＝エンコーダの GND</b>、<b>白＝モータ電源の−</b> です。
+        「黒＝共通グランド」と読んで 12V 系をエンコーダ対（青・黒）へ入れると、
+        エンコーダに電源電圧がそのまま掛かって<strong>即座に壊れます</strong>。
+        通電前にテスターで色と系統の対応を確かめてください。
+      </p>
+    </div>
+  </section>
+
+  <!-- ============ 図1 ============ -->
+  <section class="sec">
+    <h2>電源をどう配るか</h2>
+    <p>
+      バッテリから 12V を1本のバスに立ち上げ、そこからドライバ3台と 5V DC/DC へ分けます。
+      ESP32 は 5V DC/DC から給電します。
+    </p>
+
+    <div class="fig">
+      <div class="fig__head">
+        <span class="fig__no">図 1</span>
+        <span class="fig__title">電源系統</span>
+        <span class="fig__sub">12V バスと接地</span>
+      </div>
+      <div class="fig__body">
+        <svg class="dia" viewBox="0 0 1060 500" role="img" aria-label="LiPo バッテリからヒューズ、12V バスを経てモータドライバ3台と 5V DC/DC、ESP32 へ至る電源系統の図">
+
+          <!-- ===== wires (outline pass) ===== -->
+          <g class="wo">
+            <polyline points="150,44 210,44"/>
+            <polyline points="306,44 352,44"/>
+            <polyline points="470,44 516,44"/>
+            <polyline points="634,44 690,44 690,140"/>
+            <polyline points="200,140 1020,140"/>
+            <polyline points="150,68 150,350"/>
+            <polyline points="150,350 1020,350"/>
+            <polyline points="200,140 200,232"/><polyline points="200,248 200,350"/>
+            <polyline points="288,140 288,200"/><polyline points="288,290 288,350"/>
+            <polyline points="468,140 468,200"/><polyline points="468,290 468,350"/>
+            <polyline points="648,140 648,200"/><polyline points="648,290 648,350"/>
+            <polyline points="780,140 780,232"/><polyline points="780,248 780,350"/>
+            <polyline points="905,140 905,200"/><polyline points="905,290 905,350"/>
+            <polyline points="336,225 352,238"/><polyline points="336,265 352,252"/>
+            <polyline points="516,225 532,238"/><polyline points="516,265 532,252"/>
+            <polyline points="696,225 712,238"/><polyline points="696,265 712,252"/>
+            <polyline points="980,225 1014,225 1014,352"/>
+            <polyline points="1014,388 1014,424 980,424"/>
+          </g>
+          <g class="wo t"><polyline points="700,442 200,442 200,350"/></g>
+
+          <!-- ===== wires (colour pass) ===== -->
+          <g class="w red">
+            <polyline points="150,44 210,44"/>
+            <polyline points="306,44 352,44"/>
+            <polyline points="470,44 516,44"/>
+            <polyline points="634,44 690,44 690,140"/>
+            <polyline points="200,140 1020,140"/>
+            <polyline points="200,140 200,232"/>
+            <polyline points="288,140 288,200"/>
+            <polyline points="468,140 468,200"/>
+            <polyline points="648,140 648,200"/>
+            <polyline points="780,140 780,232"/>
+            <polyline points="905,140 905,200"/>
+            <polyline points="336,225 352,238"/>
+            <polyline points="516,225 532,238"/>
+            <polyline points="696,225 712,238"/>
+          </g>
+          <g class="w blk">
+            <polyline points="150,68 150,350"/>
+            <polyline points="150,350 1020,350"/>
+            <polyline points="200,248 200,350"/>
+            <polyline points="288,290 288,350"/>
+            <polyline points="468,290 468,350"/>
+            <polyline points="648,290 648,350"/>
+            <polyline points="780,248 780,350"/>
+            <polyline points="905,290 905,350"/>
+          </g>
+          <g class="w wht">
+            <polyline points="336,265 352,252"/>
+            <polyline points="516,265 532,252"/>
+            <polyline points="696,265 712,252"/>
+          </g>
+          <g class="w v5">
+            <polyline points="980,225 1014,225 1014,352"/>
+            <polyline points="1014,388 1014,424 980,424"/>
+          </g>
+          <circle class="bx" cx="1014" cy="352" r="4"/>
+          <circle class="bx" cx="1014" cy="388" r="4"/>
+          <rect class="bxd" x="1000" y="342" width="28" height="56" rx="2"/>
+          <g class="w t blk"><polyline points="700,442 200,442 200,350"/></g>
+
+          <!-- ===== capacitor plates C1 / C2 ===== -->
+          <g class="plate">
+            <line x1="183" y1="232" x2="217" y2="232"/>
+            <path d="M183,246 Q200,259 217,246" fill="none"/>
+            <line x1="763" y1="232" x2="797" y2="232"/>
+            <path d="M763,246 Q780,259 797,246" fill="none"/>
+          </g>
+
+          <!-- ===== XT60 connector marks ===== -->
+          <g class="plate">
+            <line x1="176" y1="36" x2="176" y2="52"/><line x1="184" y1="36" x2="184" y2="52"/>
+          </g>
+
+          <!-- ===== boxes ===== -->
+          <rect class="bx" x="24"  y="24"  width="126" height="64" rx="2"/>
+          <rect class="bx" x="210" y="20"  width="96"  height="48" rx="2"/>
+          <rect class="bxd" x="352" y="20" width="118" height="48" rx="2"/>
+          <rect class="bxd" x="516" y="20" width="118" height="48" rx="2"/>
+          <rect class="bx" x="240" y="200" width="96"  height="90" rx="2"/>
+          <rect class="bx" x="420" y="200" width="96"  height="90" rx="2"/>
+          <rect class="bx" x="600" y="200" width="96"  height="90" rx="2"/>
+          <rect class="bx" x="830" y="200" width="150" height="90" rx="2"/>
+          <rect class="bx" x="700" y="398" width="280" height="66" rx="2"/>
+          <circle class="bx" cx="372" cy="245" r="22"/>
+          <circle class="bx" cx="552" cy="245" r="22"/>
+          <circle class="bx" cx="732" cy="245" r="22"/>
+
+          <!-- ===== box text ===== -->
+          <text class="ref" x="36"  y="46">BT1</text>
+          <text class="nm"  x="36"  y="64">3S LiPo 1500mAh</text>
+          <text class="nt"  x="36"  y="80">11.1V（満充電 12.6V）</text>
+
+          <text class="ref" x="224" y="42">F1</text>
+          <text class="nm"  x="224" y="60">10A ヒューズ</text>
+
+          <text class="ref" x="364" y="40">SW1</text>
+          <text class="nt"  x="364" y="58">主電源スイッチ</text>
+          <text class="ref" x="528" y="40">TB1</text>
+          <text class="nt"  x="528" y="58">電源分岐端子</text>
+
+          <text class="ref" x="250" y="222">U1</text>
+          <text class="nm"  x="250" y="240">AE-TB67H450</text>
+          <text class="pin" x="250" y="258">VM / GND</text>
+          <text class="pin" x="250" y="276">OUT1 / OUT2</text>
+          <text class="ref" x="430" y="222">U2</text>
+          <text class="nm"  x="430" y="240">AE-TB67H450</text>
+          <text class="pin" x="430" y="258">VM / GND</text>
+          <text class="pin" x="430" y="276">OUT1 / OUT2</text>
+          <text class="ref" x="610" y="222">U3</text>
+          <text class="nm"  x="610" y="240">AE-TB67H450</text>
+          <text class="pin" x="610" y="258">VM / GND</text>
+          <text class="pin" x="610" y="276">OUT1 / OUT2</text>
+
+          <text class="ref" x="366" y="250">M</text>
+          <text class="ref" x="546" y="250">M</text>
+          <text class="ref" x="726" y="250">M</text>
+          <text class="net" x="372" y="292" text-anchor="middle">M0</text>
+          <text class="net" x="552" y="292" text-anchor="middle">M1</text>
+          <text class="net" x="732" y="292" text-anchor="middle">M2</text>
+
+          <text class="ref" x="842" y="222">U4</text>
+          <text class="nm"  x="842" y="240">BP5293-50</text>
+          <text class="pin" x="842" y="258">12V → 5V</text>
+
+          <text class="ref" x="714" y="424">ESP32 DevKit</text>
+          <text class="nt"  x="714" y="444">VIN(5V) から給電</text>
+
+          <text class="net" x="196" y="226" text-anchor="middle">C1</text>
+          <text class="net" x="776" y="226" text-anchor="middle">C2</text>
+          <text class="pin" x="206" y="240">+</text>
+          <text class="pin" x="206" y="276">−</text>
+          <text class="pin" x="786" y="240">+</text>
+          <text class="pin" x="786" y="276">−</text>
+
+          <!-- ===== net labels ===== -->
+          <text class="net" x="178" y="30">XT60</text>
+          <text class="net" x="228" y="132" fill="var(--w-red)">VM（12V）</text>
+          <text class="net" x="856" y="342">PGND（動力接地）</text>
+          <text class="net" x="1022" y="228" fill="var(--w-5v)">5V</text>
+          <text class="ref" x="996" y="376" text-anchor="end">JP1</text>
+          <text class="nt"  x="996" y="394" text-anchor="end">USB 給電時は外す</text>
+          <text class="net" x="290" y="434">SGND（信号接地）</text>
+          <text class="nt"  x="210" y="100">XT60 の直後・バッテリの直近へ</text>
+
+          <!-- ===== star ground ===== -->
+          <circle class="tpdot" cx="200" cy="350" r="6"/>
+          <text class="tptx" x="214" y="376">GND-STAR</text>
+          <text class="nt"  x="214" y="393">動力接地と信号接地の合流はこの1点だけ</text>
+
+          <!-- ===== undetermined tags ===== -->
+          <text class="nw" x="364" y="90">未決着（OQ-11）</text>
+          <text class="nw" x="528" y="90">未決着（OQ-12）</text>
+
+          <!-- ===== test points ===== -->
+          <circle class="tpdot" cx="750" cy="140" r="5"/>
+          <text class="tptx" x="760" y="132">TP1</text>
+          <text class="nt"  x="792" y="132">11.1 – 12.6V</text>
+          <circle class="tpdot" cx="1014" cy="320" r="5"/>
+          <text class="tptx" x="1000" y="314" text-anchor="end">TP2</text>
+          <text class="nt"  x="1000" y="298" text-anchor="end">5.0V ±5%</text>
+          <circle class="tpdot" cx="288" cy="170" r="5"/>
+          <text class="tptx" x="298" y="166">TP6</text>
+          <text class="nt"  x="298" y="184">TP1 との差 0.2V 未満。U2 / U3 も同様に測る</text>
+
+          <!-- ===== wire colour notes at motors ===== -->
+          <text class="pin" x="338" y="214" fill="var(--w-red)">赤</text>
+          <text class="pin" x="338" y="284">白</text>
+        </svg>
+      </div>
+      <div class="fig__foot">
+        <div><b>JP1 は 5V を切り離すためのジャンパです。</b> USB を挿して書き込む間は外し、実走行では挿します。BP5293 の 5V と PC の USB 5V が同じ線で並列になるのを防ぐためです。⚠️ <b>切るのは 5V の1本だけで、GND は常に繋いだまま</b>にしてください。</div>
+        <div><b>12V は1系統だけです。</b> バッテリの＋が F1 を通って <code>VM</code> という1本の赤いバスになり、そこから U1・U2・U3・U4 へ分かれます。図の赤い線はすべて同じ 12V です。</div>
+        <div><b>SW1 と TB1 は破線＝未決着です。</b> 主電源スイッチと分岐端子の要否・方式は機構側の決定待ちなので、実線で描かないでください。</div>
+        <div><b>ESP32 の GND は細い線で GND-STAR まで戻しています。</b> 近くの PGND へ繋がず、C1 のマイナス端子まで1本で引くのが要点です（理由は図4）。</div>
+        <div><b>エンコーダの4線はこの図には出てきません。</b> モータ1個ぶんの詳細は図2 を見てください。</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 図2 ============ -->
+  <section class="sec">
+    <h2>モータ1個ぶんの結線</h2>
+    <p>
+      輪0 を例に、ESP32 ・ モータドライバ ・ モータ＋エンコーダの6線をすべて描いたものです。
+      輪1・輪2 もまったく同じ形で、GPIO 番号だけが下の表のとおり変わります。
+    </p>
+
+    <div class="fig">
+      <div class="fig__head">
+        <span class="fig__no">図 2</span>
+        <span class="fig__title">輪0：ESP32 ─ ドライバ ─ モータ／エンコーダ</span>
+        <span class="fig__sub">輪1・輪2 も同一構成</span>
+      </div>
+      <div class="fig__body">
+        <svg class="dia" viewBox="0 0 1060 512" role="img" aria-label="ESP32 からモータドライバ経由でモータへ、およびエンコーダ4線が ESP32 へ戻る、輪0ぶんの結線図">
+
+          <g class="wo">
+            <polyline points="250,108 420,108"/>
+            <polyline points="250,146 420,146"/>
+            <polyline points="610,108 800,108"/>
+            <polyline points="610,146 800,146"/>
+            <polyline points="250,252 800,252"/>
+            <polyline points="250,288 800,288"/>
+            <polyline points="250,322 800,322"/>
+            <polyline points="250,356 800,356"/>
+            <polyline points="490,76 490,32"/>
+            <polyline points="548,76 548,32"/>
+            <polyline points="760,108 760,118"/>
+            <polyline points="760,128 760,146"/>
+          </g>
+
+          <g class="w sig">
+            <polyline points="250,108 420,108"/>
+            <polyline points="250,146 420,146"/>
+          </g>
+          <g class="w red"><polyline points="610,108 800,108"/><polyline points="490,76 490,32"/><polyline points="760,108 760,118"/></g>
+          <g class="w wht"><polyline points="610,146 800,146"/></g>
+          <g class="w blk"><polyline points="250,356 800,356"/><polyline points="548,76 548,32"/><polyline points="760,128 760,146"/></g>
+          <g class="w blu"><polyline points="250,322 800,322"/></g>
+          <g class="w yel dash"><polyline points="250,252 800,252"/></g>
+          <g class="w grn dash"><polyline points="250,288 800,288"/></g>
+
+          <!-- C3 plates -->
+          <g class="plate">
+            <line x1="746" y1="118" x2="774" y2="118"/>
+            <line x1="746" y1="128" x2="774" y2="128"/>
+          </g>
+          <circle class="dot" cx="760" cy="108" r="3.4"/>
+          <circle class="dot" cx="760" cy="146" r="3.4"/>
+
+          <!-- boxes -->
+          <rect class="bx" x="40"  y="60" width="210" height="320" rx="2"/>
+          <rect class="bx" x="420" y="76" width="190" height="130" rx="2"/>
+          <rect class="bx" x="800" y="60" width="210" height="320" rx="2"/>
+
+          <text class="ref" x="56" y="88">ESP32 DevKit</text>
+          <text class="nt"  x="56" y="106">（輪0 に使う端子のみ）</text>
+          <text class="ref" x="434" y="104">U1</text>
+          <text class="nm"  x="434" y="122">AE-TB67H450</text>
+          <text class="ref" x="816" y="88">M0</text>
+          <text class="nm"  x="816" y="106">JGB37-520</text>
+          <text class="nt"  x="816" y="124">エンコーダ内蔵・6線</text>
+
+          <!-- esp32 pins -->
+          <text class="pin" x="244" y="104" text-anchor="end">GPIO19</text>
+          <text class="pin" x="244" y="142" text-anchor="end">GPIO23</text>
+          <text class="pin" x="244" y="248" text-anchor="end">GPIO4</text>
+          <text class="pin" x="244" y="284" text-anchor="end">GPIO13</text>
+          <text class="pin" x="244" y="318" text-anchor="end">3V3</text>
+          <text class="pin" x="244" y="352" text-anchor="end">GND</text>
+
+          <!-- driver pins -->
+          <text class="pin" x="428" y="104">IN1</text>
+          <text class="pin" x="428" y="142">IN2</text>
+          <text class="ok"  x="428" y="176">案B</text>
+          <text class="nt"  x="428" y="194">2本とも PWM 出力</text>
+          <text class="pin" x="472" y="70" text-anchor="end">VM</text>
+          <text class="pin" x="556" y="70">GND</text>
+          <text class="pin" x="602" y="104" text-anchor="end">OUT1</text>
+          <text class="pin" x="602" y="142" text-anchor="end">OUT2</text>
+
+          <!-- motor pins -->
+          <text class="pin" x="808" y="104" fill="var(--w-red)">赤　モータ＋</text>
+          <text class="pin" x="808" y="142">白　モータ−</text>
+          <text class="pin" x="808" y="248" fill="var(--w-yel)">黄？ A相</text>
+          <text class="pin" x="808" y="284" fill="var(--w-grn)">緑？ B相</text>
+          <text class="pin" x="808" y="318" fill="var(--w-blu)">青　VCC 3.3V</text>
+          <text class="pin" x="808" y="352">黒　GND</text>
+
+          <!-- wire labels -->
+          <text class="net" x="262" y="100">IN1 ← 前進時に PWM</text>
+          <text class="net" x="262" y="138">IN2 ← 後進時に PWM</text>
+          <text class="net" x="622" y="100" fill="var(--w-red)">動力＋</text>
+          <text class="net" x="622" y="138">動力−</text>
+          <text class="net" x="330" y="244">A相</text>
+          <text class="net" x="330" y="280">B相</text>
+          <text class="net" x="330" y="314">3.3V</text>
+          <text class="net" x="330" y="348">GND</text>
+          <text class="nw"  x="430" y="228">黄と緑はどちらも「信号線」。</text>
+          <text class="nw"  x="430" y="246">A相/B相 の対応はメーカーも示しておらず、実測でしか決まらない</text>
+
+          <text class="net" x="436" y="26">→ 図1 の VM / GND-STAR へ</text>
+
+          <!-- C3 callout -->
+          <text class="net" x="640" y="192">C3　0.1µF</text>
+          <text class="nw"  x="640" y="210">モータ本体の端子に直付け（ドライバ側ではない）</text>
+
+          <!-- test points -->
+          <circle class="tpdot" cx="548" cy="58" r="5"/>
+          <text class="tptx" x="560" y="54">TP7</text>
+          <text class="nt"  x="560" y="40">U1 の GND。SGND 基準で無負荷 約0V</text>
+
+          <circle class="tpdot" cx="300" cy="322" r="5"/>
+          <text class="tptx" x="288" y="312" text-anchor="end">TP3</text>
+          <text class="nt"  x="288" y="296" text-anchor="end">3.3V ±5%</text>
+
+          <circle class="tpdot" cx="770" cy="322" r="5"/>
+          <text class="tptx" x="762" y="312" text-anchor="end">TP5</text>
+          <text class="nw"   x="606" y="312" text-anchor="end">青−黒 = 3.3V。12V なら即中止</text>
+
+          <!-- notes -->
+          <text class="nt"  x="40"  y="418">ESP32 の GND も図1 の GND-STAR へ戻す。</text>
+          <text class="nt"  x="40"  y="440">エンコーダは 3.3V で駆動する。5V を配らないこと。</text>
+          <text class="nt"  x="40"  y="468">案B: 前進 =(IN1:PWM, IN2:L) ／ 後進 =(IN1:L, IN2:PWM) ／ ゼロ指令 =(L, L)。</text>
+          <text class="nt"  x="40"  y="490">GPIO19 の PinRole は kMotorPwm、GPIO23 は kMotorDir。名称は据え置きだが実体は両方 PWM。</text>
+        </svg>
+      </div>
+      <div class="fig__foot">
+        <div><b>モータから出ている線は全部で6本です。</b> 太い2本（赤・白）がドライバからの動力、細い4本（青・黒・黄・緑）がエンコーダです。系統がまったく別なので、束ねるときも分けてください。</div>
+        <div><b>黄と緑は破線で描いています。</b> メーカーの記載でも両方とも「信号線」としか書かれておらず、<b>どちらが A相 かは資料を探しても載っていません</b>。実測でしか決まらないので、確定するまで「確定した色」として描かないでください。</div>
+        <div><b>VREF と RS はこの図では省いています。</b> 8端子すべての接続は<b>図2b</b>を見てください。VM−GND 直近の 0.1µF セラミックも図2b にあります。</div>
+        <div>⚠️ <b>赤と白はどちらも「出力」です。</b> 白は「モータ電源−」という名前ですが H ブリッジの出力端子（OUT2）であり、GND ではありません。<b>逆転中は白に 12V が出ます。</b> ここへエンコーダの黒を繋ぐとエンコーダが即死します。</div>
+        <div><b>案B にしても線は1本も動きません。</b> GPIO19→IN1、GPIO23→IN2 のままです。変わるのは<b>線の意味</b>だけで、「PWM線と方向線」ではなく「前進時に振る線と後進時に振る線」になります。<b>この注記を省くと図が案B前と区別できなくなります。</b></div>
+      </div>
+    </div>
+
+    <div class="tbl-wrap">
+      <table>
+        <caption>輪ごとの GPIO 割当（図2 の4本が輪ごとに変わる）／ 案B 反映済み</caption>
+        <thead>
+          <tr><th>輪</th><th class="m">IN1 ← 前進 PWM<br><span style="text-transform:none">kMotorPwm</span></th><th class="m">IN2 ← 後進 PWM<br><span style="text-transform:none">kMotorDir</span></th><th class="m">A相 ← 黄/緑</th><th class="m">B相 ← 緑/黄</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>輪0（図2 の例）</td><td class="m">GPIO19</td><td class="m">GPIO23</td><td class="m">GPIO4</td><td class="m">GPIO13</td></tr>
+          <tr><td>輪1</td><td class="m">GPIO21</td><td class="m">GPIO25</td><td class="m">GPIO14</td><td class="m">GPIO16</td></tr>
+          <tr><td>輪2</td><td class="m">GPIO22</td><td class="m">GPIO26</td><td class="m">GPIO17</td><td class="m">GPIO18</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============ 決着（案B） ============ -->
+  <section class="sec">
+    <div class="okb">
+      <div class="okb__h"><span class="okb__tag">決着</span><span>IN1 / IN2 の駆動は案B — ファーム側を直接駆動へ変える</span></div>
+      <p style="color:var(--ink-2)">
+        TB67H450 は IN1 と IN2 の<b>組み合わせ</b>で動作が決まる IC です
+        （L,L=ストップ ／ H,L=正転 ／ L,H=逆転 ／ H,H=ブレーキ）。
+        いっぽう従来のファームは「PWM 1本＋方向レベル 1本」を出していたため、
+        素直に繋ぐと<b>前進・指令ゼロで全速逆転</b>していました。
+        これを、<b>どちらの線に PWM を載せるかで方向を表す</b>方式へ改めます。
+      </p>
+      <div class="tbl-wrap">
+        <table>
+          <caption>案B の出し方（これを図に注記として書く）</caption>
+          <thead><tr><th>指令</th><th class="m">IN1</th><th class="m">IN2</th><th>モータ</th></tr></thead>
+          <tbody>
+            <tr><td>前進</td><td class="m">PWM</td><td class="m">L</td><td>正転。PWM の Low 期間はコースト</td></tr>
+            <tr><td>後進</td><td class="m">L</td><td class="m">PWM</td><td>逆転。減衰のしかたは前進と同じ</td></tr>
+            <tr><td>ゼロ指令</td><td class="m">L</td><td class="m">L</td><td><span class="pill g">ストップ</span> 出力オフ</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p style="color:var(--ink-2)">
+        <b>配線は1本も変わりません。</b> GPIO19→IN1、GPIO23→IN2 のままで、
+        追加部品もゼロです（案A の 74HC00 ×3 が要らない）。
+        前進と後進で減衰の効き方が揃うため、あとで速度制御を載せたときに
+        方向によって挙動が変わることもありません。
+      </p>
+      <p style="color:var(--ink-2)">
+        <b>図の側でやることは注記だけです。</b>
+        配線が変わらないぶん、<b>注記が案B を表現する唯一の手段</b>になります。
+        図2 の「IN1 ← 前進時に PWM／IN2 ← 後進時に PWM」と、上の表を必ず写してください。
+        これを省くと、図は案B 前とまったく同じ絵になります。
+      </p>
+      <p style="color:var(--ink-2)">
+        ✅ <b>データシートとアプリケーションノートで裏付けが取れました。</b>
+        上の真理値表はデータシート p.6 のとおりです。さらにアプリケーションノートには
+        <b>「4. ダイレクト PWM 制御」という章が独立してあり</b>、
+        「IN1、IN2 端子に PWM 信号を入力して PWM 動作させることにより速度制御が可能」と明記されています。
+        案B は許容される使い方ではなく、<b>メーカーが想定している使い方</b>でした。
+      </p>
+      <p style="color:var(--ink-2)">
+        同じ章が「定電流機能を無効にする場合は RS 端子を GND に接続し、VREF 端子には 1〜5V を入力」
+        とも述べています。本図は<b>定電流機能を有効のまま</b>使い、電流上限を 1.5A に設定します
+        （理由は「なぜ電流を 1.5A で止めるのか」を参照）。
+      </p>
+      <p style="color:var(--ink-2)">
+        ⚠️ <b>ゼロ指令 (L,L) が 1ms 続くとスタンバイに入ります</b>が、復帰は最大 30µs です。
+        制御周期 100〜200Hz（5〜10ms）に対しては無視できます。
+        また IN1 / IN2 には<b>内部 100kΩ プルダウン</b>があるため、ESP32 が未駆動のときは
+        自動的に (L,L) = ストップになります。
+      </p>
+    </div>
+  </section>
+
+  <!-- ============ 図2b ============ -->
+  <section class="sec">
+    <h2>ドライバ1個ぶんの全端子（VREF / RS を含む）</h2>
+    <p>
+      図2 では省いていた <code>VREF</code>（電流設定）と <code>RS</code>（電流検出）を含む、
+      8端子すべての接続です。アプリケーションノート 表7-1 / 表7-2 の推奨値に合わせてあります。
+      <b>輪1・輪2 もまったく同じ形</b>で、IN1 / IN2 の GPIO 番号だけが変わります。
+    </p>
+
+    <div class="fig">
+      <div class="fig__head">
+        <span class="fig__no">図 2b</span>
+        <span class="fig__title">U1（AE-TB67H450）の8端子</span>
+        <span class="fig__sub">U2・U3 も同一構成</span>
+      </div>
+      <div class="fig__body">
+        <svg class="dia" viewBox="0 0 1000 545" style="min-width:860px" role="img" aria-label="TB67H450FNG の8端子すべての接続。IN1とIN2がESP32へ、VREFが3.3Vへ、RSが0.22オームを介してGNDへ、VMが12Vバスへ、OUT1とOUT2がモータへ繋がる図">
+
+          <g class="wo">
+            <polyline points="250,200 380,200"/>
+            <polyline points="250,240 380,240"/>
+            <polyline points="200,90 200,285 380,285"/>
+            <polyline points="290,285 290,440"/>
+            <polyline points="380,335 330,335 330,440"/>
+            <polyline points="620,200 870,200"/>
+            <polyline points="620,240 870,240"/>
+            <polyline points="620,285 700,285 700,440"/>
+            <polyline points="620,335 870,335"/>
+            <polyline points="790,335 790,440"/>
+            <polyline points="270,440 810,440"/>
+            <polyline points="500,440 500,468"/>
+          </g>
+
+          <g class="w sig"><polyline points="250,200 380,200"/><polyline points="250,240 380,240"/></g>
+          <g class="w blu"><polyline points="200,90 200,285 380,285"/><polyline points="290,285 290,440"/></g>
+          <g class="w red"><polyline points="620,200 870,200"/><polyline points="620,335 870,335"/><polyline points="790,335 790,440"/></g>
+          <g class="w wht"><polyline points="620,240 870,240"/></g>
+          <g class="w blk">
+            <polyline points="380,335 330,335 330,440"/>
+            <polyline points="620,285 700,285 700,440"/>
+            <polyline points="270,440 810,440"/>
+            <polyline points="500,440 500,468"/>
+          </g>
+
+          <!-- RRS -->
+          <rect class="bx" x="688" y="318" width="24" height="46" rx="1"/>
+          <!-- caps -->
+          <g class="plate">
+            <line x1="274" y1="365" x2="306" y2="365"/><line x1="274" y1="377" x2="306" y2="377"/>
+            <line x1="774" y1="380" x2="806" y2="380"/><line x1="774" y1="392" x2="806" y2="392"/>
+          </g>
+          <!-- ground symbol -->
+          <g class="plate">
+            <line x1="478" y1="468" x2="522" y2="468"/>
+            <line x1="486" y1="478" x2="514" y2="478"/>
+            <line x1="494" y1="488" x2="506" y2="488"/>
+          </g>
+
+          <rect class="bx" x="380" y="120" width="240" height="240" rx="2"/>
+          <text class="ref" x="500" y="152" text-anchor="middle">U1　AE-TB67H450</text>
+          <text class="nm"  x="500" y="172" text-anchor="middle">TB67H450FNG</text>
+
+          <text class="pin" x="392" y="204">3　IN1</text>
+          <text class="pin" x="392" y="244">2　IN2</text>
+          <text class="pin" x="392" y="289">4　VREF</text>
+          <text class="pin" x="392" y="339">1　GND</text>
+          <text class="pin" x="608" y="204" text-anchor="end">OUT1　6</text>
+          <text class="pin" x="608" y="244" text-anchor="end">OUT2　8</text>
+          <text class="pin" x="608" y="289" text-anchor="end">RS　7</text>
+          <text class="pin" x="608" y="339" text-anchor="end">VM　5</text>
+
+          <text class="pin" x="244" y="196" text-anchor="end">ESP32 GPIO19</text>
+          <text class="nt"  x="244" y="214" text-anchor="end">前進時に PWM</text>
+          <text class="pin" x="244" y="236" text-anchor="end">ESP32 GPIO23</text>
+          <text class="nt"  x="244" y="254" text-anchor="end">後進時に PWM</text>
+
+          <text class="net" x="196" y="80" text-anchor="end" fill="var(--w-blu)">+3V3</text>
+          <text class="nt"  x="206" y="80">ESP32 の 3V3 へ直結</text>
+          <text class="ok"  x="206" y="112">→ 電流上限 1.5A</text>
+
+          <text class="net" x="878" y="196" fill="var(--w-red)">モータ 赤</text>
+          <text class="net" x="878" y="236">モータ 白</text>
+          <text class="net" x="878" y="331" fill="var(--w-red)">VM（12V バス・図1）</text>
+
+          <text class="ref" x="722" y="332">RRS</text>
+          <text class="nm"  x="722" y="350">0.22Ω / 1W 以上</text>
+          <text class="nw"  x="722" y="368">IC の直近へ</text>
+
+          <text class="net" x="268" y="368" text-anchor="end">0.1µF</text>
+          <text class="nt"  x="268" y="386" text-anchor="end">VREF−GND 直近</text>
+          <text class="net" x="828" y="384">0.1µF</text>
+          <text class="nw"  x="828" y="402">VM−GND 直近。電解だけでは効かない</text>
+
+          <text class="tptx" x="530" y="462">→ GND-STAR（図1）</text>
+
+          <text class="nw" x="640" y="140">⚠️ OUT1 / OUT2（赤・白）は H ブリッジの「出力」。</text>
+          <text class="nw" x="640" y="158">GND ではない。逆転中は白に 12V が出る。</text>
+
+          <text class="nt" x="40" y="512">VM−GND 間にはこの 0.1µF のほかに 1000µF 電解（図1 の C1 / C2）も入る。両方必要。</text>
+          <text class="nt" x="40" y="532">RRS を入れると電流が 1.5A で頭打ちになる。ストール 2.3A は IC の許容損失を超えるため、この頭打ちが保護になる。</text>
+        </svg>
+      </div>
+      <div class="fig__foot">
+        <div><b>0.1µF セラミックは 1000µF 電解の代わりではありません。</b> 電解は高い周波数ではインダクタンスが効いて応答できず、スイッチングのエッジを受け持つのはセラミックのほうです。アプリケーションノート 表7-1 が VM−GND 間に両方を挙げているのはこのためです。</div>
+        <div><b>RRS と 0.1µF は IC のすぐ横に置いてください。</b> 間に配線が入ると、その配線の抵抗ぶんだけ電流の設定値がずれ、インダクタンスぶんだけノイズ抑制が効かなくなります。</div>
+      </div>
+    </div>
+
+    <div class="tbl-wrap">
+      <table>
+        <caption>U1〜U3 の端子接続（アプリケーションノート 7.1 / 7.3 / 7.4 準拠）</caption>
+        <thead><tr><th class="m">#</th><th class="m">端子</th><th>接続先</th><th>備考</th></tr></thead>
+        <tbody>
+          <tr><td class="m">1</td><td class="m">GND</td><td>PGND → GND-STAR</td><td>動力側。IN1/IN2 の論理基準もここ</td></tr>
+          <tr><td class="m">2</td><td class="m">IN2</td><td>ESP32 GPIO23 / 25 / 26</td><td>後進時に PWM。内部 100kΩ プルダウンあり</td></tr>
+          <tr><td class="m">3</td><td class="m">IN1</td><td>ESP32 GPIO19 / 21 / 22</td><td>前進時に PWM。同上</td></tr>
+          <tr><td class="m">4</td><td class="m">VREF</td><td>ESP32 3V3（3.3V）＋ 0.1µF → GND</td><td>電流上限を決める。絶対最大 5.5V</td></tr>
+          <tr><td class="m">5</td><td class="m">VM</td><td>12V バス ＋ 0.1µF → GND</td><td>動作範囲 4.5〜44V</td></tr>
+          <tr><td class="m">6</td><td class="m">OUT1</td><td>モータ 赤</td><td><span class="pill">出力</span> GND ではない</td></tr>
+          <tr><td class="m">7</td><td class="m">RS</td><td>0.22Ω（1W以上）→ GND</td><td>電流検出。IC の直近へ</td></tr>
+          <tr><td class="m">8</td><td class="m">OUT2</td><td>モータ 白</td><td><span class="pill">出力</span> 逆転中は 12V</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p style="color:var(--muted); font-size:13.5px">
+      ⚠️ <b>モジュールにセンス抵抗が実装済みでないか、現物で確認してください。</b>
+      無通電で RS 端子と GND 端子の間をテスターで測り、0.2Ω前後なら実装済み（外付けは不要）、
+      開放なら未実装です。実装済みのところへ重ねて付けてはいけません。
+    </p>
+  </section>
+
+  <!-- ============ 電流と発熱 ============ -->
+  <section class="sec">
+    <h2>なぜ電流を 1.5A で止めるのか（安全側に寄せた判断）</h2>
+    <div class="warn">
+      <div class="warn__h"><span class="warn__tag">前置き</span><span>データシートは電流制限を要求していない</span></div>
+      <p style="color:var(--ink-2)">
+        <b>制限しない構成も正式に認められています。</b>
+        「定電流制御機能を無効にしたい場合は、RS 端子を GND に接続し、VREF 端子に 1〜5V を
+        入力してください」（データシート p.10 ／ アプリケーションノート 4.1）。
+        0.22Ω は「定電流制御を<b>使う場合の</b>推奨値」として表7-2 に載っているだけです。
+      </p>
+      <p style="color:var(--ink-2)">
+        <b>1.5A に絞るのは本図の判断であって、データシートの要求ではありません。</b>
+        以下はその判断の根拠です。
+      </p>
+    </div>
+    <p>
+      モータのストール電流は 2.3A です。データシートの値で損失を計算するとこうなります。
+    </p>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>条件</th><th class="m">IC の損失</th><th>許容損失 2.85W に対して</th></tr></thead>
+        <tbody>
+          <tr><td>ストール 2.3A（Ron 0.6Ω 標準）</td><td class="m">3.17 W</td><td>超える。Ron 最大 0.8Ω なら 4.23W</td></tr>
+          <tr><td>制限 1.5A（Ron 0.6Ω 標準）</td><td class="m">1.35 W</td><td>余裕あり</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="color:var(--ink-2)">
+      ⚠️ <b>この計算には前提が2つあります。</b>
+      ひとつは<b>「連続で」2.3A が流れること</b>で、一瞬のストール（数十〜数百 ms）なら
+      熱容量が吸収します。もうひとつは<b>許容損失 2.85W が4層基板の値</b>であることで、
+      秋月のモジュール（2層）ではこれより小さくなります。
+    </p>
+    <p style="color:var(--ink-2)">
+      さらに<b>データシート自身は 2.45A までを目安として許容</b>しています（注1）。
+      PD 2.85W とは緊張関係にあり、それを「周囲温度条件や基板条件により、電流がさらに
+      制限されることがあります」で吸収しています。<b>どちらとも読めるのが正直なところです。</b>
+    </p>
+    <p style="color:var(--ink-2)">
+      それでも絞るのは、<b>ソフトのモータロック保護の発火試験が開ループ確認より後の段だから</b>です。
+      その間、IC を守るのはハードの制限しかありません。失敗したときの損失も非対称です
+      — 付けて不要なら約200円と低速トルクが少し減るだけ（線に替えれば戻る）、
+      付けずに必要なら TSD で断続動作して切り分けが難しくなり、最悪 IC が壊れます。
+    </p>
+    <p style="color:var(--muted); font-size:13.5px">
+      <b>付けない判断も正当です。</b> その場合は <code>RS</code> を GND へ直結し、
+      <b>開ループ確認と M2a-0 でモータを長時間ストールさせない</b>運用
+      （壁に押し付けない・手で止めない・ドライバが熱ければ止める）を、
+      ソフトのロック保護を確認するまで守ってください。
+    </p>
+    <p style="color:var(--ink-2)">
+      <code>VREF</code> に 3.3V、<code>RRS</code> に 0.22Ω を入れると上限が 1.5A になります。
+      この 0.22Ω はアプリケーションノート 表7-2 が「1.5〜3.0A 用」として挙げている値そのものです。
+    </p>
+    <div class="tbl-wrap">
+      <table>
+        <caption>保護は3段構え</caption>
+        <thead><tr><th>段</th><th>働くところ</th><th>解除のしかた</th></tr></thead>
+        <tbody>
+          <tr><td><b>定電流制御（1.5A）</b></td><td>常時。電流がここで頭打ちになる</td><td>—（制限しているだけ）</td></tr>
+          <tr><td><b>ソフトのモータロック保護</b></td><td>ストールが一定時間続いたら停止</td><td>ファームの判断</td></tr>
+          <tr><td>ISD（過電流 4.9A 標準・ラッチ）</td><td>短絡など異常時</td><td>電源再投入、または <b>IN1/IN2 を 1ms 以上 L にしてから再指令</b></td></tr>
+          <tr><td>TSD（150〜175℃・自動復帰）</td><td>最後の砦</td><td>⚠️ データシートは「積極的に活用する使い方は避けよ」と明記</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="color:var(--ink-2)">
+      <b>ISD はファームから解除できます。</b> 案Bのゼロ指令 (L,L) を 1ms 以上保持してから
+      指令を再開するだけです。モータロック保護の復帰を自動にするか手動にするかを決めるときの材料になります。
+    </p>
+    <div class="okb">
+      <div class="okb__h"><span class="okb__tag">補足</span><span>1.5A に絞っても加速性能はほとんど落ちない</span></div>
+      <p style="color:var(--ink-2)">
+        DC モータの機械出力が最大になるのは、電流がストールの<b>半分</b>のときです。
+        本機なら <b>2.3A ÷ 2 = 約 1.15A</b>。1.5A 制限はこれより<b>上</b>にあるので、
+        <b>ピーク出力はほぼ無傷</b>です。削られるのは速度ゼロ付近の踏ん張りトルクだけで、
+        そこは出力（トルク×回転数）としては元々小さい領域です。
+      </p>
+      <p style="color:var(--ink-2)">
+        副次的に、3輪で 1.5A×3 = 4.5A になるので、10A ヒューズと配線への負担も軽くなります
+        （無制限なら 6.9A）。
+      </p>
+      <p style="color:var(--ink-2)">
+        ⚠️ <b>RRS は「付けるか付けないか」ではありません。</b>
+        <code>RS</code> は必ず GND へ繋がないと電流の戻り道がなく回路が成立しないので、
+        選択肢は<b>「その場所に 0.22Ω を入れるか、ただの線を入れるか」</b>です。
+        配線も基板設計も変わりません。あとから線に替えるのも、VREF を 4.0V まで上げて
+        1.82A にするのも、半田を1箇所やり直すだけです。
+      </p>
+      <p style="color:var(--ink-2)">
+        <b>この制限がいちばん効くのはブリングアップの間です。</b>
+        2.3A が流れるのは壁に押し付けた・車輪が噛んだといった異常時だけで、
+        本来はソフトのモータロック保護の領分です。ただし<b>その保護の発火試験は
+        開ループ確認より後の段</b>なので、それまでは IC を守るものがハードの制限しかありません。
+      </p>
+      <p style="color:var(--muted); font-size:13.5px">
+        部品は<b>酸化金属皮膜 1W 以上（2W なら安心）</b>。セメント抵抗に多い<b>巻線型は避けてください</b>
+        — インダクタンスが電流検出にノイズとして乗ります。
+        消費電力は制限値いっぱいで 1.5²×0.22 ≒ 0.5W、通常走行ではずっと小さい値です。
+      </p>
+      <p style="color:var(--muted); font-size:13.5px">
+        ⚠️ 上限に当たると固定OFF時間 25µs が割り込むため、
+        <b>デューティと電流の関係は上限付近でのみ崩れます</b>。上限より下では影響しません。
+      </p>
+    </div>
+  </section>
+
+  <!-- ============ 電源投入順序 ============ -->
+  <section class="sec">
+    <h2>電源を入れる順序</h2>
+    <div class="warn">
+      <div class="warn__h"><span class="warn__tag">手順</span><span>VM を入れる前に、ESP32 の IN1 / IN2 を L にしておく</span></div>
+      <p style="color:var(--ink-2)">
+        アプリケーションノートの指示です（1.2 / 3章）。
+      </p>
+      <ul style="color:var(--ink-2)">
+        <li>VM 電圧が不安定な立ち上げ／立ち下げの途中は、モータ動作を OFF にしておく</li>
+        <li><b>電源投入前は入力信号も Low レベルにしておく</b></li>
+      </ul>
+      <p style="color:var(--ink-2)">
+        ⚠️ <b>これは開ループ確認に直撃します。</b> USB で ESP32 だけ生かしたまま（VM オフ）
+        IN1 / IN2 が振られている状態で主電源を入れると、<b>入れた瞬間にモータが動きます</b>。
+        手順として「<b>VM を入れる前に ESP32 をリセットする</b>」を挟んでください。
+      </p>
+      <p style="color:var(--ink-2)">
+        救いとして、IN1 / IN2 には<b>内部 100kΩ プルダウン</b>があります。ESP32 がリセット中で
+        端子がハイインピーダンスなら、自動的に L に落ちてストップになります。
+      </p>
+    </div>
+
+    <h2 style="margin-top:10px">USB を挿すときは JP1 を外す</h2>
+    <p>
+      開ループ確認では <b>USB で書き込みながら、ログを見ながら、モータを回します</b>。
+      このとき USB の 5V と BP5293 の 5V が同じ線に並列でぶら下がると、
+      電圧の高いほうが低いほうへ流し込みます。
+      <b>PC の USB ポートへ逆流する</b>か、<b>BP5293 の出力へ逆流する</b>かのどちらかです。
+      降圧コンバータは出力側から電流が入ることを想定していません。
+    </p>
+    <div class="tbl-wrap">
+      <table>
+        <caption>JP1 の運用</caption>
+        <thead><tr><th>場面</th><th class="m">JP1</th><th>5V の供給元</th></tr></thead>
+        <tbody>
+          <tr><td>書き込み・ログ確認（USB あり）</td><td class="m"><b>外す</b></td><td>USB のみ</td></tr>
+          <tr><td>実走行（USB なし）</td><td class="m"><b>挿す</b></td><td>BP5293-50 のみ</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="color:var(--ink-2)">
+      ⚠️ <b>切るのは 5V の1本だけです。GND は常に繋いだままにしてください。</b>
+      切ってしまうと、ドライバの論理基準と ESP32 の基準が別物になります。
+    </p>
+    <p style="color:var(--muted); font-size:13.5px">
+      モータの 12V は BP5293 とは別系統なので、JP1 を外しても USB 給電のまま普通にモータが回せます。
+      DevKit の 5V ピンが USB の VBUS と直結かダイオード経由かは基板の版によって違いますが、
+      JP1 を入れておけば<b>どちらであっても問題が起きません</b>。
+    </p>
+  </section>
+
+  <!-- ============ 図2c ============ -->
+  <section class="sec">
+    <h2>エンコーダのプルアップ（置き場所だけ確保しておく）</h2>
+    <p>
+      エンコーダの出力がオープンコレクタかどうかが未確認で、ESP32 の内部プルアップが
+      効くかも版に依存します。<b>いまは実装しません</b>が、基板上の位置だけ空けておけば、
+      実測で必要とわかったときに図を描き直さずに済みます。
+    </p>
+
+    <div class="fig">
+      <div class="fig__head">
+        <span class="fig__no">図 2c</span>
+        <span class="fig__title">エンコーダ A相 / B相 の外付けプルアップ（予備位置）</span>
+        <span class="fig__sub">未実装 ・ 輪0 を例示</span>
+      </div>
+      <div class="fig__body">
+        <svg class="dia" viewBox="0 0 1000 300" style="min-width:820px" role="img" aria-label="3.3V から 10kΩ を介してエンコーダ A相・B相 の信号線へ繋ぐプルアップ抵抗を、未実装の予備位置として破線で描いた図">
+
+          <g class="wo">
+            <polyline points="200,170 430,170"/>
+            <polyline points="450,170 800,170"/>
+            <polyline points="200,230 800,230"/>
+          </g>
+          <g class="w yel dash"><polyline points="200,170 430,170"/><polyline points="450,170 800,170"/></g>
+          <g class="w grn dash"><polyline points="200,230 800,230"/></g>
+
+          <path class="wo" d="M430,170 Q440,148 450,170" fill="none"/>
+          <path class="w yel" d="M430,170 Q440,148 450,170" fill="none"/>
+
+          <g class="bxd" style="fill:none">
+            <polyline points="300,70 500,70"/>
+            <polyline points="340,70 340,95"/><polyline points="340,139 340,170"/>
+            <polyline points="440,70 440,95"/><polyline points="440,139 440,230"/>
+          </g>
+          <rect class="bxd" x="329" y="95" width="22" height="44" rx="1"/>
+          <rect class="bxd" x="429" y="95" width="22" height="44" rx="1"/>
+
+          <circle class="dot" cx="340" cy="170" r="3.4"/>
+          <circle class="dot" cx="440" cy="230" r="3.4"/>
+
+          <text class="net" x="300" y="58" fill="var(--w-blu)">+3V3（図2 の青と同じネット）</text>
+          <text class="ref" x="362" y="114">R3</text>
+          <text class="nm"  x="362" y="132">10kΩ</text>
+          <text class="ref" x="462" y="114">R4</text>
+          <text class="nm"  x="462" y="132">10kΩ</text>
+
+          <text class="pin" x="194" y="166" text-anchor="end">GPIO4</text>
+          <text class="pin" x="194" y="226" text-anchor="end">GPIO13</text>
+          <text class="net" x="210" y="162">A相</text>
+          <text class="net" x="210" y="222">B相</text>
+          <text class="pin" x="810" y="166">M0 エンコーダ A相出力</text>
+          <text class="pin" x="810" y="226">M0 エンコーダ B相出力</text>
+
+          <text class="nt" x="466" y="196">交差しているだけで繋がっていない</text>
+
+          <text class="nw" x="40" y="272">未実装。破線は「置き場所だけ確保する」という意味であり、実線で描かないこと。</text>
+          <text class="nt" x="40" y="292">輪1・輪2 も同じ形で計6箇所（R3〜R8）。必要と決まるのは通電後の実測。</text>
+        </svg>
+      </div>
+      <div class="fig__foot">
+        <div><b>いま付けてはいけない、という意味ではありません。</b> 「必要かどうかが未確認なので、確定したように実線で描かない」という意味です。実測で要ると決まったら、破線を実線に変えるだけで済みます。</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 端子14本 ============ -->
+  <section class="sec">
+    <h2>ESP32 から出る信号線は全部で14本</h2>
+    <p>
+      <code>kShippedPinPlan</code> が定める14本がこれで全部です。
+      <b>図を描き終えたら、この表と1本ずつ突き合わせてください。</b>
+      「表にあるのに図に無い」だけでなく、<b>「図にあるのに表に無い」も同じように探します</b>。
+      片側だけ見ると、余分な結線が図に残っていても気づけません。
+    </p>
+    <div class="tbl-wrap">
+      <table>
+        <caption>端子割当の全量（kShippedPinPlan 14件）</caption>
+        <thead><tr><th class="m">#</th><th class="m">GPIO</th><th class="m">PinRole</th><th>行き先</th><th class="m">図</th></tr></thead>
+        <tbody>
+          <tr><td class="m">1</td><td class="m">19</td><td class="m">kMotorPwm w0</td><td>U1 IN1（前進時 PWM）</td><td class="m">2</td></tr>
+          <tr><td class="m">2</td><td class="m">23</td><td class="m">kMotorDir w0</td><td>U1 IN2（後進時 PWM）</td><td class="m">2</td></tr>
+          <tr><td class="m">3</td><td class="m">21</td><td class="m">kMotorPwm w1</td><td>U2 IN1（前進時 PWM）</td><td class="m">2</td></tr>
+          <tr><td class="m">4</td><td class="m">25</td><td class="m">kMotorDir w1</td><td>U2 IN2（後進時 PWM）</td><td class="m">2</td></tr>
+          <tr><td class="m">5</td><td class="m">22</td><td class="m">kMotorPwm w2</td><td>U3 IN1（前進時 PWM）</td><td class="m">2</td></tr>
+          <tr><td class="m">6</td><td class="m">26</td><td class="m">kMotorDir w2</td><td>U3 IN2（後進時 PWM）</td><td class="m">2</td></tr>
+          <tr><td class="m">7</td><td class="m">4</td><td class="m">kEncoderA w0</td><td>M0 エンコーダ A相 <span class="pill">色 未確定</span></td><td class="m">2・2c</td></tr>
+          <tr><td class="m">8</td><td class="m">13</td><td class="m">kEncoderB w0</td><td>M0 エンコーダ B相 <span class="pill">色 未確定</span></td><td class="m">2・2c</td></tr>
+          <tr><td class="m">9</td><td class="m">14</td><td class="m">kEncoderA w1</td><td>M1 エンコーダ A相 <span class="pill">色 未確定</span></td><td class="m">2</td></tr>
+          <tr><td class="m">10</td><td class="m">16</td><td class="m">kEncoderB w1</td><td>M1 エンコーダ B相 <span class="pill">色 未確定</span></td><td class="m">2</td></tr>
+          <tr><td class="m">11</td><td class="m">17</td><td class="m">kEncoderA w2</td><td>M2 エンコーダ A相 <span class="pill">色 未確定</span></td><td class="m">2</td></tr>
+          <tr><td class="m">12</td><td class="m">18</td><td class="m">kEncoderB w2</td><td>M2 エンコーダ B相 <span class="pill">色 未確定</span></td><td class="m">2</td></tr>
+          <tr><td class="m">13</td><td class="m">32</td><td class="m">kBatterySense</td><td>R1 / R2 の中点（分圧）</td><td class="m">3</td></tr>
+          <tr><td class="m">14</td><td class="m">33</td><td class="m">kBenchPot</td><td>VR1 ワイパ（机上確認の仮設）</td><td class="m">3</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="color:var(--muted); font-size:13.5px">
+      このほかに電源系として <code>3V3</code> ・ <code>GND</code> ・ <code>VIN(5V)</code> を使いますが、
+      これらは端子割当の管理対象ではありません（図1・図2 を参照）。
+    </p>
+  </section>
+
+  <!-- ============ 図3 ============ -->
+  <section class="sec">
+    <h2>バッテリ電圧の監視と、机上確認用のつまみ</h2>
+    <p>
+      12V をそのまま ESP32 へ入れると壊れるので、抵抗2本で 1/5 弱に分けてから読みます。
+      あわせて、開ループ確認のときに手で出力を変えるための可変抵抗も描いています。
+    </p>
+
+    <div class="fig">
+      <div class="fig__head">
+        <span class="fig__no">図 3</span>
+        <span class="fig__title">電圧監視の分圧回路と机上確認用可変抵抗</span>
+        <span class="fig__sub">VR1 は仮設</span>
+      </div>
+      <div class="fig__body">
+        <svg class="dia" viewBox="0 0 1000 370" style="min-width:820px" role="img" aria-label="12V バスから 100kΩ と 27kΩ で分圧して ESP32 の GPIO32 へ入れる回路と、3.3V から可変抵抗を経て GPIO33 へ入れる回路の図">
+
+          <g class="wo">
+            <polyline points="60,44 300,44"/>
+            <polyline points="180,44 180,84"/>
+            <polyline points="180,142 180,196"/>
+            <polyline points="180,254 180,300"/>
+            <polyline points="180,176 430,176"/>
+            <polyline points="380,176 380,206"/>
+            <polyline points="380,216 380,300"/>
+            <polyline points="525,240 525,300"/>
+            <polyline points="120,300 900,300"/>
+            <polyline points="700,44 880,44"/>
+            <polyline points="820,44 820,84"/>
+            <polyline points="820,174 820,300"/>
+            <polyline points="620,176 800,176"/>
+          </g>
+
+          <g class="w red">
+            <polyline points="60,44 300,44"/>
+            <polyline points="180,44 180,84"/>
+          </g>
+          <g class="w sig">
+            <polyline points="180,142 180,196"/>
+            <polyline points="180,176 430,176"/>
+            <polyline points="380,176 380,206"/>
+            <polyline points="620,176 800,176"/>
+          </g>
+          <g class="w blk">
+            <polyline points="180,254 180,300"/>
+            <polyline points="380,216 380,300"/>
+            <polyline points="525,240 525,300"/>
+            <polyline points="120,300 900,300"/>
+            <polyline points="820,174 820,300"/>
+          </g>
+          <g class="w blu">
+            <polyline points="700,44 880,44"/>
+            <polyline points="820,44 820,84"/>
+          </g>
+
+          <!-- resistors / pot -->
+          <rect class="bx" x="166" y="84"  width="28" height="58" rx="1"/>
+          <rect class="bx" x="166" y="196" width="28" height="58" rx="1"/>
+          <rect class="bxd" x="806" y="84" width="28" height="90" rx="1"/>
+          <!-- wiper arrow -->
+          <polyline class="w sig" points="790,170 802,176 790,182" fill="none"/>
+
+          <!-- C6 plates -->
+          <g class="plate">
+            <line x1="366" y1="206" x2="394" y2="206"/>
+            <line x1="366" y1="216" x2="394" y2="216"/>
+          </g>
+          <circle class="dot" cx="380" cy="176" r="3.4"/>
+          <circle class="dot" cx="180" cy="176" r="3.4"/>
+
+          <!-- esp32 -->
+          <rect class="bx" x="430" y="130" width="190" height="110" rx="2"/>
+          <text class="ref" x="444" y="158">ESP32 DevKit</text>
+          <text class="pin" x="444" y="182">GPIO32 ← 電圧監視</text>
+          <text class="pin" x="444" y="202">GPIO33 → つまみ</text>
+          <text class="pin" x="530" y="256">GND</text>
+
+          <!-- labels -->
+          <text class="net" x="60" y="34" fill="var(--w-red)">VM（12V バス・図1）</text>
+          <text class="net" x="202" y="108">R1</text>
+          <text class="nm"  x="202" y="126">100kΩ 1%</text>
+          <text class="net" x="202" y="220">R2</text>
+          <text class="nm"  x="202" y="238">27kΩ 1%</text>
+          <text class="net" x="396" y="256">C6　0.1µF</text>
+          <text class="nw"  x="396" y="274">GPIO32 ピンの直近へ</text>
+          <text class="net" x="120" y="292">SGND</text>
+          <text class="net" x="700" y="34" fill="var(--w-blu)">+3V3</text>
+          <text class="net" x="846" y="120">VR1</text>
+          <text class="nt"  x="846" y="138">可変抵抗</text>
+          <text class="nt"  x="700" y="212">机上確認だけに使う仮設。常設しない</text>
+
+          <circle class="tpdot" cx="300" cy="176" r="5"/>
+          <text class="tptx" x="290" y="168" text-anchor="end">TP4</text>
+          <text class="nw"  x="290" y="152" text-anchor="end">3.3V 未満（12.6V で 約2.68V）</text>
+
+          <text class="nt" x="60" y="336">分圧比 ≈ 0.2126 　／　12.6V → 約 2.68V 　／　11.1V → 約 2.36V 　／　9.0V → 約 1.91V</text>
+          <text class="nw" x="60" y="356">TP4 が 3.3V を超えていないことを、ESP32 を繋ぐ前に確かめること</text>
+        </svg>
+      </div>
+      <div class="fig__foot">
+        <div><b>R1 の上は「ヒューズより後ろの 12V バス」に繋ぎます。</b> 知りたいのはドライバが実際に受けている電圧（加速時の落ち込みを含む）だからです。主電源スイッチが決まったら、その後ろに入れてください。電源を切ったときにバッテリを舐め続けなくなります。</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 図4 ============ -->
+  <section class="sec">
+    <h2>接地の引き回し</h2>
+    <p>
+      これは配線表では表せない、回路図でしか示せない部分です。
+      判断のしかたは1つだけです。
+    </p>
+    <div class="okb">
+      <div class="okb__h"><span class="okb__tag">見分け方</span><span>エンコーダの黒から ESP32 の GND ピンまで、指でたどってみる</span></div>
+      <p style="color:var(--ink-2)">
+        その経路に<b>モータ電流が流れる区間があるか</b>。あれば間違いです。
+      </p>
+      <p style="color:var(--ink-2)">
+        エンコーダは A相 / B相 を「<b>自分の黒を 0V として</b>」出します。
+        ESP32 はそれを「<b>自分の GND を 0V として</b>」読みます。
+        この2つの 0V がずれれば、そのずれがそのまま信号に足し算されます。
+        黒から ESP32 の GND までの経路にエンコーダ自身の消費電流（十数 mA）しか流れていなければ、
+        ずれようがありません。
+      </p>
+      <p style="color:var(--ink-2)">
+        ⚠️ <b>効くのは電圧差よりスパイクのほうです。</b>
+        配線と端子で 20mΩ、6.9A 流れても 138mV 程度で、ESP32 のロジックしきい値には余裕があります。
+        危ないのは PWM が切り替わる瞬間で、配線のインダクタンス（20cm で約 200nH）に
+        L·di/dt の電圧が立ちます。1A/µs なら 0.2V。
+        <b>エンコーダの計数はエッジを数えているので、スパイク1発がパルス1個の誤カウントになります。</b>
+        壊れるのではなく静かに数え間違える故障なので、たちが悪いほうです。
+      </p>
+    </div>
+    <p>
+      モータの電流は最大で 2.3A × 3 ＝ 約 6.9A 流れます。
+      この電流が通る線に ESP32 のグランドをぶら下げると、線の抵抗で生じた電圧が
+      そのまま ESP32 の基準電位の揺れになります。
+    </p>
+
+    <div class="fig">
+      <div class="fig__head">
+        <span class="fig__no">図 4</span>
+        <span class="fig__title">接地：星形1点で合流させる</span>
+        <span class="fig__sub">左が正・右が誤り</span>
+      </div>
+      <div class="fig__body">
+        <svg class="dia" viewBox="0 0 1000 260" style="min-width:820px" role="img" aria-label="接地を星形1点で合流させる正しい例と、デイジーチェーンにした誤った例の比較図">
+
+          <!-- divider -->
+          <line x1="500" y1="14" x2="500" y2="246" stroke="var(--line)" stroke-width="1" stroke-dasharray="4 5"/>
+
+          <!-- ===== OK panel ===== -->
+          <text class="ok" x="40" y="28">○　星形：合流は GND-STAR の1点だけ</text>
+
+          <g class="wo">
+            <polyline points="90,86 215,160"/><polyline points="170,86 215,160"/><polyline points="250,86 215,160"/>
+            <polyline points="215,160 215,208"/>
+          </g>
+          <g class="wo t"><polyline points="352,86 215,160"/></g>
+          <g class="w blk">
+            <polyline points="90,86 215,160"/><polyline points="170,86 215,160"/><polyline points="250,86 215,160"/>
+            <polyline points="215,160 215,208"/>
+          </g>
+          <g class="w t blk"><polyline points="352,86 215,160"/></g>
+
+          <rect class="bx" x="60"  y="52" width="60" height="34" rx="2"/>
+          <rect class="bx" x="140" y="52" width="60" height="34" rx="2"/>
+          <rect class="bx" x="220" y="52" width="60" height="34" rx="2"/>
+          <rect class="bx" x="310" y="52" width="84" height="34" rx="2"/>
+          <text class="ref" x="78"  y="74">U1</text>
+          <text class="ref" x="158" y="74">U2</text>
+          <text class="ref" x="238" y="74">U3</text>
+          <text class="ref" x="322" y="74">ESP32</text>
+
+          <circle class="tpdot" cx="215" cy="160" r="7"/>
+          <text class="tptx" x="232" y="156">GND-STAR</text>
+          <text class="nt"  x="232" y="173">＝ C1 のマイナス端子</text>
+          <text class="net" x="215" y="228" text-anchor="middle">BT1 −</text>
+          <text class="nt"  x="40"  y="250">ESP32 の接地はモータ電流の通り道を通らない</text>
+
+          <!-- ===== NG panel ===== -->
+          <text class="nw" x="540" y="28">×　デイジーチェーン：ESP32 が動力電流の下流にいる</text>
+
+          <g class="wo">
+            <polyline points="590,86 590,124"/><polyline points="670,86 670,124"/><polyline points="750,86 750,124"/>
+            <polyline points="842,86 842,124"/>
+            <polyline points="590,124 842,124"/>
+            <polyline points="590,124 590,208"/>
+          </g>
+          <g class="w blk">
+            <polyline points="590,86 590,124"/><polyline points="670,86 670,124"/><polyline points="750,86 750,124"/>
+            <polyline points="842,86 842,124"/>
+            <polyline points="590,124 590,208"/>
+          </g>
+          <polyline class="w" points="590,124 842,124" stroke="var(--warn)"/>
+
+          <rect class="bx" x="560" y="52" width="60" height="34" rx="2"/>
+          <rect class="bx" x="640" y="52" width="60" height="34" rx="2"/>
+          <rect class="bx" x="720" y="52" width="60" height="34" rx="2"/>
+          <rect class="bx" x="800" y="52" width="84" height="34" rx="2"/>
+          <text class="ref" x="578" y="74">U1</text>
+          <text class="ref" x="658" y="74">U2</text>
+          <text class="ref" x="738" y="74">U3</text>
+          <text class="ref" x="812" y="74">ESP32</text>
+
+          <text class="nw"  x="620" y="148">この区間に 6.9A が流れる</text>
+          <text class="net" x="590" y="228" text-anchor="middle">BT1 −</text>
+          <text class="nt"  x="540" y="250">ESP32 の基準電位がモータ電流に合わせて揺れる</text>
+        </svg>
+      </div>
+      <div class="fig__foot">
+        <div><b>合流点は図の上で1箇所だけにしてください。</b> 2箇所以上で繋がると接地ループになります。<code>GND-STAR</code> から出ている線が何本で、どれが動力側でどれが信号側かが数えられるように描くのがコツです。</div>
+        <div><b>ドライバの GND は動力側です。</b> AE-TB67H450 は GND ピンが1本しかなく、IN1 / IN2 の基準もその GND なので、動力側として扱います。</div>
+        <div>⚠️ <b>「黒と白がつながる」ではありません。</b> 接地でつながるのは <code>エンコーダ黒 ─ ESP32 GND ─ ドライバの GND 端子(pin1) ─ C1/C2 の − ─ バッテリ −</code> です。<b>白（OUT2）はこの仲間ではありません。</b> H ブリッジの出力なので、逆転中は 12V が出ています。</div>
+        <div><b>実際の配線でいうと</b>、エンコーダの黒は ESP32 の GND ピンへ挿し、ESP32 の GND から <code>GND-STAR</code> へ1本引きます。避けるべきはドライバの GND 端子に黒を共締めすること、太い動力線の途中に割り込ませることです。</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 部品表 ============ -->
+  <section class="sec">
+    <h2>図に出てくる部品</h2>
+    <p>型番は <code>docs/bom.md</code> の構成部品一覧のとおりです。図では記号（BT1・U1 など）だけを書き、値はこの表で引く形にしています。</p>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th class="m">記号</th><th>部品</th><th>型番・値</th><th>個数</th><th>図</th></tr></thead>
+        <tbody>
+          <tr><td class="m">BT1</td><td>バッテリ</td><td>BTLIPO 1500mAh 3S 35C XT60</td><td class="m">1</td><td class="m">1</td></tr>
+          <tr><td class="m">F1</td><td>メインヒューズ</td><td>10A ＋ ヒューズホルダ</td><td class="m">1</td><td class="m">1</td></tr>
+          <tr><td class="m">SW1</td><td>主電源スイッチ</td><td><span class="pill">未決着</span></td><td class="m">1</td><td class="m">1</td></tr>
+          <tr><td class="m">TB1</td><td>電源分岐端子</td><td><span class="pill">未決着</span></td><td class="m">—</td><td class="m">1</td></tr>
+          <tr><td class="m">U1–U3</td><td>モータドライバ</td><td>秋月 AE-TB67H450</td><td class="m">3</td><td class="m">1・2</td></tr>
+          <tr><td class="m">U4</td><td>5V DC/DC</td><td>ROHM BP5293-50<br><span style="color:var(--muted)">入力 7〜26V ／ 出力 5V±3% 1A ／ 570kHz</span></td><td class="m">1</td><td class="m">1</td></tr>
+          <tr><td class="m">M0–M2</td><td>ギアモータ（エンコーダ付）</td><td>JGB37-520　12V / 530RPM</td><td class="m">3</td><td class="m">1・2</td></tr>
+          <tr><td class="m">C1, C2</td><td>電解コンデンサ</td><td>Rubycon ZLH 1000µF / 35V</td><td class="m">2</td><td class="m">1</td></tr>
+          <tr><td class="m">C3–C5</td><td>セラミックコンデンサ</td><td>0.1µF / 50V X7R<br><span style="color:var(--muted)">モータ1個につき 赤−白 間に1個</span></td><td class="m">3</td><td class="m">2</td></tr>
+          <tr><td class="m">C6</td><td>セラミックコンデンサ</td><td>0.1µF / 50V X7R</td><td class="m">1</td><td class="m">3</td></tr>
+          <tr><td class="m">C7–C9</td><td>セラミックコンデンサ <span class="pill">追加</span></td><td>0.1µF / 50V X7R<br><span style="color:var(--muted)">各ドライバの VM−GND 直近</span></td><td class="m">3</td><td class="m">2b</td></tr>
+          <tr><td class="m">C10–C12</td><td>セラミックコンデンサ <span class="pill">追加</span></td><td>0.1µF / 50V X7R<br><span style="color:var(--muted)">各ドライバの VREF−GND 直近</span></td><td class="m">3</td><td class="m">2b</td></tr>
+          <tr><td class="m">RRS1–3</td><td>電流検出抵抗 <span class="pill">追加</span></td><td>0.22Ω / 1W 以上（2W 推奨）<br><span style="color:var(--muted)">酸化金属皮膜。巻線型は避ける。電流上限 1.5A を決める</span></td><td class="m">3</td><td class="m">2b</td></tr>
+          <tr><td class="m">JP1</td><td>5V 切り離しジャンパ <span class="pill">追加</span></td><td>2ピンヘッダ ＋ ジャンパピン</td><td class="m">1</td><td class="m">1</td></tr>
+          <tr><td class="m">R1</td><td>抵抗（分圧・上側）</td><td>100kΩ 1%</td><td class="m">1</td><td class="m">3</td></tr>
+          <tr><td class="m">R2</td><td>抵抗（分圧・下側）</td><td>27kΩ 1%</td><td class="m">1</td><td class="m">3</td></tr>
+          <tr><td class="m">VR1</td><td>可変抵抗（仮設）</td><td>机上確認用</td><td class="m">1</td><td class="m">3</td></tr>
+          <tr><td class="m">R3–R8</td><td>プルアップ抵抗 <span class="pill">未実装</span></td><td>10kΩ（置き場所のみ確保）</td><td class="m">(6)</td><td class="m">2c</td></tr>
+          <tr><td class="m">—</td><td>MCU</td><td>ESP32 DevKit</td><td class="m">1</td><td class="m">1–3</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============ 置き場所 ============ -->
+  <section class="sec">
+    <h2>コンデンサは「どこに置くか」まで図に書く</h2>
+    <p>これらは接続先が合っていても、置き場所を外すと効きません。図の上に位置の指示として書いてください。</p>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th class="m">記号</th><th>接続</th><th>置き場所</th><th>理由</th></tr></thead>
+        <tbody>
+          <tr><td class="m">C3–C5</td><td>各モータの 赤 − 白 の間</td><td><b>モータ本体の端子に直付け</b>。ドライバ側の端子台ではない</td><td>抑えたいのはブラシのノイズ。発生源で閉じ込めないと動力線の全長がアンテナとして残る</td></tr>
+          <tr><td class="m">C1</td><td>VM − GND-STAR</td><td>分岐の<b>入口</b>側。このマイナス端子が GND-STAR を兼ねる</td><td>モータ電流の戻りが最も落ち着く点だから。<b>入口／奥に分ける分散のしかたは本図の提案</b>で、出典は「ドライバ付近に、必要に応じて2個を分散」としか述べていない</td></tr>
+          <tr><td class="m">C2</td><td>VM − PGND</td><td>いちばん<b>奥</b>のドライバ（U3）の VM / GND 端子の直近</td><td>VM と GND のループ面積を小さくしないとスイッチング時に電圧スパイクが出る</td></tr>
+          <tr><td class="m">C6</td><td>GPIO32 − SGND</td><td><b>ESP32 の GPIO32 ピンの直近</b>。抵抗側の端ではない</td><td>分圧の合成抵抗が約 21kΩ と高く、ADC が読む瞬間の電荷を供給するのが C6 だから</td></tr>
+          <tr><td class="m">C7–C9</td><td>各ドライバの VM − GND</td><td><b>IC のすぐ横</b></td><td>1000µF 電解は高い周波数ではインダクタンスが効いて応答できない。スイッチングのエッジを受け持つのはセラミックのほう（アプリケーションノート 表7-1）</td></tr>
+          <tr><td class="m">RRS1–3</td><td>各ドライバの RS − GND</td><td><b>IC のすぐ横</b></td><td>間に配線が入ると、その抵抗ぶんだけ電流の設定値がずれる（同 7.4）</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============ 極性・測定点 ============ -->
+  <section class="sec">
+    <h2>向きを間違えると壊れるもの／テスターを当てる場所</h2>
+    <div class="tbl-wrap">
+      <table>
+        <caption>極性があるもの</caption>
+        <thead><tr><th class="m">記号</th><th>向き</th><th>間違えたときに起きること</th></tr></thead>
+        <tbody>
+          <tr><td class="m">C1, C2</td><td>＋ を VM 側、− を PGND 側</td><td><span class="pill">破裂・発火</span> 12V を逆極性で受ける。本機でいちばん危険</td></tr>
+          <tr><td class="m">U4</td><td>Vin / GND / Vout のピン配置</td><td>逆接で DC/DC が壊れ、5V が出なくなる</td></tr>
+          <tr><td class="m">U1–U3</td><td>VM / GND の端子並び</td><td>逆接でドライバが壊れる</td></tr>
+          <tr><td class="m">M0–M2</td><td>赤 / 白</td><td>回転方向が逆になるだけ。壊れない（対応はモータ単体確認で決める）</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="tbl-wrap">
+      <table>
+        <caption>電圧測定点（TP1〜TP7 はすべて図の上に記号で置いてある）</caption>
+        <thead><tr><th class="m">TP</th><th>どこ</th><th>基準</th><th class="m">期待値</th></tr></thead>
+        <tbody>
+          <tr><td class="m">TP1</td><td>F1 の出口（VM バス）</td><td class="m">GND-STAR</td><td class="m">11.1 – 12.6V</td></tr>
+          <tr><td class="m">TP2</td><td>U4 の 5V 出力</td><td class="m">GND-STAR</td><td class="m">5.0V ±5%</td></tr>
+          <tr><td class="m">TP3</td><td>ESP32 の 3V3 ピン</td><td class="m">SGND</td><td class="m">3.3V ±5%</td></tr>
+          <tr><td class="m">TP4</td><td>分圧の中点（GPIO32）</td><td class="m">SGND</td><td class="m">3.3V 未満（12.6V で約 2.68V）</td></tr>
+          <tr><td class="m">TP5</td><td>エンコーダコネクタの 青</td><td class="m">黒</td><td class="m">3.3V ／ 12V なら即中止</td></tr>
+          <tr><td class="m">TP6</td><td>U1–U3 の VM 端子</td><td class="m">GND-STAR</td><td class="m">TP1 と同じ（差 0.2V 未満）</td></tr>
+          <tr><td class="m">TP7</td><td>U1 の GND 端子</td><td class="m">SGND</td><td class="m">無負荷で約 0V</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="color:var(--muted); font-size:13.5px">
+      TP4 と TP5 は <b>繋ぐ前に測る</b> ものです。TP4 が 3.3V を超えていれば GPIO32 が壊れ、
+      TP5 に 12V が出ていればエンコーダが壊れます。
+    </p>
+  </section>
+
+  <!-- ============ 未確定 ============ -->
+  <section class="sec">
+    <h2>まだ決まっていないので、確定したように描かないところ</h2>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>項目</th><th>図での描き方</th><th>いつ決まるか</th></tr></thead>
+        <tbody>
+          <tr><td>エンコーダ A相 / B相 の線色（黄か緑か）</td><td>破線 ＋「未確定」と併記（図2）</td><td>輪単体の実測で確定</td></tr>
+          <tr><td>主電源スイッチ SW1</td><td>破線の箱（図1）。作図ツールで具体的な部品を置くときは<b>「暫定・機構側未決着」と明記</b>する</td><td>機構側の決定待ち（OQ-11）</td></tr>
+          <tr><td>電源分岐端子 TB1</td><td>同上。WAGO 等を置く場合も暫定扱い</td><td>機構側の決定待ち（OQ-12）</td></tr>
+          <tr><td>OUT1 / OUT2 と 赤 / 白 の対応</td><td>「仮」と注記（図2）</td><td>モータ単体で回して確定</td></tr>
+          <tr><td>エンコーダの外付けプルアップ</td><td>図2c に破線・未実装の予備位置として置いた。実線にしない</td><td>通電後の実測</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============ この図で決めたこと ============ -->
+  <section class="sec">
+    <h2>この図で決めたこと（出典ではなく、本図の判断）</h2>
+    <p>
+      以下は <code>docs/</code> の文書に書かれておらず、<b>この図を描くために決めた</b>ものです。
+      出典からの転記ではないので、違う結論にしたければ変えて構いません。
+    </p>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>決めたこと</th><th>採った案</th><th>ほかの案を採るとどうなるか</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>IN1 / IN2 の駆動方法</td>
+            <td><b>案B</b>（ファーム側で IN1/IN2 を直接駆動）</td>
+            <td>案A なら 74HC00 ×3 とプルダウンが増え、ESP32 とドライバの間に段が1つ入る</td>
+          </tr>
+          <tr>
+            <td>0.1µF セラミック C3–C5 の個数</td>
+            <td><b>3個</b>（モータ1個につき 赤−白 間に1個）</td>
+            <td>「端子1本につき1個を筐体へ落とす」解釈なら<b>6個</b>になり、筐体アースの扱いを別に決める必要が出る</td>
+          </tr>
+          <tr>
+            <td>1000µF 2個の分散のしかた</td>
+            <td><b>入口（C1）と奥のドライバ直近（C2）</b></td>
+            <td>出典は「ドライバ付近に必要に応じて2個」としか言っていない。2個まとめて置く案もある</td>
+          </tr>
+          <tr>
+            <td>電流上限をいくつにするか</td>
+            <td><b>1.5A</b>（VREF=3.3V ＋ RRS=0.22Ω）</td>
+            <td><b>データシートは制限を要求していない</b>（無効化も正式な構成）。安全側に寄せた判断。上げるなら 0.22Ω のまま VREF 4.0V で最大 1.82A、外すなら RS→GND 直結</td>
+          </tr>
+          <tr>
+            <td>エンコーダのプルアップ</td>
+            <td><b>破線・未実装で位置だけ確保</b>（図2c）</td>
+            <td>置かない案もある。その場合、実測で必要とわかった時点で図を描き直す</td>
+          </tr>
+          <tr>
+            <td>USB と 5V の同時接続をどう避けるか</td>
+            <td><b>JP1（5V 切り離しジャンパ）を入れる</b></td>
+            <td>DevKit の版ごとに USB VBUS と 5V ピンの繋がり方を調べる手もあるが、版が変わるたびに調べ直しになる</td>
+          </tr>
+          <tr>
+            <td>GND-STAR をどこに置くか</td>
+            <td><b>C1（1000µF）のマイナス端子</b></td>
+            <td>バルクコンデンサの直近がモータ電流の戻りが最も落ち着く点。別の点にするなら理由が要る</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============ 作図前の確認 ============ -->
+  <section class="sec">
+    <h2>作図の前に現物・データシートで確かめること</h2>
+    <p>
+      ここから先は<b>現物とデータシートを見ないと決まりません</b>。
+      図に載る値や要素が変わるので、描き始める前に潰しておくと描き直しになりません。
+    </p>
+    <div class="tbl-wrap">
+      <table>
+        <caption>データシート／アプリケーションノートで解決した項目</caption>
+        <thead><tr><th>項目</th><th>結果</th></tr></thead>
+        <tbody>
+          <tr><td>TB67H450 の真理値表</td><td>✅ 想定どおり。案B はメーカーが想定する「ダイレクト PWM 制御」そのものでした</td></tr>
+          <tr><td>電流制限（VREF / RS）の設定方法</td><td>✅ VREF=3.3V ＋ RRS=0.22Ω で上限 1.5A（図2b）</td></tr>
+          <tr><td>論理用の電源ピンが別にあるか</td><td>✅ IC には無い（VM のみ）。内部に VCC レギュレータを持つ</td></tr>
+          <tr><td>ロジック入力の電圧範囲</td><td>✅ VIN(H) 2.0〜5.5V。3.3V で問題なし。内部 100kΩ プルダウンあり</td></tr>
+          <tr><td>モジュールのセンス抵抗</td><td>✅ <b>未実装（実測で確定）</b>。RS−GND を 2000Ω レンジで測って片方向 465Ω、<b>逆向きで OL</b>。向きで値が変わるので抵抗ではなく IC 内部の半導体接合。0.22Ω の外付けが必要</td></tr>
+          <tr><td>BP5293-50 の定格</td><td>✅ 入力 7〜26V（3S LiPo の 9.0〜12.6V は内側）、出力 5V 1A（必要なピークは約300mA で3倍以上の余裕）</td></tr>
+          <tr><td>USB と VIN の同時接続</td><td>✅ <b>JP1 で 5V を切り離す</b>ことにした。基板の版に依存しなくなる</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <ul>
+      <li><strong>図の MCU が classic ESP32（ESP32-WROOM-32）であること</strong> — ⚠️ <b>ESP32-S3 では GPIO22/23/24/25 が存在せず、32/33 も使えません。</b> さらに S3 には Bluetooth Classic がなく（BLE のみ）、テレオペの第一候補が成立しません。<code>platformio.ini</code> は <code>board = esp32dev</code> です。</li>
+      <li><strong>「各モータ端子の直近に1個ずつ」の解釈</strong> — 上の表のとおり<b>3個で描いてあります</b>。意図が「端子1本につき1個」だったなら6個へ増やしてください。</li>
+    </ul>
+    <p style="color:var(--muted); font-size:13.5px">
+      ⚠️ <b>モジュールは素通しのブレークアウトです。</b> センス抵抗すら載っていないため、
+      VM−GND のセラミック（C7〜C9）も載っていない可能性が高いです。ただし
+      <b>セラミックは並列に足しても害がない</b>（容量が増えるだけ）ので、迷ったら付けてください。
+      センス抵抗と違い、既存品と並列になって電流上限が変わるようなことは起きません。
+    </p>
+  </section>
+
+  <!-- ============ 作図の順序 ============ -->
+  <section class="sec">
+    <h2>Cirkit Designer で描くときの順序</h2>
+    <p>
+      この図をそのまま写すときの手順です。<b>電源から描き、信号は最後にしてください。</b>
+      接地の分け方が先に決まっていないと、あとから直すのが最も面倒になります。
+    </p>
+    <ol style="margin:0; padding-left:1.3em; max-width:72ch; color:var(--ink-2)">
+      <li><b>電源系（図1）</b> — BT1 → F1 → VM バス → U1・U2・U3・U4。SW1 と TB1 は<b>破線の箱のまま、実線で繋がない</b>。</li>
+      <li><b>接地（図4）</b> — PGND と SGND を分け、<b>合流は GND-STAR の1点だけ</b>。C1 のマイナス端子を星の中心にする。</li>
+      <li><b>電解コンデンサの向き</b> — C1・C2 の ＋ を VM 側に、記号で極性がわかる形で置く。<b>本機でいちばん危険な部品です。</b></li>
+      <li><b>モータ1個ぶん（図2 と 図2b）を描いて、3回複製</b> — GPIO 番号だけを14本表のとおり差し替える。</li>
+      <li><b>ドライバの8端子を全部繋ぐ（図2b）</b> — <code>VREF</code>→3.3V、<code>RS</code>→0.22Ω→GND、<code>VM</code>−GND 直近に 0.1µF。⚠️ <b>RS と 0.1µF は IC のすぐ横に置く</b>こと。</li>
+      <li><b>案B の注記を書く</b> — 「IN1 ← 前進時に PWM／IN2 ← 後進時に PWM」と真理値表。<b>これを省くと図が案B 前と区別できません。</b></li>
+      <li><b>電圧監視（図3）</b> — R1 の上端は <code>BAT+</code> ではなく <code>VM</code>（ヒューズより後ろ）。C6 は GPIO32 ピンの直近。</li>
+      <li><b>ノイズ対策部品に置き場所の文字を添える</b> — C3–C5「モータ本体端子に直付け」、C6「GPIO32 直近」、C1/C2「VM−GND ループ最小」。<b>接続先だけでは足りません。</b></li>
+      <li><b>TP1〜TP7 を記号で置き、期待値を併記する</b> — 手順書が「どこを測るか」を文章で説明せずに済むようにするためです。</li>
+      <li><b>未確定・未決着の表示を入れる</b> — 黄/緑、OUT1/OUT2 と赤/白、SW1、TB1、プルアップ。<b>確定値として描かないこと。</b></li>
+      <li><b>MCU が classic ESP32（ESP32-WROOM-32）であることを確かめる</b> — ⚠️ ESP32-S3 では GPIO22/23/24/25 が存在せず、32/33 も使えません。<b>部品を置く前に確認してください。</b></li>
+      <li><b>14本表と1本ずつ突き合わせる</b> — 「表にあるのに図に無い」と「図にあるのに表に無い」の両方向を見る。</li>
+      <li><b>電源投入の順序を注記する</b> — 「<b>VM を入れる前に ESP32 をリセットする</b>」。入れた瞬間にモータが動くのを防ぐためです。</li>
+    </ol>
+  </section>
+
+</div>
