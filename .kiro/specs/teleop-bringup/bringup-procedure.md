@@ -19,7 +19,8 @@
 | Spec のタスク 1〜7 | ✅ 完了 |
 | タスク 2.3（回路図） | 🔶 作図入力まで完了（[`schematic-draft.md`](./schematic-draft.md) / [`schematic-draft.html`](./schematic-draft.html)）。成果物の `schematic.svg` は Cirkit Designer で作図中 |
 | タスク 8.1（本手順書） | ✅ この文書 |
-| タスク 8.2 以降 | ⬜ 未着手 |
+| タスク 8.2（E-0） | ✅ **合格**（2026-10-03、[`bringup-log.md`](./bringup-log.md) 参照）。次は E-1 |
+| タスク 8.3 以降 | ⬜ 未着手 |
 | **案B のファーム実装** | ✅ **ビルド確認済み**（`firmware/src/teleop/motor_ledc.{hpp,cpp}`）。⚠️ 挙動の確認は未了。E-3 が行う |
 | **ビルド環境** | ✅ **解決済み**。`[env:bench]` / `[env:teleop]` とも SUCCESS。つまずいた点は §0.2 に全部残してある |
 
