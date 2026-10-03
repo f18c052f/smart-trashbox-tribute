@@ -198,7 +198,7 @@ Warning! Flash memory size mismatch detected. Expected 4MB, found 2MB!
 | 5V の切り離し | **JP1**（USB 給電時は外す） | 同 §2.2.1 |
 | C3–C5 の個数 | 3個（モータ1個につき赤−白間に1個） | 同 §4.1 |
 | エンコーダのプルアップ | 破線・**未実装**の予備位置のみ | 同 §7.3 |
-| MCU | **classic ESP32（ESP32-WROOM-32）**。⚠️ ESP32-S3 では端子も BT Classic も成立しない | 同 §7.2 |
+| MCU | **classic ESP32（ESP32-WROOM-32）**。✅ 2026-10-03 にチップ刻印で確認済み | 同 §7.2 |
 
 ### 0.4 未確定のまま進めるもの
 
